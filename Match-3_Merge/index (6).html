@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#1e1610">
+<title>Potion 2048</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #1e1610;
+    font-family: "Palatino Linotype", Palatino, Georgia, serif; color: #f0dcb0;
+    touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+  canvas { display: block; width: 100%; height: 100%; }
+  .hud { position: fixed; top: max(12px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); width: min(440px, 94vw); display: flex; gap: 10px; align-items: center; pointer-events: none; }
+  .hud h2 { flex: 1; font-size: 26px; color: #ffd27a; text-shadow: 0 0 12px #ff9a3a88; }
+  .plate { background: linear-gradient(#5a4028, #3a2818); border: 2px solid #a07a48; border-radius: 8px; padding: 4px 12px; text-align: center; min-width: 76px; }
+  .plate small { display: block; font-size: 10px; letter-spacing: 2px; color: #c9a26a; } .plate b { font-size: 20px; }
+  .overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; padding: 20px; background: #0e0a06cc; transition: opacity .3s; }
+  .overlay.hidden { opacity: 0; pointer-events: none; }
+  .tome { width: min(360px, 100%); background: linear-gradient(#f0dcb0, #d6b680); color: #3a2410; border-radius: 6px; padding: 24px 20px; text-align: center; display: flex; flex-direction: column; gap: 12px; box-shadow: 0 0 0 6px #5a3a1c, 0 20px 50px #000; }
+  .tome canvas { width: 100%; height: auto; }
+  h1 { font-size: clamp(36px, 11vw, 52px); color: #6b1a40; }
+  p { font-size: 15px; line-height: 1.5; }
+  .stat { font-size: 18px; } .stat b { color: #6b1a40; }
+  .btn { border: 2px solid #3a2410; background: #6b1a40; color: #f0dcb0; font: inherit; font-size: 20px; padding: 12px; border-radius: 6px; cursor: pointer; }
+  .btn:active { background: #4a0f2c; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud"><h2>Potion 2048</h2><div class="plate"><small>SCORE</small><b id="score">0</b></div><div class="plate"><small>BEST</small><b id="best">0</b></div></div>
+
+<div class="overlay" id="menu"><div class="tome">
+  <canvas id="logo" width="660" height="150"></canvas>
+  <h1>Potion 2048</h1>
+  <p><b>Swipe</b> (or use the arrow keys) to slide every bottle. Two identical potions brew into a stronger one. Can you distil the legendary <b>2048 Elixir</b>?</p>
+  <button class="btn" id="startBtn">Start brewing</button>
+</div></div>
+<div class="overlay hidden" id="over"><div class="tome">
+  <h1 id="overTitle">The shelf is full</h1>
+  <div class="stat">Score <b id="finalScore">0</b></div>
+  <div class="stat">Strongest potion <b id="topTile">2</b></div>
+  <button class="btn" id="againBtn">Brew again</button>
+  <button class="btn" id="contBtn" style="display:none">Keep brewing</button>
+</div></div>
+
+<script>
+/*AUDIO-ENGINE-START*/
+// ---------- audio: procedural background music + sound effects ----------
+// Every note is synthesized with the Web Audio API at runtime, so the music
+// needs no files, works offline and carries no copyright.
+const GameAudio = (cfg) => {
+  let ctx = null, master = null, musicBus = null, sfxBus = null;
+  let timer = null, step = 0, nextT = 0, playing = false;
+  let musicOn = true;
+  try { musicOn = localStorage.getItem('music_off') !== '1'; } catch (e) {}
+
+  const SCALES = {
+    major: [0, 2, 4, 5, 7, 9, 11], minor: [0, 2, 3, 5, 7, 8, 10],
+    dorian: [0, 2, 3, 5, 7, 9, 10], lydian: [0, 2, 4, 6, 7, 9, 11],
+    pentaMajor: [0, 2, 4, 7, 9], pentaMinor: [0, 3, 5, 7, 10],
+    japanese: [0, 1, 5, 7, 8], phrygian: [0, 1, 3, 5, 7, 8, 10]
+  };
+  const scale = SCALES[cfg.scale] || SCALES.major;
+  const root = cfg.root || 57;
+  const bpm = cfg.bpm || 110;
+  const prog = cfg.prog || [0, 5, 3, 4];
+  const sixteenth = 60 / bpm / 4;
+
+  // deterministic random so each game always plays "its" tune
+  let seed = cfg.seed || 1;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
+
+  const deg = (d, oct = 0) => {
+    const n = scale.length;
+    const o = Math.floor(d / n);
+    return root + scale[((d % n) + n) % n] + 12 * (o + oct);
+  };
+  const hz = m => 440 * Math.pow(2, (m - 69) / 12);
+
+  // melody: two 2-bar phrases (A, B) arranged A A B A
+  function phrase() {
+    const notes = [];
+    let d = 2 + Math.floor(rnd() * 3);
+    for (let i = 0; i < 32; i++) {
+      const strong = i % 4 === 0;
+      if (rnd() < (strong ? 0.85 : (cfg.leadDensity || 0.35))) {
+        d += Math.round((rnd() - 0.5) * 4);
+        d = Math.max(0, Math.min(scale.length * 2, d));
+        const len = strong && rnd() < 0.5 ? 2 : 1;
+        notes.push({ i, d, len });
+      }
+    }
+    return notes;
+  }
+  const A = phrase(), B = phrase();
+  const song = [A, A, B, A];
+
+  function init() {
+    if (ctx) return;
+    try {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      master = ctx.createGain(); master.gain.value = 0.9; master.connect(ctx.destination);
+      musicBus = ctx.createGain(); musicBus.gain.value = cfg.volume || 0.16; musicBus.connect(master);
+      sfxBus = ctx.createGain(); sfxBus.gain.value = 1; sfxBus.connect(master);
+    } catch (e) { ctx = null; }
+  }
+
+  function voice(t, freq, dur, type, vol, opts = {}) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, t);
+    if (opts.detune) o.detune.value = opts.detune;
+    let node = o;
+    if (opts.cutoff) {
+      const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = opts.cutoff; f.Q.value = opts.q || 1;
+      o.connect(f); node = f;
+    }
+    const a = opts.attack || 0.008;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(vol, t + a);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    node.connect(g); g.connect(opts.bus || musicBus);
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+
+  let noiseBuf = null;
+  function noise(t, dur, vol, hp) {
+    if (!noiseBuf) {
+      noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 0.5, ctx.sampleRate);
+      const d = noiseBuf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    }
+    const s = ctx.createBufferSource(); s.buffer = noiseBuf;
+    const f = ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = hp;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.connect(f); f.connect(g); g.connect(musicBus);
+    s.start(t); s.stop(t + dur + 0.02);
+  }
+
+  function kick(t) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.setValueAtTime(140, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+    g.gain.setValueAtTime(0.9, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+    o.connect(g); g.connect(musicBus); o.start(t); o.stop(t + 0.25);
+  }
+
+  function playStep(s, t) {
+    const bar = Math.floor(s / 16);
+    const i16 = s % 16;
+    const chordDeg = prog[bar % prog.length];
+    const w = cfg.waves || {};
+    // bass
+    const bassPat = cfg.bassPattern || [0, 8];
+    if (bassPat.includes(i16)) voice(t, hz(deg(chordDeg, -2)), sixteenth * 3.5, w.bass || 'triangle', 0.5, { cutoff: 600 });
+    // pad (chord) at bar start
+    if (cfg.pad && i16 === 0) {
+      for (const k of [0, 2, 4]) voice(t, hz(deg(chordDeg + k, -1)), sixteenth * 15, w.pad || 'sine', 0.12, { attack: 0.3, cutoff: 1400, detune: k * 3 });
+    }
+    // arpeggio
+    if (cfg.arp && i16 % (cfg.arpEvery || 2) === 0) {
+      const k = [0, 2, 4, 2][(i16 / (cfg.arpEvery || 2)) % 4];
+      voice(t, hz(deg(chordDeg + k, cfg.arpOct || 0)), sixteenth * 1.6, w.arp || 'square', 0.1, { cutoff: cfg.arpCutoff || 2200 });
+    }
+    // lead melody
+    const ph = song[Math.floor(bar / 2) % song.length];
+    const pi = (bar % 2) * 16 + i16;
+    for (const n of ph) if (n.i === pi) {
+      voice(t, hz(deg(n.d, cfg.leadOct || 0)), sixteenth * (n.len * 2 + 0.5), w.lead || 'triangle', 0.22, { cutoff: cfg.leadCutoff || 3000 });
+    }
+    // drums
+    if (cfg.drums) {
+      if (i16 % 8 === 0 || (cfg.drums === 'busy' && i16 === 10)) kick(t);
+      if (i16 % 8 === 4) noise(t, 0.14, 0.35, 1500);
+      if (i16 % 2 === 0) noise(t, 0.04, cfg.drums === 'soft' ? 0.06 : 0.12, 7000);
+    }
+  }
+
+  function scheduler() {
+    if (!ctx || !playing) return;
+    while (nextT < ctx.currentTime + 0.15) {
+      playStep(step, nextT);
+      nextT += sixteenth * (cfg.swing && step % 2 === 0 ? 1 + cfg.swing : cfg.swing ? 1 - cfg.swing : 1);
+      step++;
+    }
+  }
+
+  function startMusic() {
+    if (!ctx || playing || !musicOn) return;
+    playing = true;
+    musicBus.gain.cancelScheduledValues(ctx.currentTime);
+    musicBus.gain.setValueAtTime(0.0001, ctx.currentTime);
+    musicBus.gain.linearRampToValueAtTime(cfg.volume || 0.16, ctx.currentTime + 1.2);
+    nextT = ctx.currentTime + 0.05;
+    timer = setInterval(scheduler, 40);
+  }
+  function stopMusic() {
+    playing = false;
+    if (timer) clearInterval(timer);
+    timer = null;
+  }
+
+  // mute button
+  const btn = document.createElement('button');
+  btn.setAttribute('aria-label', 'Toggle music');
+  btn.style.cssText = 'position:fixed;z-index:50;right:max(14px,env(safe-area-inset-right));bottom:max(14px,env(safe-area-inset-bottom));' +
+    'width:42px;height:42px;border-radius:50%;border:none;cursor:pointer;font-size:20px;line-height:42px;padding:0;' +
+    'background:' + (cfg.btnBg || 'rgba(0,0,0,.35)') + ';color:' + (cfg.btnColor || '#fff') + ';backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);';
+  const paint = () => { btn.textContent = musicOn ? '♪' : '✕'; btn.style.opacity = musicOn ? '1' : '.6'; };
+  paint();
+  const toggle = e => {
+    e.stopPropagation(); e.preventDefault();
+    musicOn = !musicOn;
+    try { localStorage.setItem('music_off', musicOn ? '0' : '1'); } catch (err) {}
+    init();
+    if (ctx && ctx.state === 'suspended') ctx.resume();
+    if (musicOn) startMusic(); else stopMusic();
+    paint();
+  };
+  btn.addEventListener('pointerdown', e => e.stopPropagation());
+  btn.addEventListener('pointerup', e => e.stopPropagation());
+  btn.addEventListener('click', toggle);
+  document.addEventListener('DOMContentLoaded', () => document.body.appendChild(btn));
+  if (document.body) document.body.appendChild(btn);
+
+  document.addEventListener('visibilitychange', () => {
+    if (!ctx) return;
+    if (document.hidden) ctx.suspend(); else ctx.resume();
+  });
+
+  return {
+    // call from a user gesture (start button) — browsers only allow audio after one
+    start() {
+      init();
+      if (!ctx) return;
+      if (ctx.state === 'suspended') ctx.resume();
+      startMusic();
+    },
+    sfx(freq, dur, type = 'sine', vol = 0.07, to = 0) {
+      init();
+      if (!ctx) return;
+      try {
+        const t = ctx.currentTime;
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.type = type; o.frequency.setValueAtTime(freq, t);
+        if (to) o.frequency.exponentialRampToValueAtTime(Math.max(30, to), t + dur);
+        g.gain.setValueAtTime(vol, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+        o.connect(g); g.connect(sfxBus);
+        o.start(t); o.stop(t + dur + 0.02);
+      } catch (e) {}
+    }
+  };
+};
+/*AUDIO-ENGINE-END*/
+/*SPRITES-START*/
+// ---------- sprites: detailed SVG artwork rasterised once into canvases ----------
+// Each piece is authored as an SVG (gradients, highlights, shadows, glow) and
+// drawn into an offscreen canvas at load time, so the game loop just blits images.
+const loadSprites = (defs, px = 160) => Promise.all(Object.entries(defs).map(([name, svg]) => new Promise(done => {
+  const img = new Image();
+  const finish = ok => {
+    const c = document.createElement('canvas');
+    const w = Array.isArray(px) ? px[0] : px, h = Array.isArray(px) ? px[1] : px;
+    c.width = w; c.height = h;
+    if (ok) c.getContext('2d').drawImage(img, 0, 0, w, h);
+    done([name, c]);
+  };
+  img.onload = () => finish(true);
+  img.onerror = () => finish(false);
+  img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+}))).then(entries => Object.fromEntries(entries));
+
+// small helpers for writing SVG
+const svgDoc = (body, vb = '0 0 100 100') => '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + vb + '">' + body + '</svg>';
+const shade = (hex, amt) => {
+  const n = parseInt(hex.slice(1), 16);
+  const f = v => Math.max(0, Math.min(255, Math.round(amt < 0 ? v * (1 + amt) : v + (255 - v) * amt)));
+  return '#' + [n >> 16, (n >> 8) & 255, n & 255].map(f).map(v => v.toString(16).padStart(2, '0')).join('');
+};
+/*SPRITES-END*/
+(() => {
+  const audio = GameAudio({
+    bpm: 90, scale: 'dorian', root: 57, prog: [0, 3, 0, 4], seed: 407,
+    waves: { lead: 'triangle', bass: 'sine', arp: 'sine', pad: 'triangle' },
+    pad: true, arp: true, arpEvery: 2, arpOct: 1, leadOct: 1, leadDensity: 0.28, drums: 'soft', swing: 0.15, bassPattern: [0, 10], volume: 0.18,
+    btnBg: 'rgba(160,122,72,.45)', btnColor: '#f0dcb0'
+  });
+  const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+  const $ = id => document.getElementById(id);
+  const KEY = 'potion_2048_best';
+  let best = 0; try { best = +localStorage.getItem(KEY) || 0; } catch (e) {}
+  $('best').textContent = best;
+
+  // ---------- potion bottles: shape + liquid + glow per tier ----------
+  const LIQ = ['#e04a4a', '#ff9a2a', '#ffd23a', '#7ad04a', '#2ac0a0', '#2a9aff', '#5a5aff', '#a04aff', '#ff4ad0', '#ffffff', '#ffd700'];
+  const SHAPES = [
+    { body: 'M50 30 C 22 34, 14 60, 20 76 C 26 92, 74 92, 80 76 C 86 60, 78 34, 50 30 Z', neck: [42, 14, 16, 20], level: 54 },                          // round flask
+    { body: 'M36 30 L 64 30 L 64 88 C 64 94, 36 94, 36 88 Z', neck: [42, 14, 16, 18], level: 48 },                                                       // vial
+    { body: 'M50 92 C 20 72, 14 54, 22 42 C 30 30, 44 34, 50 44 C 56 34, 70 30, 78 42 C 86 54, 80 72, 50 92 Z', neck: [44, 20, 12, 18], level: 58 },    // heart
+    { body: 'M26 32 L 74 32 L 80 40 L 80 86 L 74 92 L 26 92 L 20 86 L 20 40 Z', neck: [40, 14, 20, 20], level: 52 },                                    // square jar
+    { body: 'M50 26 L 84 56 L 50 94 L 16 56 Z', neck: [44, 10, 12, 18], level: 58 },                                                                      // diamond
+    { body: 'M42 30 L 58 30 L 78 86 C 80 94, 20 94, 22 86 Z', neck: [42, 12, 16, 20], level: 56 },                                                       // conical
+  ];
+  function potionSVG(tier) {
+    const sh = SHAPES[tier % SHAPES.length], liq = LIQ[tier], glow = tier >= 6;
+    const [nx, ny, nw, nh] = sh.neck;
+    const bubbles = Array.from({ length: 4 + tier }, (_, i) => '<circle cx="' + (34 + (i * 37) % 32) + '" cy="' + (sh.level + 8 + (i * 13) % 26) + '" r="' + (1.2 + (i % 3)) + '" fill="#fff" opacity=".55"/>').join('');
+    return svgDoc('<defs>' +
+      '<linearGradient id="lq" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="' + shade(liq, 0.35) + '"/><stop offset="1" stop-color="' + shade(liq, -0.35) + '"/></linearGradient>' +
+      '<linearGradient id="gl" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#fff" stop-opacity=".35"/><stop offset=".3" stop-color="#fff" stop-opacity=".05"/><stop offset=".8" stop-color="#fff" stop-opacity=".02"/><stop offset="1" stop-color="#fff" stop-opacity=".25"/></linearGradient>' +
+      '<clipPath id="cl"><path d="' + sh.body + '"/></clipPath>' +
+      '<radialGradient id="aura"><stop offset="0" stop-color="' + liq + '" stop-opacity=".6"/><stop offset="1" stop-color="' + liq + '" stop-opacity="0"/></radialGradient>' +
+      '<filter id="s" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="3" stdDeviation="2" flood-opacity=".5"/></filter></defs>' +
+      (glow ? '<circle cx="50" cy="60" r="48" fill="url(#aura)"/>' : '') +
+      '<g filter="url(#s)">' +
+      '<rect x="' + nx + '" y="' + (ny + 6) + '" width="' + nw + '" height="' + nh + '" fill="#cfe8f0" opacity=".5" stroke="#5a6a70" stroke-width="1.5"/>' +
+      '<rect x="' + (nx - 2) + '" y="' + ny + '" width="' + (nw + 4) + '" height="10" rx="2" fill="#a0683c" stroke="#5a3a1c" stroke-width="1.5"/>' +
+      '<path d="' + sh.body + '" fill="#cfe8f0" opacity=".35"/>' +
+      '<g clip-path="url(#cl)"><rect x="0" y="' + sh.level + '" width="100" height="60" fill="url(#lq)"/>' +
+      '<ellipse cx="50" cy="' + sh.level + '" rx="40" ry="3" fill="' + shade(liq, 0.5) + '"/>' + bubbles + '</g>' +
+      '<path d="' + sh.body + '" fill="url(#gl)"/>' +
+      '<path d="' + sh.body + '" fill="none" stroke="#3a4a50" stroke-width="2.5" stroke-linejoin="round"/></g>' +
+      (tier >= 9 ? '<path d="M50 4 l3 8 l8 3 l-8 3 l-3 8 l-3 -8 l-8 -3 l8 -3 Z" fill="#fff"/>' : ''));
+  }
+
+  let SPR = null;
+  const defs = {}; for (let i = 0; i < 11; i++) defs['p' + i] = potionSVG(i);
+  defs.slot = svgDoc('<rect x="4" y="4" width="92" height="92" rx="12" fill="#2a1c12"/><rect x="4" y="70" width="92" height="10" fill="#4a3220"/><rect x="4" y="80" width="92" height="16" rx="0" fill="#3a2818"/><rect x="4" y="4" width="92" height="92" rx="12" fill="none" stroke="#5a4028" stroke-width="2"/>');
+  loadSprites(defs, 160).then(s => {
+    SPR = s;
+    const lc = $('logo').getContext('2d');
+    for (let i = 0; i < 11; i++) lc.drawImage(SPR['p' + i], i * 59 + 2, 20 + (i % 2) * 14, 100, 100);
+  });
+
+  const N = 4;
+  let W, H, DPR, cell, bx, by;
+  function resize() {
+    DPR = Math.min(devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight;
+    canvas.width = W * DPR; canvas.height = H * DPR; ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    const size = Math.min(W * 0.94, H - 160, 480);
+    cell = size / N; bx = (W - size) / 2; by = Math.max(80, (H - size) / 2 + 20);
+  }
+  addEventListener('resize', resize); resize();
+
+  let state = 'menu', tiles, score, uid = 0, t = 0, won = false, sparks = [], anim = 0;
+  const cellOf = () => { const g = [...Array(N)].map(() => Array(N).fill(null)); for (const tl of tiles) if (!tl.gone) g[tl.r][tl.c] = tl; return g; };
+  function addRandom() {
+    const g = cellOf(), free = [];
+    for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) if (!g[r][c]) free.push([r, c]);
+    if (!free.length) return;
+    const [r, c] = free[Math.floor(Math.random() * free.length)];
+    tiles.push({ id: uid++, tier: Math.random() < 0.9 ? 0 : 1, r, c, x: c, y: r, born: 0.25, pop: 0 });
+  }
+  function start() { if (!SPR) return; tiles = []; score = 0; won = false; sparks = []; addRandom(); addRandom(); state = 'play'; audio.start(); $('menu').classList.add('hidden'); $('over').classList.add('hidden'); }
+  function move(dir) {
+    if (state !== 'play' || anim > 0) return;
+    const [dr, dc] = { up: [-1, 0], down: [1, 0], left: [0, -1], right: [0, 1] }[dir];
+    tiles = tiles.filter(tl => !tl.gone);
+    const g = cellOf();
+    let moved = false, gained = 0, topMerge = -1;
+    const order = [...Array(N).keys()]; if (dr > 0 || dc > 0) order.reverse();
+    const mergedInto = new Set();
+    for (const a of order) for (const b of [...Array(N).keys()]) {
+      const r = dr ? a : b, c = dc ? a : b;
+      const tl = g[r][c]; if (!tl) continue;
+      let nr = r, nc = c;
+      while (true) {
+        const tr = nr + dr, tc = nc + dc;
+        if (tr < 0 || tr >= N || tc < 0 || tc >= N) break;
+        const o = g[tr][tc];
+        if (!o) { nr = tr; nc = tc; continue; }
+        if (o.tier === tl.tier && !mergedInto.has(o) && tl.tier < 10) {
+          g[r][c] = null; tl.r = tr; tl.c = tc; tl.gone = true; tl.into = o;
+          o.tier++; o.pop = 1; mergedInto.add(o); gained += Math.pow(2, o.tier + 1); topMerge = Math.max(topMerge, o.tier);
+          moved = true;
+        }
+        break;
+      }
+      if (!tl.gone && (nr !== r || nc !== c)) { g[r][c] = null; g[nr][nc] = tl; tl.r = nr; tl.c = nc; moved = true; }
+    }
+    if (!moved) return;
+    score += gained;
+    if (score > best) { best = score; try { localStorage.setItem(KEY, best); } catch (e) {} }
+    anim = 0.12;
+    if (topMerge >= 0) {
+      audio.sfx(262 * Math.pow(2, topMerge / 4), 0.25, 'sine', 0.08, 524 * Math.pow(2, topMerge / 4));
+      for (const o of mergedInto) { const x = bx + (o.c + 0.5) * cell, y = by + (o.r + 0.5) * cell; for (let i = 0; i < 8; i++) sparks.push({ x, y, vx: (Math.random() - .5) * 200, vy: -Math.random() * 200, life: 0.6, col: LIQ[o.tier] }); }
+    } else audio.sfx(200, 0.05, 'triangle', 0.04);
+    setTimeout(() => {
+      tiles = tiles.filter(tl => !tl.gone);
+      addRandom();
+      if (!won && tiles.some(tl => tl.tier >= 10)) { won = true; end(true); }
+      else if (!canMove()) end(false);
+    }, 130);
+  }
+  function canMove() {
+    const g = cellOf();
+    for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+      if (!g[r][c]) return true;
+      if (c < N - 1 && g[r][c + 1] && g[r][c + 1].tier === g[r][c].tier) return true;
+      if (r < N - 1 && g[r + 1][c] && g[r + 1][c].tier === g[r][c].tier) return true;
+    }
+    return false;
+  }
+  function end(victory) {
+    state = victory ? 'won' : 'over';
+    const top = Math.max(...tiles.map(tl => tl.tier));
+    $('overTitle').textContent = victory ? 'The 2048 Elixir!' : 'The shelf is full';
+    $('finalScore').textContent = score; $('topTile').textContent = Math.pow(2, top + 1);
+    $('contBtn').style.display = victory ? 'block' : 'none';
+    if (victory) [523, 659, 784, 1046, 1318].forEach((f, i) => setTimeout(() => audio.sfx(f, 0.3, 'triangle', 0.08), i * 120));
+    else audio.sfx(300, 0.7, 'sine', 0.07, 120);
+    setTimeout(() => $('over').classList.remove('hidden'), 400);
+  }
+  $('startBtn').onclick = start; $('againBtn').onclick = start;
+  $('contBtn').onclick = () => { state = 'play'; $('over').classList.add('hidden'); };
+
+  let sx = 0, sy = 0, down = false;
+  canvas.addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY; down = true; });
+  addEventListener('pointerup', e => {
+    if (!down) return; down = false;
+    const dx = e.clientX - sx, dy = e.clientY - sy;
+    if (Math.hypot(dx, dy) < 24) return;
+    move(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up'));
+  });
+  addEventListener('keydown', e => {
+    const m = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right', w: 'up', s: 'down', a: 'left', d: 'right' }[e.key];
+    if (m) { e.preventDefault(); move(m); }
+    else if ((e.key === 'Enter' || e.key === ' ') && state === 'menu') { e.preventDefault(); start(); }
+  });
+
+  function update(dt) {
+    t += dt; anim = Math.max(0, anim - dt);
+    if (tiles) for (const tl of tiles) {
+      const tx = tl.gone && tl.into ? tl.into.c : tl.c, ty = tl.gone && tl.into ? tl.into.r : tl.r;
+      tl.x += (tx - tl.x) * Math.min(1, dt * 22); tl.y += (ty - tl.y) * Math.min(1, dt * 22);
+      tl.pop = Math.max(0, tl.pop - dt * 4); tl.born = Math.max(0, tl.born - dt);
+    }
+    for (const s of sparks) { s.x += s.vx * dt; s.y += s.vy * dt; s.vy += 300 * dt; s.life -= dt; }
+    sparks = sparks.filter(s => s.life > 0);
+  }
+
+  function render() {
+    // alchemist's study: dark wood, candlelight
+    ctx.fillStyle = '#1e1610'; ctx.fillRect(0, 0, W, H);
+    for (let x = 0; x < W; x += 60) { ctx.fillStyle = (x / 60) % 2 ? '#241a12' : '#20170f'; ctx.fillRect(x, 0, 60, H); }
+    for (const [cx, cy] of [[W * 0.1, H * 0.85], [W * 0.9, H * 0.82]]) {
+      const g = ctx.createRadialGradient(cx, cy - 40, 5, cx, cy - 40, 220); g.addColorStop(0, 'rgba(255,190,100,.35)'); g.addColorStop(1, 'rgba(255,190,100,0)');
+      ctx.fillStyle = g; ctx.fillRect(cx - 220, cy - 260, 440, 440);
+      ctx.fillStyle = '#efe0c0'; ctx.fillRect(cx - 8, cy - 30, 16, 50);
+      ctx.fillStyle = '#ffcf5a'; ctx.beginPath(); ctx.ellipse(cx, cy - 40, 5, 10 + Math.sin(t * 15 + cx) * 2, 0, 0, Math.PI * 2); ctx.fill();
+    }
+    if (!SPR || !tiles) return;
+    const fw = N * cell;
+    ctx.fillStyle = '#120c07'; ctx.fillRect(bx - 10, by - 10, fw + 20, fw + 20);
+    ctx.strokeStyle = '#a07a48'; ctx.lineWidth = 3; ctx.strokeRect(bx - 10, by - 10, fw + 20, fw + 20);
+    for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) ctx.drawImage(SPR.slot, bx + c * cell, by + r * cell, cell, cell);
+    const sorted = tiles.slice().sort((a, b) => (a.gone ? 0 : 1) - (b.gone ? 0 : 1));
+    for (const tl of sorted) {
+      let s = 1 - tl.born * 4 + Math.sin(tl.pop * Math.PI) * 0.2;
+      const x = bx + (tl.x + 0.5) * cell, y = by + (tl.y + 0.5) * cell, sz = cell * 1.04 * Math.max(0.05, s);
+      ctx.save(); ctx.translate(x, y - cell * 0.08); ctx.rotate(Math.sin(t * 2 + tl.id) * 0.03);
+      ctx.drawImage(SPR['p' + tl.tier], -sz / 2, -sz / 2, sz, sz);
+      ctx.restore();
+      // brass label with the value
+      const v = Math.pow(2, tl.tier + 1), lw = cell * 0.46, lh = cell * 0.17, ly = y + cell * 0.27;
+      ctx.fillStyle = '#e8d6a8'; ctx.strokeStyle = '#6b4a20'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x - lw / 2, ly, lw, lh, 4) : ctx.rect(x - lw / 2, ly, lw, lh); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#3a2410'; ctx.font = 'bold ' + Math.round(lh * (v >= 1000 ? 0.6 : 0.75)) + 'px Georgia, serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(v, x, ly + lh / 2 + 1);
+    }
+    for (const s of sparks) { ctx.globalAlpha = Math.max(0, s.life * 1.6); ctx.fillStyle = s.col; ctx.beginPath(); ctx.arc(s.x, s.y, 3, 0, Math.PI * 2); ctx.fill(); }
+    ctx.globalAlpha = 1;
+    $('score').textContent = score; $('best').textContent = best;
+  }
+
+  let last = performance.now();
+  (function loop(now) {
+    const dt = Math.max(0, Math.min(0.033, (now - last) / 1000)); last = now;
+    update(dt); render(); requestAnimationFrame(loop);
+  })(last);
+})();
+</script>
+</body>
+</html>

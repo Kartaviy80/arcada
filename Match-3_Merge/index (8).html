@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#6fb04a">
+<title>Village Triple</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #6fb04a;
+    font-family: "Georgia", "Book Antiqua", serif; color: #3a2a14;
+    touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+  canvas { display: block; width: 100%; height: 100%; }
+  .overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; padding: 20px; background: #2a4a1caa; transition: opacity .3s; }
+  .overlay.hidden { opacity: 0; pointer-events: none; }
+  .card { width: min(370px, 100%); background: #fff8e6; border-radius: 18px; padding: 22px 18px; text-align: center; display: flex; flex-direction: column; gap: 12px; border: 4px solid #8a5a2c; box-shadow: 0 16px 40px #0006; }
+  .card canvas { width: 100%; height: auto; }
+  h1 { font-size: clamp(36px, 11vw, 52px); color: #8a3a1c; line-height: 1; }
+  p { font-size: 15px; line-height: 1.5; }
+  .stat { font-size: 18px; } .stat b { color: #8a3a1c; }
+  .btn { border: none; background: #4c8a2c; color: #fff8e6; font: inherit; font-size: 20px; padding: 12px; border-radius: 12px; cursor: pointer; box-shadow: 0 5px 0 #2c5a14; }
+  .btn:active { transform: translateY(3px); box-shadow: 0 2px 0 #2c5a14; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div class="overlay" id="menu"><div class="card">
+  <canvas id="logo" width="680" height="130"></canvas>
+  <h1>Village Triple</h1>
+  <p><b>Tap</b> an empty plot to place the item shown above. Three or more identical items touching merge into something better — grass → bush → tree → hut → house → mansion → castle → sky castle! The <b>crystal</b> becomes whatever helps most. Tap the <b>storage</b> to keep an item for later.</p>
+  <div class="stat" id="bestMenu"></div>
+  <button class="btn" id="startBtn">Found a village</button>
+</div></div>
+<div class="overlay hidden" id="over"><div class="card">
+  <h1>No room left</h1>
+  <div class="stat">Score <b id="finalScore">0</b></div>
+  <div class="stat">Grandest building <b id="topName">-</b></div>
+  <div class="stat">Best <b id="bestOver">0</b></div>
+  <button class="btn" id="againBtn">Build again</button>
+</div></div>
+
+<script>
+/*AUDIO-ENGINE-START*/
+// ---------- audio: procedural background music + sound effects ----------
+// Every note is synthesized with the Web Audio API at runtime, so the music
+// needs no files, works offline and carries no copyright.
+const GameAudio = (cfg) => {
+  let ctx = null, master = null, musicBus = null, sfxBus = null;
+  let timer = null, step = 0, nextT = 0, playing = false;
+  let musicOn = true;
+  try { musicOn = localStorage.getItem('music_off') !== '1'; } catch (e) {}
+
+  const SCALES = {
+    major: [0, 2, 4, 5, 7, 9, 11], minor: [0, 2, 3, 5, 7, 8, 10],
+    dorian: [0, 2, 3, 5, 7, 9, 10], lydian: [0, 2, 4, 6, 7, 9, 11],
+    pentaMajor: [0, 2, 4, 7, 9], pentaMinor: [0, 3, 5, 7, 10],
+    japanese: [0, 1, 5, 7, 8], phrygian: [0, 1, 3, 5, 7, 8, 10]
+  };
+  const scale = SCALES[cfg.scale] || SCALES.major;
+  const root = cfg.root || 57;
+  const bpm = cfg.bpm || 110;
+  const prog = cfg.prog || [0, 5, 3, 4];
+  const sixteenth = 60 / bpm / 4;
+
+  // deterministic random so each game always plays "its" tune
+  let seed = cfg.seed || 1;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
+
+  const deg = (d, oct = 0) => {
+    const n = scale.length;
+    const o = Math.floor(d / n);
+    return root + scale[((d % n) + n) % n] + 12 * (o + oct);
+  };
+  const hz = m => 440 * Math.pow(2, (m - 69) / 12);
+
+  // melody: two 2-bar phrases (A, B) arranged A A B A
+  function phrase() {
+    const notes = [];
+    let d = 2 + Math.floor(rnd() * 3);
+    for (let i = 0; i < 32; i++) {
+      const strong = i % 4 === 0;
+      if (rnd() < (strong ? 0.85 : (cfg.leadDensity || 0.35))) {
+        d += Math.round((rnd() - 0.5) * 4);
+        d = Math.max(0, Math.min(scale.length * 2, d));
+        const len = strong && rnd() < 0.5 ? 2 : 1;
+        notes.push({ i, d, len });
+      }
+    }
+    return notes;
+  }
+  const A = phrase(), B = phrase();
+  const song = [A, A, B, A];
+
+  function init() {
+    if (ctx) return;
+    try {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      master = ctx.createGain(); master.gain.value = 0.9; master.connect(ctx.destination);
+      musicBus = ctx.createGain(); musicBus.gain.value = cfg.volume || 0.16; musicBus.connect(master);
+      sfxBus = ctx.createGain(); sfxBus.gain.value = 1; sfxBus.connect(master);
+    } catch (e) { ctx = null; }
+  }
+
+  function voice(t, freq, dur, type, vol, opts = {}) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, t);
+    if (opts.detune) o.detune.value = opts.detune;
+    let node = o;
+    if (opts.cutoff) {
+      const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = opts.cutoff; f.Q.value = opts.q || 1;
+      o.connect(f); node = f;
+    }
+    const a = opts.attack || 0.008;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(vol, t + a);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    node.connect(g); g.connect(opts.bus || musicBus);
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+
+  let noiseBuf = null;
+  function noise(t, dur, vol, hp) {
+    if (!noiseBuf) {
+      noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 0.5, ctx.sampleRate);
+      const d = noiseBuf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    }
+    const s = ctx.createBufferSource(); s.buffer = noiseBuf;
+    const f = ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = hp;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.connect(f); f.connect(g); g.connect(musicBus);
+    s.start(t); s.stop(t + dur + 0.02);
+  }
+
+  function kick(t) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.setValueAtTime(140, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+    g.gain.setValueAtTime(0.9, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+    o.connect(g); g.connect(musicBus); o.start(t); o.stop(t + 0.25);
+  }
+
+  function playStep(s, t) {
+    const bar = Math.floor(s / 16);
+    const i16 = s % 16;
+    const chordDeg = prog[bar % prog.length];
+    const w = cfg.waves || {};
+    // bass
+    const bassPat = cfg.bassPattern || [0, 8];
+    if (bassPat.includes(i16)) voice(t, hz(deg(chordDeg, -2)), sixteenth * 3.5, w.bass || 'triangle', 0.5, { cutoff: 600 });
+    // pad (chord) at bar start
+    if (cfg.pad && i16 === 0) {
+      for (const k of [0, 2, 4]) voice(t, hz(deg(chordDeg + k, -1)), sixteenth * 15, w.pad || 'sine', 0.12, { attack: 0.3, cutoff: 1400, detune: k * 3 });
+    }
+    // arpeggio
+    if (cfg.arp && i16 % (cfg.arpEvery || 2) === 0) {
+      const k = [0, 2, 4, 2][(i16 / (cfg.arpEvery || 2)) % 4];
+      voice(t, hz(deg(chordDeg + k, cfg.arpOct || 0)), sixteenth * 1.6, w.arp || 'square', 0.1, { cutoff: cfg.arpCutoff || 2200 });
+    }
+    // lead melody
+    const ph = song[Math.floor(bar / 2) % song.length];
+    const pi = (bar % 2) * 16 + i16;
+    for (const n of ph) if (n.i === pi) {
+      voice(t, hz(deg(n.d, cfg.leadOct || 0)), sixteenth * (n.len * 2 + 0.5), w.lead || 'triangle', 0.22, { cutoff: cfg.leadCutoff || 3000 });
+    }
+    // drums
+    if (cfg.drums) {
+      if (i16 % 8 === 0 || (cfg.drums === 'busy' && i16 === 10)) kick(t);
+      if (i16 % 8 === 4) noise(t, 0.14, 0.35, 1500);
+      if (i16 % 2 === 0) noise(t, 0.04, cfg.drums === 'soft' ? 0.06 : 0.12, 7000);
+    }
+  }
+
+  function scheduler() {
+    if (!ctx || !playing) return;
+    while (nextT < ctx.currentTime + 0.15) {
+      playStep(step, nextT);
+      nextT += sixteenth * (cfg.swing && step % 2 === 0 ? 1 + cfg.swing : cfg.swing ? 1 - cfg.swing : 1);
+      step++;
+    }
+  }
+
+  function startMusic() {
+    if (!ctx || playing || !musicOn) return;
+    playing = true;
+    musicBus.gain.cancelScheduledValues(ctx.currentTime);
+    musicBus.gain.setValueAtTime(0.0001, ctx.currentTime);
+    musicBus.gain.linearRampToValueAtTime(cfg.volume || 0.16, ctx.currentTime + 1.2);
+    nextT = ctx.currentTime + 0.05;
+    timer = setInterval(scheduler, 40);
+  }
+  function stopMusic() {
+    playing = false;
+    if (timer) clearInterval(timer);
+    timer = null;
+  }
+
+  // mute button
+  const btn = document.createElement('button');
+  btn.setAttribute('aria-label', 'Toggle music');
+  btn.style.cssText = 'position:fixed;z-index:50;right:max(14px,env(safe-area-inset-right));bottom:max(14px,env(safe-area-inset-bottom));' +
+    'width:42px;height:42px;border-radius:50%;border:none;cursor:pointer;font-size:20px;line-height:42px;padding:0;' +
+    'background:' + (cfg.btnBg || 'rgba(0,0,0,.35)') + ';color:' + (cfg.btnColor || '#fff') + ';backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);';
+  const paint = () => { btn.textContent = musicOn ? '♪' : '✕'; btn.style.opacity = musicOn ? '1' : '.6'; };
+  paint();
+  const toggle = e => {
+    e.stopPropagation(); e.preventDefault();
+    musicOn = !musicOn;
+    try { localStorage.setItem('music_off', musicOn ? '0' : '1'); } catch (err) {}
+    init();
+    if (ctx && ctx.state === 'suspended') ctx.resume();
+    if (musicOn) startMusic(); else stopMusic();
+    paint();
+  };
+  btn.addEventListener('pointerdown', e => e.stopPropagation());
+  btn.addEventListener('pointerup', e => e.stopPropagation());
+  btn.addEventListener('click', toggle);
+  document.addEventListener('DOMContentLoaded', () => document.body.appendChild(btn));
+  if (document.body) document.body.appendChild(btn);
+
+  document.addEventListener('visibilitychange', () => {
+    if (!ctx) return;
+    if (document.hidden) ctx.suspend(); else ctx.resume();
+  });
+
+  return {
+    // call from a user gesture (start button) — browsers only allow audio after one
+    start() {
+      init();
+      if (!ctx) return;
+      if (ctx.state === 'suspended') ctx.resume();
+      startMusic();
+    },
+    sfx(freq, dur, type = 'sine', vol = 0.07, to = 0) {
+      init();
+      if (!ctx) return;
+      try {
+        const t = ctx.currentTime;
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.type = type; o.frequency.setValueAtTime(freq, t);
+        if (to) o.frequency.exponentialRampToValueAtTime(Math.max(30, to), t + dur);
+        g.gain.setValueAtTime(vol, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+        o.connect(g); g.connect(sfxBus);
+        o.start(t); o.stop(t + dur + 0.02);
+      } catch (e) {}
+    }
+  };
+};
+/*AUDIO-ENGINE-END*/
+/*SPRITES-START*/
+// ---------- sprites: detailed SVG artwork rasterised once into canvases ----------
+// Each piece is authored as an SVG (gradients, highlights, shadows, glow) and
+// drawn into an offscreen canvas at load time, so the game loop just blits images.
+const loadSprites = (defs, px = 160) => Promise.all(Object.entries(defs).map(([name, svg]) => new Promise(done => {
+  const img = new Image();
+  const finish = ok => {
+    const c = document.createElement('canvas');
+    const w = Array.isArray(px) ? px[0] : px, h = Array.isArray(px) ? px[1] : px;
+    c.width = w; c.height = h;
+    if (ok) c.getContext('2d').drawImage(img, 0, 0, w, h);
+    done([name, c]);
+  };
+  img.onload = () => finish(true);
+  img.onerror = () => finish(false);
+  img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+}))).then(entries => Object.fromEntries(entries));
+
+// small helpers for writing SVG
+const svgDoc = (body, vb = '0 0 100 100') => '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + vb + '">' + body + '</svg>';
+const shade = (hex, amt) => {
+  const n = parseInt(hex.slice(1), 16);
+  const f = v => Math.max(0, Math.min(255, Math.round(amt < 0 ? v * (1 + amt) : v + (255 - v) * amt)));
+  return '#' + [n >> 16, (n >> 8) & 255, n & 255].map(f).map(v => v.toString(16).padStart(2, '0')).join('');
+};
+/*SPRITES-END*/
+(() => {
+  const audio = GameAudio({
+    bpm: 96, scale: 'major', root: 62, prog: [0, 4, 5, 3], seed: 409,
+    waves: { lead: 'triangle', bass: 'triangle', arp: 'sine', pad: 'sine' },
+    pad: true, arp: true, arpEvery: 2, arpOct: 1, leadOct: 1, leadDensity: 0.25, drums: 'soft', bassPattern: [0, 8, 12], volume: 0.17,
+    btnBg: 'rgba(58,42,20,.5)', btnColor: '#fff8e6'
+  });
+  const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+  const $ = id => document.getElementById(id);
+  const KEY = 'village_triple_best';
+  let best = 0; try { best = +localStorage.getItem(KEY) || 0; } catch (e) {}
+  $('bestMenu').innerHTML = best ? 'Best <b>' + best + '</b>' : '';
+
+  // ---------- village artwork (3/4 view) ----------
+  const SH = '<filter id="s" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="2" dy="4" stdDeviation="2" flood-color="#1c3a0a" flood-opacity=".45"/></filter>';
+  const lg = (id, a, b) => '<linearGradient id="' + id + '" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="' + a + '"/><stop offset="1" stop-color="' + b + '"/></linearGradient>';
+  const ground = '<ellipse cx="50" cy="86" rx="34" ry="8" fill="#000" opacity=".18"/>';
+  const house = (w, h, wall, roof, floors = 1, x0 = 50) => {
+    const x = x0 - w / 2, top = 86 - h;
+    let s = '<rect x="' + x + '" y="' + top + '" width="' + w + '" height="' + h + '" fill="url(#wall)"/>' +
+      '<rect x="' + (x + w * 0.62) + '" y="' + top + '" width="' + w * 0.38 + '" height="' + h + '" fill="#000" opacity=".12"/>' +
+      '<path d="M' + (x - 6) + ' ' + top + ' L ' + x0 + ' ' + (top - h * 0.75) + ' L ' + (x + w + 6) + ' ' + top + ' Z" fill="url(#roof)"/>' +
+      '<path d="M' + x0 + ' ' + (top - h * 0.75) + ' L ' + (x + w + 6) + ' ' + top + ' L ' + x0 + ' ' + top + ' Z" fill="#000" opacity=".15"/>' +
+      '<rect x="' + (x0 - 5) + '" y="' + (86 - h * 0.45) + '" width="10" height="' + h * 0.45 + '" rx="5" fill="#6b3a14"/>';
+    for (let f = 0; f < floors; f++) {
+      const wy = top + 6 + f * (h / floors);
+      s += '<rect x="' + (x + 5) + '" y="' + wy + '" width="8" height="8" fill="#ffe8a0" stroke="#6b3a14" stroke-width="1.5"/><rect x="' + (x + w - 13) + '" y="' + wy + '" width="8" height="8" fill="#ffe8a0" stroke="#6b3a14" stroke-width="1.5"/>';
+    }
+    return '<defs>' + lg('wall', wall, shade(wall, -0.15)) + lg('roof', roof, shade(roof, -0.3)) + '</defs>' + s;
+  };
+  const tower = (x, w, h, col, roofCol) => '<rect x="' + (x - w / 2) + '" y="' + (86 - h) + '" width="' + w + '" height="' + h + '" fill="' + col + '"/><rect x="' + (x + w * 0.15) + '" y="' + (86 - h) + '" width="' + w * 0.35 + '" height="' + h + '" fill="#000" opacity=".12"/>' +
+    '<path d="M' + (x - w / 2 - 3) + ' ' + (86 - h) + ' L ' + x + ' ' + (86 - h - w * 1.3) + ' L ' + (x + w / 2 + 3) + ' ' + (86 - h) + ' Z" fill="' + roofCol + '"/>' +
+    '<rect x="' + (x - 2.5) + '" y="' + (86 - h + 8) + '" width="5" height="8" rx="2.5" fill="#2a1a3a"/>';
+  const ITEMS = [
+    { name: 'Grass', pts: 5, svg: svgDoc('<defs>' + SH + '</defs>' + ground + '<g filter="url(#s)">' + [[-14, 0], [0, -4], [14, 0], [-6, 4], [8, 4]].map(([dx, dy]) => '<path d="M' + (50 + dx - 6) + ' ' + (82 + dy) + ' Q ' + (50 + dx - 8) + ' ' + (62 + dy) + ' ' + (50 + dx - 2) + ' ' + (54 + dy) + ' Q ' + (50 + dx) + ' ' + (68 + dy) + ' ' + (50 + dx + 2) + ' ' + (56 + dy) + ' Q ' + (50 + dx + 8) + ' ' + (66 + dy) + ' ' + (50 + dx + 6) + ' ' + (82 + dy) + ' Z" fill="' + (dx % 2 ? '#5cb030' : '#7cd040') + '"/>').join('') + '</g>') },
+    { name: 'Bush', pts: 20, svg: svgDoc('<defs>' + SH + '<radialGradient id="b" cx="35%" cy="30%" r="75%"><stop offset="0" stop-color="#b8f07a"/><stop offset=".6" stop-color="#4caa2a"/><stop offset="1" stop-color="#1c5a0a"/></radialGradient></defs>' + ground + '<g filter="url(#s)">' + [[36, 66, 16], [64, 66, 16], [50, 56, 20], [50, 70, 18]].map(([x, y, r]) => '<circle cx="' + x + '" cy="' + y + '" r="' + r + '" fill="url(#b)"/>').join('') + '</g>' + [[40, 54], [60, 60], [50, 72]].map(([x, y]) => '<circle cx="' + x + '" cy="' + y + '" r="3.5" fill="#ff5a7a"/>').join('')) },
+    { name: 'Tree', svg: svgDoc('<defs>' + SH + lg('t', '#7cd040', '#1c6a1c') + '</defs>' + ground + '<g filter="url(#s)"><rect x="46" y="68" width="8" height="18" fill="#6b3a14"/>' +
+      [[10, 70, 34], [20, 52, 28], [30, 36, 22]].map(([y, base, w]) => '<path d="M50 ' + y + ' L ' + (50 + w) + ' ' + base + ' L ' + (50 - w) + ' ' + base + ' Z" fill="url(#t)"/>').join('') + '</g>' + '<path d="M50 10 L 30 36" stroke="#fff" stroke-width="2" opacity=".3"/>'), pts: 100 },
+    { name: 'Hut', pts: 500, svg: svgDoc('<defs>' + SH + '</defs>' + ground + '<g filter="url(#s)">' + house(40, 26, '#d9b07a', '#c8a040') + '</g>' + '<path d="M28 58 L 72 58" stroke="#8a6a20" stroke-width="2" opacity=".5"/>') },
+    { name: 'House', pts: 1500, svg: svgDoc('<defs>' + SH + '</defs>' + ground + '<g filter="url(#s)">' + house(50, 34, '#f4ead8', '#d0402a') + '<rect x="62" y="34" width="7" height="14" fill="#8a5a3a"/></g>') },
+    { name: 'Mansion', pts: 5000, svg: svgDoc('<defs>' + SH + '</defs>' + ground + '<g filter="url(#s)">' + house(70, 44, '#e8e0f0', '#3a6ab0', 2) + '<rect x="24" y="26" width="6" height="14" fill="#8a5a3a"/><rect x="70" y="26" width="6" height="14" fill="#8a5a3a"/></g>') },
+    { name: 'Castle', pts: 20000, svg: svgDoc('<defs>' + SH + '</defs>' + ground + '<g filter="url(#s)">' +
+      '<rect x="22" y="44" width="56" height="42" fill="#b8b0a8"/><rect x="56" y="44" width="22" height="42" fill="#000" opacity=".1"/>' +
+      [24, 34, 44, 54, 64].map(x => '<rect x="' + x + '" y="38" width="6" height="8" fill="#b8b0a8"/>').join('') +
+      tower(22, 16, 54, '#a8a098', '#5a3a8a') + tower(78, 16, 54, '#a8a098', '#5a3a8a') + tower(50, 18, 66, '#c8c0b8', '#7a3aaa') +
+      '<path d="M44 86 L 44 72 Q 50 64 56 72 L 56 86 Z" fill="#4a2a14"/><path d="M50 4 L 50 -8 L 60 -4 L 50 0" fill="#ff4a4a" stroke="#4a2a14" stroke-width="1"/></g>', '-6 -12 112 112') },
+    { name: 'Sky Castle', pts: 100000, svg: svgDoc('<defs>' + SH + '<radialGradient id="au"><stop offset="0" stop-color="#fff6c0" stop-opacity=".9"/><stop offset="1" stop-color="#fff6c0" stop-opacity="0"/></radialGradient></defs>' +
+      '<circle cx="50" cy="50" r="52" fill="url(#au)"/><g filter="url(#s)">' +
+      [[30, 80, 16], [50, 84, 20], [70, 80, 16], [40, 74, 14], [60, 74, 14]].map(([x, y, r]) => '<circle cx="' + x + '" cy="' + y + '" r="' + r + '" fill="#fff"/>').join('') +
+      '<g transform="translate(0 -12)"><rect x="26" y="44" width="48" height="34" fill="#f4e6b0"/>' + tower(26, 14, 46, '#f0dc98', '#ffb020') + tower(74, 14, 46, '#f0dc98', '#ffb020') + tower(50, 16, 58, '#fff0c0', '#ffd23f') + '</g></g>' +
+      [[16, 30], [84, 26], [50, 0], [20, 60], [82, 62]].map(([x, y]) => '<path d="M' + x + ' ' + (y - 5) + ' l1.6 3.4 l3.4 1.6 l-3.4 1.6 l-1.6 3.4 l-1.6 -3.4 l-3.4 -1.6 l3.4 -1.6 Z" fill="#fff"/>').join(''), '-5 -10 110 110') }
+  ];
+  const rockSVG = svgDoc('<defs>' + SH + lg('r', '#c8c0b8', '#6a6258') + '</defs>' + ground + '<g filter="url(#s)"><path d="M22 84 L 28 60 L 44 48 L 62 52 L 76 64 L 80 84 Z" fill="url(#r)"/><path d="M44 48 L 50 66 L 76 64" stroke="#5a5248" stroke-width="2" fill="none" opacity=".6"/><path d="M28 62 C 34 58, 40 56, 44 50" stroke="#fff" stroke-width="2" fill="none" opacity=".4"/></g>');
+  const crystalSVG = svgDoc('<defs>' + SH + '<linearGradient id="c" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff7ad9"/><stop offset=".35" stop-color="#7ad0ff"/><stop offset=".7" stop-color="#9aff8a"/><stop offset="1" stop-color="#ffe066"/></linearGradient></defs>' + ground +
+    '<g filter="url(#s)"><path d="M50 14 L 72 40 L 50 86 L 28 40 Z" fill="url(#c)"/><path d="M50 14 L 58 40 L 50 86 L 42 40 Z" fill="#fff" opacity=".35"/><path d="M28 40 L 72 40" stroke="#fff" stroke-width="2" opacity=".7"/></g>' +
+    '<path d="M74 22 l2 5 l5 2 l-5 2 l-2 5 l-2 -5 l-5 -2 l5 -2 Z" fill="#fff"/>');
+  const plotSVG = svgDoc('<defs>' + lg('g', '#9ad86a', '#6fb04a') + '</defs><rect x="1" y="1" width="98" height="98" rx="10" fill="url(#g)"/><rect x="1" y="1" width="98" height="98" rx="10" fill="none" stroke="#5c9a3a" stroke-width="2"/>' +
+    '<path d="M16 22 l2 -5 l2 5 M70 76 l2 -5 l2 5 M80 30 l2 -4 l2 4" stroke="#5c9a3a" stroke-width="1.5" fill="none"/>');
+
+  let SPR = null;
+  const defs = { rock: rockSVG, crystal: crystalSVG, plot: plotSVG }; ITEMS.forEach((it, i) => defs['i' + i] = it.svg);
+  loadSprites(defs, 160).then(s => { SPR = s; const lc = $('logo').getContext('2d'); ITEMS.forEach((it, i) => lc.drawImage(SPR['i' + i], i * 84 + 2, 8, 110, 110)); });
+
+  const N = 6, ROCK = 'rock', WILD = 'crystal';
+  let W, H, DPR, cell, bx, by, topH;
+  function resize() {
+    DPR = Math.min(devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight;
+    canvas.width = W * DPR; canvas.height = H * DPR; ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    topH = Math.min(120, H * 0.16);
+    cell = Math.min(W * 0.96 / N, (H - topH - 40) / N, 92);
+    bx = (W - cell * N) / 2; by = Math.max(topH + 20, (H - cell * N) / 2 + topH / 2);
+  }
+  addEventListener('resize', resize); resize();
+
+  let state = 'menu', grid, cur, stash, score, t = 0, pops = [], floats = [], topTier = 0;
+  function draw() {
+    const r = Math.random();
+    if (r < 0.04) return WILD;
+    if (r < 0.06) return ROCK;
+    if (r < 0.1) return 2;
+    if (r < 0.28) return 1;
+    return 0;
+  }
+  function start() {
+    if (!SPR) return;
+    grid = [...Array(N)].map(() => Array(N).fill(null));
+    for (let i = 0; i < 6; i++) { const r = Math.floor(Math.random() * N), c = Math.floor(Math.random() * N); grid[r][c] = Math.random() < 0.3 ? ROCK : Math.random() < 0.7 ? 0 : 1; }
+    // make sure nothing starts pre-merged
+    for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) if (typeof grid[r][c] === 'number' && group(r, c, grid[r][c]).length >= 3) grid[r][c] = null;
+    cur = draw(); stash = null; score = 0; topTier = 0; pops = []; floats = [];
+    state = 'play'; audio.start();
+    $('menu').classList.add('hidden'); $('over').classList.add('hidden');
+  }
+  $('startBtn').onclick = start; $('againBtn').onclick = start;
+  function group(r, c, tier) {
+    const seen = new Set([r * N + c]), q = [[r, c]], out = [];
+    while (q.length) {
+      const [y, x] = q.pop(); out.push([y, x]);
+      for (const [dy, dx] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const ny = y + dy, nx = x + dx; if (ny < 0 || ny >= N || nx < 0 || nx >= N) continue;
+        const k = ny * N + nx; if (seen.has(k) || grid[ny][nx] !== tier) continue;
+        seen.add(k); q.push([ny, nx]);
+      }
+    }
+    return out;
+  }
+  function resolveAt(r, c) {
+    let chain = 0;
+    while (typeof grid[r][c] === 'number' && grid[r][c] < ITEMS.length - 1) {
+      const tier = grid[r][c], g = group(r, c, tier);
+      if (g.length < 3) break;
+      chain++;
+      for (const [y, x] of g) { if (y !== r || x !== c) { grid[y][x] = null; pops.push({ x: bx + (x + 0.5) * cell, y: by + (y + 0.5) * cell, tx: bx + (c + 0.5) * cell, ty: by + (r + 0.5) * cell, t: 0, tier }); } }
+      grid[r][c] = tier + 1; topTier = Math.max(topTier, tier + 1);
+      const gain = ITEMS[tier + 1].pts * (g.length > 3 ? 2 : 1);
+      score += gain; floats.push({ txt: '+' + gain, x: bx + (c + 0.5) * cell, y: by + (r + 0.2) * cell, life: 1.2 });
+      setTimeout(() => audio.sfx(330 * Math.pow(2, (tier + 1) / 4), 0.3, 'triangle', 0.08, 660 * Math.pow(2, (tier + 1) / 4)), chain * 120);
+    }
+    return chain;
+  }
+  function place(r, c) {
+    if (state !== 'play' || grid[r][c] !== null) return;
+    let item = cur;
+    if (item === WILD) {
+      // try every neighbouring tier from the best down; otherwise it hardens into a rock
+      const cands = new Set();
+      for (const [dy, dx] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const v = grid[r + dy] && grid[r + dy][c + dx]; if (typeof v === 'number') cands.add(v); }
+      item = ROCK;
+      for (const tier of [...cands].sort((a, b) => b - a)) { grid[r][c] = tier; if (group(r, c, tier).length >= 3) { item = tier; break; } }
+      grid[r][c] = null;
+    }
+    grid[r][c] = item;
+    if (typeof item === 'number') { score += ITEMS[item].pts; resolveAt(r, c); }
+    audio.sfx(item === ROCK ? 140 : 520, 0.1, 'triangle', 0.06, item === ROCK ? 90 : 700);
+    cur = draw();
+    if (!grid.some(row => row.some(v => v === null))) end();
+  }
+  function end() {
+    state = 'over';
+    if (score > best) { best = score; try { localStorage.setItem(KEY, best); } catch (e) {} }
+    $('finalScore').textContent = score; $('bestOver').textContent = best; $('topName').textContent = ITEMS[topTier].name;
+    $('bestMenu').innerHTML = 'Best <b>' + best + '</b>';
+    audio.sfx(300, 0.7, 'sine', 0.07, 120);
+    setTimeout(() => $('over').classList.remove('hidden'), 700);
+  }
+  const stashRect = () => ({ x: W / 2 + 60, y: (topH - 70) / 2 + 6, w: 70, h: 70 });
+  let hover = null;
+  canvas.addEventListener('pointermove', e => { const c = Math.floor((e.clientX - bx) / cell), r = Math.floor((e.clientY - by) / cell); hover = r >= 0 && r < N && c >= 0 && c < N ? [r, c] : null; });
+  canvas.addEventListener('pointerdown', e => {
+    if (state !== 'play') return;
+    const sr = stashRect();
+    if (e.clientX >= sr.x && e.clientX <= sr.x + sr.w && e.clientY >= sr.y && e.clientY <= sr.y + sr.h) {
+      if (stash === null) { stash = cur; cur = draw(); } else { const tmp = stash; stash = cur; cur = tmp; }
+      audio.sfx(440, 0.08, 'sine', 0.05); return;
+    }
+    const c = Math.floor((e.clientX - bx) / cell), r = Math.floor((e.clientY - by) / cell);
+    if (r >= 0 && r < N && c >= 0 && c < N) place(r, c);
+  });
+  addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && state === 'menu') { e.preventDefault(); start(); } });
+
+  function update(dt) {
+    t += dt;
+    for (const p of pops) p.t += dt * 3;
+    pops = pops.filter(p => p.t < 1);
+    for (const f of floats) { f.y -= 30 * dt; f.life -= dt; }
+    floats = floats.filter(f => f.life > 0);
+  }
+  const spr = v => v === ROCK ? SPR.rock : v === WILD ? SPR.crystal : SPR['i' + v];
+
+  function render() {
+    const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#9ad8ff'); g.addColorStop(0.25, '#c8ecff'); g.addColorStop(0.26, '#8fcc5a'); g.addColorStop(1, '#5c9a3a');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    // distant hills
+    ctx.fillStyle = '#7cbc4a'; ctx.beginPath(); ctx.moveTo(0, H * 0.27); for (let x = 0; x <= W; x += 20) ctx.lineTo(x, H * 0.24 - Math.abs(Math.sin(x * 0.006)) * 40); ctx.lineTo(W, H * 0.27); ctx.fill();
+    if (!SPR || !grid) return;
+    // top bar: current item + storage + score
+    ctx.fillStyle = 'rgba(255,248,230,.92)'; ctx.beginPath(); ctx.roundRect ? ctx.roundRect(W / 2 - 170, 6, 340, topH - 6, 16) : ctx.rect(W / 2 - 170, 6, 340, topH - 6); ctx.fill();
+    ctx.fillStyle = '#3a2a14'; ctx.textAlign = 'center'; ctx.font = '12px Georgia, serif';
+    ctx.fillText('SCORE', W / 2 - 110, 28); ctx.font = 'bold 24px Georgia, serif'; ctx.fillText(score, W / 2 - 110, 56);
+    ctx.font = '12px Georgia, serif'; ctx.fillText('NEXT', W / 2, 24); ctx.fillText('STORAGE', W / 2 + 95, 24);
+    const isz = Math.min(76, topH - 30);
+    ctx.drawImage(spr(cur), W / 2 - isz / 2, 28 + Math.sin(t * 3) * 2, isz, isz);
+    const sr = stashRect();
+    ctx.strokeStyle = '#8a5a2c'; ctx.setLineDash([5, 4]); ctx.lineWidth = 2; ctx.strokeRect(sr.x, sr.y + 20, sr.w, sr.h - 10); ctx.setLineDash([]);
+    if (stash !== null) ctx.drawImage(spr(stash), sr.x + 5, sr.y + 22, sr.w - 10, sr.w - 10);
+    // board
+    ctx.fillStyle = '#5a3a1c'; ctx.fillRect(bx - 6, by - 6, N * cell + 12, N * cell + 12);
+    for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) ctx.drawImage(SPR.plot, bx + c * cell, by + r * cell, cell, cell);
+    if (hover && grid[hover[0]][hover[1]] === null && state === 'play') { ctx.globalAlpha = 0.45; ctx.drawImage(spr(cur), bx + hover[1] * cell, by + hover[0] * cell, cell, cell); ctx.globalAlpha = 1; }
+    for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+      const v = grid[r][c]; if (v === null) continue;
+      const bob = typeof v === 'number' && v >= 6 ? Math.sin(t * 2 + c) * 3 : 0;
+      ctx.drawImage(spr(v), bx + c * cell + cell * 0.02, by + r * cell - cell * 0.06 + bob, cell * 0.96, cell * 0.96);
+    }
+    for (const p of pops) { const k = p.t * p.t; ctx.globalAlpha = 1 - p.t; ctx.drawImage(SPR['i' + p.tier], p.x + (p.tx - p.x) * k - cell * 0.4, p.y + (p.ty - p.y) * k - cell * 0.4, cell * 0.8, cell * 0.8); }
+    ctx.globalAlpha = 1;
+    for (const f of floats) { ctx.globalAlpha = Math.min(1, f.life * 2); ctx.font = 'bold 20px Georgia, serif'; ctx.textAlign = 'center'; ctx.lineWidth = 4; ctx.strokeStyle = '#fff'; ctx.strokeText(f.txt, f.x, f.y); ctx.fillStyle = '#8a3a1c'; ctx.fillText(f.txt, f.x, f.y); }
+    ctx.globalAlpha = 1;
+  }
+
+  let last = performance.now();
+  (function loop(now) {
+    const dt = Math.max(0, Math.min(0.033, (now - last) / 1000)); last = now;
+    update(dt); render(); requestAnimationFrame(loop);
+  })(last);
+})();
+</script>
+</body>
+</html>

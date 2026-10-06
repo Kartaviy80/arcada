@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0c0a1a">
+<title>Crystal Columns</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #0c0a1a;
+    font-family: "Copperplate", "Copperplate Gothic Light", "Trebuchet MS", sans-serif; color: #dcd6ff;
+    touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+  canvas { display: block; width: 100%; height: 100%; }
+  .overlay { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; padding: 24px; text-align: center; background: #0c0a1add; transition: opacity .3s; }
+  .overlay.hidden { opacity: 0; pointer-events: none; }
+  .overlay canvas { width: min(300px, 80vw); height: auto; }
+  h1 { font-size: clamp(34px, 10vw, 56px); letter-spacing: 6px; background: linear-gradient(90deg, #ff6a8a, #ffd23f, #6aff9a, #6ac8ff, #c86aff); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  p { max-width: 320px; font-family: "Segoe UI", sans-serif; font-size: 14px; line-height: 1.7; color: #b8b0e0; }
+  .stat { letter-spacing: 3px; } .stat b { color: #fff; }
+  .btn { border: 2px solid #c86aff; background: #c86aff22; color: #fff; font: inherit; font-size: 18px; letter-spacing: 5px; padding: 14px 40px; border-radius: 6px; cursor: pointer; box-shadow: 0 0 20px #c86aff55; }
+  .btn:active { background: #c86aff55; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div class="overlay" id="menu">
+  <canvas id="logo" width="600" height="160"></canvas>
+  <h1>CRYSTAL COLUMNS</h1>
+  <p><b>Drag</b> sideways to move the falling column, <b>tap</b> to cycle its crystals, <b>swipe down</b> to drop. Line up 3+ of a colour — across, down or diagonally. Chains multiply your score.<br>Keys: ← → move · ↑ cycle · ↓ fall · Space drop</p>
+  <div class="stat" id="bestMenu"></div>
+  <button class="btn" id="startBtn">START</button>
+</div>
+<div class="overlay hidden" id="over">
+  <h1>CAVE-IN</h1>
+  <div class="stat">SCORE <b id="finalScore">0</b></div>
+  <div class="stat">LEVEL <b id="finalLevel">1</b> · BEST <b id="bestOver">0</b></div>
+  <button class="btn" id="againBtn">AGAIN</button>
+</div>
+
+<script>
+/*AUDIO-ENGINE-START*/
+// ---------- audio: procedural background music + sound effects ----------
+// Every note is synthesized with the Web Audio API at runtime, so the music
+// needs no files, works offline and carries no copyright.
+const GameAudio = (cfg) => {
+  let ctx = null, master = null, musicBus = null, sfxBus = null;
+  let timer = null, step = 0, nextT = 0, playing = false;
+  let musicOn = true;
+  try { musicOn = localStorage.getItem('music_off') !== '1'; } catch (e) {}
+
+  const SCALES = {
+    major: [0, 2, 4, 5, 7, 9, 11], minor: [0, 2, 3, 5, 7, 8, 10],
+    dorian: [0, 2, 3, 5, 7, 9, 10], lydian: [0, 2, 4, 6, 7, 9, 11],
+    pentaMajor: [0, 2, 4, 7, 9], pentaMinor: [0, 3, 5, 7, 10],
+    japanese: [0, 1, 5, 7, 8], phrygian: [0, 1, 3, 5, 7, 8, 10]
+  };
+  const scale = SCALES[cfg.scale] || SCALES.major;
+  const root = cfg.root || 57;
+  const bpm = cfg.bpm || 110;
+  const prog = cfg.prog || [0, 5, 3, 4];
+  const sixteenth = 60 / bpm / 4;
+
+  // deterministic random so each game always plays "its" tune
+  let seed = cfg.seed || 1;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
+
+  const deg = (d, oct = 0) => {
+    const n = scale.length;
+    const o = Math.floor(d / n);
+    return root + scale[((d % n) + n) % n] + 12 * (o + oct);
+  };
+  const hz = m => 440 * Math.pow(2, (m - 69) / 12);
+
+  // melody: two 2-bar phrases (A, B) arranged A A B A
+  function phrase() {
+    const notes = [];
+    let d = 2 + Math.floor(rnd() * 3);
+    for (let i = 0; i < 32; i++) {
+      const strong = i % 4 === 0;
+      if (rnd() < (strong ? 0.85 : (cfg.leadDensity || 0.35))) {
+        d += Math.round((rnd() - 0.5) * 4);
+        d = Math.max(0, Math.min(scale.length * 2, d));
+        const len = strong && rnd() < 0.5 ? 2 : 1;
+        notes.push({ i, d, len });
+      }
+    }
+    return notes;
+  }
+  const A = phrase(), B = phrase();
+  const song = [A, A, B, A];
+
+  function init() {
+    if (ctx) return;
+    try {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      master = ctx.createGain(); master.gain.value = 0.9; master.connect(ctx.destination);
+      musicBus = ctx.createGain(); musicBus.gain.value = cfg.volume || 0.16; musicBus.connect(master);
+      sfxBus = ctx.createGain(); sfxBus.gain.value = 1; sfxBus.connect(master);
+    } catch (e) { ctx = null; }
+  }
+
+  function voice(t, freq, dur, type, vol, opts = {}) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, t);
+    if (opts.detune) o.detune.value = opts.detune;
+    let node = o;
+    if (opts.cutoff) {
+      const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = opts.cutoff; f.Q.value = opts.q || 1;
+      o.connect(f); node = f;
+    }
+    const a = opts.attack || 0.008;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(vol, t + a);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    node.connect(g); g.connect(opts.bus || musicBus);
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+
+  let noiseBuf = null;
+  function noise(t, dur, vol, hp) {
+    if (!noiseBuf) {
+      noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 0.5, ctx.sampleRate);
+      const d = noiseBuf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    }
+    const s = ctx.createBufferSource(); s.buffer = noiseBuf;
+    const f = ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = hp;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.connect(f); f.connect(g); g.connect(musicBus);
+    s.start(t); s.stop(t + dur + 0.02);
+  }
+
+  function kick(t) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.setValueAtTime(140, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+    g.gain.setValueAtTime(0.9, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+    o.connect(g); g.connect(musicBus); o.start(t); o.stop(t + 0.25);
+  }
+
+  function playStep(s, t) {
+    const bar = Math.floor(s / 16);
+    const i16 = s % 16;
+    const chordDeg = prog[bar % prog.length];
+    const w = cfg.waves || {};
+    // bass
+    const bassPat = cfg.bassPattern || [0, 8];
+    if (bassPat.includes(i16)) voice(t, hz(deg(chordDeg, -2)), sixteenth * 3.5, w.bass || 'triangle', 0.5, { cutoff: 600 });
+    // pad (chord) at bar start
+    if (cfg.pad && i16 === 0) {
+      for (const k of [0, 2, 4]) voice(t, hz(deg(chordDeg + k, -1)), sixteenth * 15, w.pad || 'sine', 0.12, { attack: 0.3, cutoff: 1400, detune: k * 3 });
+    }
+    // arpeggio
+    if (cfg.arp && i16 % (cfg.arpEvery || 2) === 0) {
+      const k = [0, 2, 4, 2][(i16 / (cfg.arpEvery || 2)) % 4];
+      voice(t, hz(deg(chordDeg + k, cfg.arpOct || 0)), sixteenth * 1.6, w.arp || 'square', 0.1, { cutoff: cfg.arpCutoff || 2200 });
+    }
+    // lead melody
+    const ph = song[Math.floor(bar / 2) % song.length];
+    const pi = (bar % 2) * 16 + i16;
+    for (const n of ph) if (n.i === pi) {
+      voice(t, hz(deg(n.d, cfg.leadOct || 0)), sixteenth * (n.len * 2 + 0.5), w.lead || 'triangle', 0.22, { cutoff: cfg.leadCutoff || 3000 });
+    }
+    // drums
+    if (cfg.drums) {
+      if (i16 % 8 === 0 || (cfg.drums === 'busy' && i16 === 10)) kick(t);
+      if (i16 % 8 === 4) noise(t, 0.14, 0.35, 1500);
+      if (i16 % 2 === 0) noise(t, 0.04, cfg.drums === 'soft' ? 0.06 : 0.12, 7000);
+    }
+  }
+
+  function scheduler() {
+    if (!ctx || !playing) return;
+    while (nextT < ctx.currentTime + 0.15) {
+      playStep(step, nextT);
+      nextT += sixteenth * (cfg.swing && step % 2 === 0 ? 1 + cfg.swing : cfg.swing ? 1 - cfg.swing : 1);
+      step++;
+    }
+  }
+
+  function startMusic() {
+    if (!ctx || playing || !musicOn) return;
+    playing = true;
+    musicBus.gain.cancelScheduledValues(ctx.currentTime);
+    musicBus.gain.setValueAtTime(0.0001, ctx.currentTime);
+    musicBus.gain.linearRampToValueAtTime(cfg.volume || 0.16, ctx.currentTime + 1.2);
+    nextT = ctx.currentTime + 0.05;
+    timer = setInterval(scheduler, 40);
+  }
+  function stopMusic() {
+    playing = false;
+    if (timer) clearInterval(timer);
+    timer = null;
+  }
+
+  // mute button
+  const btn = document.createElement('button');
+  btn.setAttribute('aria-label', 'Toggle music');
+  btn.style.cssText = 'position:fixed;z-index:50;right:max(14px,env(safe-area-inset-right));bottom:max(14px,env(safe-area-inset-bottom));' +
+    'width:42px;height:42px;border-radius:50%;border:none;cursor:pointer;font-size:20px;line-height:42px;padding:0;' +
+    'background:' + (cfg.btnBg || 'rgba(0,0,0,.35)') + ';color:' + (cfg.btnColor || '#fff') + ';backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);';
+  const paint = () => { btn.textContent = musicOn ? '♪' : '✕'; btn.style.opacity = musicOn ? '1' : '.6'; };
+  paint();
+  const toggle = e => {
+    e.stopPropagation(); e.preventDefault();
+    musicOn = !musicOn;
+    try { localStorage.setItem('music_off', musicOn ? '0' : '1'); } catch (err) {}
+    init();
+    if (ctx && ctx.state === 'suspended') ctx.resume();
+    if (musicOn) startMusic(); else stopMusic();
+    paint();
+  };
+  btn.addEventListener('pointerdown', e => e.stopPropagation());
+  btn.addEventListener('pointerup', e => e.stopPropagation());
+  btn.addEventListener('click', toggle);
+  document.addEventListener('DOMContentLoaded', () => document.body.appendChild(btn));
+  if (document.body) document.body.appendChild(btn);
+
+  document.addEventListener('visibilitychange', () => {
+    if (!ctx) return;
+    if (document.hidden) ctx.suspend(); else ctx.resume();
+  });
+
+  return {
+    // call from a user gesture (start button) — browsers only allow audio after one
+    start() {
+      init();
+      if (!ctx) return;
+      if (ctx.state === 'suspended') ctx.resume();
+      startMusic();
+    },
+    sfx(freq, dur, type = 'sine', vol = 0.07, to = 0) {
+      init();
+      if (!ctx) return;
+      try {
+        const t = ctx.currentTime;
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.type = type; o.frequency.setValueAtTime(freq, t);
+        if (to) o.frequency.exponentialRampToValueAtTime(Math.max(30, to), t + dur);
+        g.gain.setValueAtTime(vol, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+        o.connect(g); g.connect(sfxBus);
+        o.start(t); o.stop(t + dur + 0.02);
+      } catch (e) {}
+    }
+  };
+};
+/*AUDIO-ENGINE-END*/
+/*SPRITES-START*/
+// ---------- sprites: detailed SVG artwork rasterised once into canvases ----------
+// Each piece is authored as an SVG (gradients, highlights, shadows, glow) and
+// drawn into an offscreen canvas at load time, so the game loop just blits images.
+const loadSprites = (defs, px = 160) => Promise.all(Object.entries(defs).map(([name, svg]) => new Promise(done => {
+  const img = new Image();
+  const finish = ok => {
+    const c = document.createElement('canvas');
+    const w = Array.isArray(px) ? px[0] : px, h = Array.isArray(px) ? px[1] : px;
+    c.width = w; c.height = h;
+    if (ok) c.getContext('2d').drawImage(img, 0, 0, w, h);
+    done([name, c]);
+  };
+  img.onload = () => finish(true);
+  img.onerror = () => finish(false);
+  img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+}))).then(entries => Object.fromEntries(entries));
+
+// small helpers for writing SVG
+const svgDoc = (body, vb = '0 0 100 100') => '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + vb + '">' + body + '</svg>';
+const shade = (hex, amt) => {
+  const n = parseInt(hex.slice(1), 16);
+  const f = v => Math.max(0, Math.min(255, Math.round(amt < 0 ? v * (1 + amt) : v + (255 - v) * amt)));
+  return '#' + [n >> 16, (n >> 8) & 255, n & 255].map(f).map(v => v.toString(16).padStart(2, '0')).join('');
+};
+/*SPRITES-END*/
+(() => {
+  const audio = GameAudio({
+    bpm: 120, scale: 'minor', root: 52, prog: [0, 6, 5, 4], seed: 410,
+    waves: { lead: 'square', bass: 'sawtooth', arp: 'triangle' },
+    arp: true, arpEvery: 1, arpOct: 1, arpCutoff: 2400, leadCutoff: 2000, leadOct: 1, leadDensity: 0.35, drums: true, bassPattern: [0, 3, 6, 8, 11, 14], volume: 0.11,
+    btnBg: 'rgba(200,106,255,.25)'
+  });
+  const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+  const $ = id => document.getElementById(id);
+  const KEY = 'crystal_columns_best';
+  let best = 0; try { best = +localStorage.getItem(KEY) || 0; } catch (e) {}
+  $('bestMenu').innerHTML = best ? 'BEST <b>' + best + '</b>' : '';
+
+  // ---------- crystal cluster artwork: three faceted prisms per piece ----------
+  const COLS = ['#ff3a5a', '#ff9a2a', '#ffe03a', '#3ae07a', '#3aa8ff', '#b05aff'];
+  function prism(x, base, w, h, col) {
+    const top = base - h, tip = top - w * 0.9;
+    return '<polygon points="' + [[x - w / 2, base], [x - w / 2, top], [x, tip], [x, base + 3]].map(p => p.join(',')).join(' ') + '" fill="' + shade(col, 0.35) + '"/>' +
+      '<polygon points="' + [[x, base + 3], [x, tip], [x + w / 2, top], [x + w / 2, base]].map(p => p.join(',')).join(' ') + '" fill="' + shade(col, -0.3) + '"/>' +
+      '<polygon points="' + [[x - w / 2, top], [x, tip], [x - w * 0.1, top + 4]].map(p => p.join(',')).join(' ') + '" fill="' + shade(col, 0.7) + '"/>' +
+      '<line x1="' + (x - w * 0.3) + '" y1="' + (base - 4) + '" x2="' + (x - w * 0.3) + '" y2="' + (top + 4) + '" stroke="#fff" stroke-width="1.6" opacity=".55"/>';
+  }
+  const crystalSVG = col => svgDoc('<defs><radialGradient id="g"><stop offset="0" stop-color="' + col + '" stop-opacity=".55"/><stop offset="1" stop-color="' + col + '" stop-opacity="0"/></radialGradient>' +
+    '<filter id="s" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="3" stdDeviation="2" flood-opacity=".6"/></filter></defs>' +
+    '<circle cx="50" cy="56" r="46" fill="url(#g)"/>' +
+    '<ellipse cx="50" cy="86" rx="32" ry="7" fill="#2a2440"/><ellipse cx="50" cy="84" rx="28" ry="5" fill="#4a4268"/>' +
+    '<g filter="url(#s)">' + prism(30, 86, 18, 26, col) + prism(70, 86, 18, 30, col) + prism(50, 88, 24, 44, col) + '</g>' +
+    '<path d="M44 18 l2 -6 l2 6 l6 2 l-6 2 l-2 6 l-2 -6 l-6 -2 Z" fill="#fff" opacity=".9"/>');
+  const magicSVG = svgDoc('<defs><linearGradient id="r" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff3a5a"/><stop offset=".25" stop-color="#ffe03a"/><stop offset=".5" stop-color="#3ae07a"/><stop offset=".75" stop-color="#3aa8ff"/><stop offset="1" stop-color="#b05aff"/></linearGradient>' +
+    '<radialGradient id="o" cx="35%" cy="30%" r="70%"><stop offset="0" stop-color="#fff" stop-opacity=".9"/><stop offset=".4" stop-color="#fff" stop-opacity=".1"/><stop offset="1" stop-color="#000" stop-opacity=".35"/></radialGradient></defs>' +
+    '<circle cx="50" cy="50" r="40" fill="url(#r)"/><circle cx="50" cy="50" r="40" fill="url(#o)"/><circle cx="50" cy="50" r="40" fill="none" stroke="#fff" stroke-width="3"/>' +
+    '<path d="M50 24 l5 16 l16 5 l-16 5 l-5 16 l-5 -16 l-16 -5 l16 -5 Z" fill="#fff"/>');
+  const cellSVG = svgDoc('<rect x="2" y="2" width="96" height="96" rx="8" fill="#1a1630"/><rect x="2" y="2" width="96" height="96" rx="8" fill="none" stroke="#2c2650" stroke-width="2"/>');
+
+  let SPR = null;
+  const defs = { magic: magicSVG, cell: cellSVG }; COLS.forEach((c, i) => defs['k' + i] = crystalSVG(c));
+  loadSprites(defs, 160).then(s => { SPR = s; const lc = $('logo').getContext('2d'); COLS.forEach((c, i) => lc.drawImage(SPR['k' + i], i * 98 + 2, 10, 120, 120)); });
+
+  const C = 6, R = 13, MAGIC = 9;
+  let W, H, DPR, cell, bx, by;
+  function resize() {
+    DPR = Math.min(devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight;
+    canvas.width = W * DPR; canvas.height = H * DPR; ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    cell = Math.min((W - 120) / C, (H - 60) / R, 56);
+    if (W < 520) cell = Math.min((W - 24) / (C + 2.2), (H - 70) / R, 56);
+    bx = (W - cell * C) / 2 - (W < 520 ? cell * 1.1 : 0); by = (H - cell * R) / 2 + 10;
+  }
+  addEventListener('resize', resize); resize();
+
+  let state = 'menu', grid, piece, nextGems, score, level, cleared, t = 0, fallAcc = 0, soft = false, flashing = null, chain = 0, parts = [], floats = [], sinceMagic = 0;
+  const rk = () => Math.floor(Math.random() * Math.min(6, 4 + Math.floor((level || 1) / 3)));
+  function makeGems() { sinceMagic++; if (sinceMagic > 30 && Math.random() < 0.15) { sinceMagic = 0; return [MAGIC, MAGIC, MAGIC]; } return [rk(), rk(), rk()]; }
+  function start() {
+    if (!SPR) return;
+    grid = [...Array(R)].map(() => Array(C).fill(null));
+    score = 0; level = 1; cleared = 0; parts = []; floats = []; flashing = null; sinceMagic = 0;
+    nextGems = makeGems(); spawn();
+    state = 'play'; audio.start();
+    $('menu').classList.add('hidden'); $('over').classList.add('hidden');
+  }
+  function spawn() {
+    piece = { c: Math.floor(C / 2), y: -1, gems: nextGems };
+    nextGems = makeGems();
+    if (grid[0][piece.c] !== null) end();
+  }
+  $('startBtn').onclick = start; $('againBtn').onclick = start;
+  const speed = () => 1.2 + level * 0.35;
+  const occupied = (r, c) => c < 0 || c >= C || r >= R || (r >= 0 && grid[r][c] !== null);
+
+  function moveX(d) { if (!piece || flashing) return; const nc = piece.c + d, br = Math.floor(piece.y); for (let i = 0; i < 3; i++) if (occupied(br - i, nc)) return; piece.c = nc; audio.sfx(300, 0.03, 'square', 0.03); }
+  function cycle() { if (!piece || flashing) return; piece.gems.unshift(piece.gems.pop()); audio.sfx(660, 0.05, 'triangle', 0.04); }
+  function hardDrop() { if (!piece || flashing) return; while (!occupied(Math.floor(piece.y) + 1, piece.c)) piece.y = Math.floor(piece.y) + 1; lock(); }
+  function lock() {
+    const br = Math.floor(piece.y);
+    for (let i = 0; i < 3; i++) { const r = br - i; if (r < 0) { end(); return; } grid[r][piece.c] = piece.gems[2 - i]; }
+    audio.sfx(200, 0.08, 'triangle', 0.06);
+    const wasMagic = piece.gems[0] === MAGIC;
+    const pc = piece.c; piece = null; chain = 0;
+    if (wasMagic) {
+      // the magic jewel wipes out every crystal of the colour it lands on
+      for (let i = 0; i < 3; i++) grid[br - i][pc] = null;
+      const under = br + 1 < R ? grid[br + 1][pc] : null;
+      const marks = new Set();
+      if (under !== null) for (let r = 0; r < R; r++) for (let c = 0; c < C; c++) if (grid[r][c] === under) marks.add(r * C + c);
+      if (marks.size) { flashing = { marks, t: 0.35 }; chain = 1; audio.sfx(440, 0.6, 'triangle', 0.08, 1760); return; }
+      gravity(); resolve(); return;
+    }
+    resolve();
+  }
+  function resolve() {
+    const marks = new Set();
+    for (let r = 0; r < R; r++) for (let c = 0; c < C; c++) {
+      const v = grid[r][c]; if (v === null) continue;
+      for (const [dr, dc] of [[0, 1], [1, 0], [1, 1], [1, -1]]) {
+        let n = 1; while (r + dr * n < R && c + dc * n >= 0 && c + dc * n < C && grid[r + dr * n][c + dc * n] === v) n++;
+        if (n >= 3) for (let k = 0; k < n; k++) marks.add((r + dr * k) * C + c + dc * k);
+      }
+    }
+    if (marks.size) { chain++; flashing = { marks, t: 0.35 }; audio.sfx(440 * Math.pow(2, Math.min(12, chain * 2) / 12), 0.25, 'triangle', 0.08, 880 * Math.pow(2, Math.min(12, chain * 2) / 12)); }
+    else spawn();
+  }
+  function gravity() {
+    for (let c = 0; c < C; c++) {
+      const col = []; for (let r = R - 1; r >= 0; r--) if (grid[r][c] !== null) col.push(grid[r][c]);
+      for (let r = R - 1; r >= 0; r--) grid[r][c] = col.length ? col.shift() : null;
+    }
+  }
+  function end() {
+    if (state !== 'play') return;
+    state = 'over'; piece = null;
+    if (score > best) { best = score; try { localStorage.setItem(KEY, best); } catch (e) {} }
+    $('finalScore').textContent = score; $('finalLevel').textContent = level; $('bestOver').textContent = best; $('bestMenu').innerHTML = 'BEST <b>' + best + '</b>';
+    audio.sfx(200, 0.9, 'sawtooth', 0.08, 50);
+    setTimeout(() => $('over').classList.remove('hidden'), 600);
+  }
+
+  // input
+  let sx = 0, sy = 0, lastX = 0, down = false, movedX = false, swiped = false;
+  canvas.addEventListener('pointerdown', e => { if (state !== 'play') return; down = true; sx = lastX = e.clientX; sy = e.clientY; movedX = false; swiped = false; });
+  addEventListener('pointermove', e => {
+    if (!down || swiped) return;
+    if (e.clientY - sy > 60 && Math.abs(e.clientY - sy) > Math.abs(e.clientX - sx) * 1.5) { swiped = true; hardDrop(); return; }
+    while (e.clientX - lastX > cell * 0.8) { moveX(1); lastX += cell * 0.8; movedX = true; }
+    while (lastX - e.clientX > cell * 0.8) { moveX(-1); lastX -= cell * 0.8; movedX = true; }
+  });
+  addEventListener('pointerup', e => { if (down && !movedX && !swiped && Math.hypot(e.clientX - sx, e.clientY - sy) < 14) cycle(); down = false; });
+  addEventListener('keydown', e => {
+    if ((e.key === 'Enter' || e.key === ' ') && state !== 'play') { if (state === 'menu' || !$('over').classList.contains('hidden')) { e.preventDefault(); start(); } return; }
+    if (state !== 'play') return;
+    if (e.key === 'ArrowLeft') moveX(-1); else if (e.key === 'ArrowRight') moveX(1);
+    else if (e.key === 'ArrowUp') cycle(); else if (e.key === 'ArrowDown') soft = true;
+    else if (e.key === ' ') hardDrop(); else return;
+    e.preventDefault();
+  });
+  addEventListener('keyup', e => { if (e.key === 'ArrowDown') soft = false; });
+
+  function update(dt) {
+    t += dt;
+    if (state === 'play') {
+      if (flashing) {
+        flashing.t -= dt;
+        if (flashing.t <= 0) {
+          const n = flashing.marks.size;
+          for (const k of flashing.marks) {
+            const r = Math.floor(k / C), c = k % C, v = grid[r][c];
+            const x = bx + (c + 0.5) * cell, y = by + (r + 0.5) * cell;
+            for (let i = 0; i < 6; i++) parts.push({ x, y, vx: (Math.random() - .5) * 260, vy: (Math.random() - .5) * 260, life: 0.6, col: COLS[v] || '#fff' });
+            grid[r][c] = null;
+          }
+          const gain = n * 10 * chain * level; score += gain;
+          floats.push({ txt: (chain > 1 ? chain + '× ' : '') + '+' + gain, x: bx + C * cell / 2, y: by + R * cell * 0.4, life: 1.1 });
+          cleared += n; level = 1 + Math.floor(cleared / 30);
+          flashing = null; gravity(); resolve();
+        }
+      } else if (piece) {
+        fallAcc += dt * speed() * (soft ? 12 : 1);
+        while (fallAcc >= 1 && piece) {
+          fallAcc -= 1;
+          if (occupied(Math.floor(piece.y) + 1, piece.c)) { lock(); break; }
+          piece.y = Math.floor(piece.y) + 1;
+        }
+      }
+    }
+    for (const p of parts) { p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 300 * dt; p.life -= dt; }
+    parts = parts.filter(p => p.life > 0);
+    for (const f of floats) { f.y -= 30 * dt; f.life -= dt; }
+    floats = floats.filter(f => f.life > 0);
+  }
+
+  const gemImg = v => v === MAGIC ? SPR.magic : SPR['k' + v];
+  function render() {
+    ctx.fillStyle = '#0c0a1a'; ctx.fillRect(0, 0, W, H);
+    // cave walls with glowing crystal veins
+    for (let i = 0; i < 14; i++) {
+      const x = (i * 137.3) % W, y = (i * 91.7) % H, col = COLS[i % 6];
+      const g = ctx.createRadialGradient(x, y, 0, x, y, 70); g.addColorStop(0, col + '33'); g.addColorStop(1, col + '00');
+      ctx.fillStyle = g; ctx.fillRect(x - 70, y - 70, 140, 140);
+      ctx.fillStyle = col + '88'; ctx.beginPath(); ctx.moveTo(x, y - 14); ctx.lineTo(x + 5, y); ctx.lineTo(x, y + 4); ctx.lineTo(x - 5, y); ctx.fill();
+    }
+    if (!SPR || !grid) return;
+    // well
+    ctx.fillStyle = '#3a3452'; ctx.fillRect(bx - 10, by - 10, C * cell + 20, R * cell + 20);
+    ctx.fillStyle = '#4a4468'; for (let y = by - 10; y < by + R * cell + 10; y += 22) { ctx.fillRect(bx - 10, y, 8, 18); ctx.fillRect(bx + C * cell + 2, y + 11, 8, 18); }
+    for (let r = 0; r < R; r++) for (let c = 0; c < C; c++) ctx.drawImage(SPR.cell, bx + c * cell, by + r * cell, cell, cell);
+    for (let r = 0; r < R; r++) for (let c = 0; c < C; c++) {
+      const v = grid[r][c]; if (v === null) continue;
+      const fl = flashing && flashing.marks.has(r * C + c);
+      const s = fl ? 1 + Math.sin(flashing.t * 40) * 0.12 : 1;
+      if (fl) { ctx.fillStyle = 'rgba(255,255,255,' + (0.4 + Math.sin(flashing.t * 40) * 0.3) + ')'; ctx.fillRect(bx + c * cell, by + r * cell, cell, cell); }
+      const sz = cell * s;
+      ctx.drawImage(gemImg(v), bx + (c + 0.5) * cell - sz / 2, by + (r + 0.5) * cell - sz / 2, sz, sz);
+    }
+    if (piece) {
+      // ghost landing spot
+      let gy = Math.floor(piece.y); while (!occupied(gy + 1, piece.c)) gy++;
+      ctx.globalAlpha = 0.18; for (let i = 0; i < 3; i++) if (gy - i >= 0) ctx.drawImage(gemImg(piece.gems[2 - i]), bx + piece.c * cell, by + (gy - i) * cell, cell, cell); ctx.globalAlpha = 1;
+      const yy = Math.floor(piece.y) + Math.min(0.999, fallAcc) * (occupied(Math.floor(piece.y) + 1, piece.c) ? 0 : 1);
+      for (let i = 0; i < 3; i++) { const r = yy - i; if (r < -0.5) continue; ctx.drawImage(gemImg(piece.gems[2 - i]), bx + piece.c * cell, by + r * cell, cell, cell); }
+    }
+    // side panel: next column, score, level
+    const px = bx + C * cell + 18, isz = cell * 0.9;
+    ctx.fillStyle = '#dcd6ff'; ctx.textAlign = 'left'; ctx.font = '12px Trebuchet MS, sans-serif';
+    ctx.fillText('NEXT', px, by + 12);
+    for (let i = 0; i < 3; i++) ctx.drawImage(gemImg(nextGems[i]), px, by + 18 + i * isz, isz, isz);
+    const ty = by + 30 + 3 * isz;
+    ctx.fillText('SCORE', px, ty); ctx.font = 'bold 20px Trebuchet MS, sans-serif'; ctx.fillStyle = '#fff'; ctx.fillText(score, px, ty + 24);
+    ctx.font = '12px Trebuchet MS, sans-serif'; ctx.fillStyle = '#dcd6ff'; ctx.fillText('LEVEL', px, ty + 52); ctx.font = 'bold 20px Trebuchet MS, sans-serif'; ctx.fillStyle = '#fff'; ctx.fillText(level, px, ty + 76);
+    for (const p of parts) { ctx.globalAlpha = Math.max(0, p.life * 1.6); ctx.fillStyle = p.col; ctx.fillRect(p.x - 2, p.y - 2, 4, 4); }
+    ctx.globalAlpha = 1;
+    for (const f of floats) { ctx.globalAlpha = Math.min(1, f.life * 2); ctx.font = 'bold 24px Trebuchet MS, sans-serif'; ctx.textAlign = 'center'; ctx.lineWidth = 4; ctx.strokeStyle = '#000'; ctx.strokeText(f.txt, f.x, f.y); ctx.fillStyle = '#ffe03a'; ctx.fillText(f.txt, f.x, f.y); }
+    ctx.globalAlpha = 1;
+  }
+
+  let last = performance.now();
+  (function loop(now) {
+    const dt = Math.max(0, Math.min(0.033, (now - last) / 1000)); last = now;
+    update(dt); render(); requestAnimationFrame(loop);
+  })(last);
+})();
+</script>
+</body>
+</html>

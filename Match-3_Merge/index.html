@@ -1,0 +1,767 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#2a0f3d">
+<title>Gem Crush</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #2a0f3d;
+    font-family: "Trajan Pro", "Cinzel", "Georgia", serif; color: #f7e3a3;
+    touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+  canvas { display: block; width: 100%; height: 100%; }
+  .hud { position: fixed; top: max(10px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); width: min(460px, 94vw); display: flex; gap: 8px; pointer-events: none; }
+  .box { flex: 1; text-align: center; background: linear-gradient(#4a1c66, #2a0f3d); border: 2px solid #c9a24a; border-radius: 12px; padding: 4px 6px; box-shadow: inset 0 0 12px #0008; }
+  .box small { display: block; font-size: 10px; letter-spacing: 2px; color: #c9a24a; }
+  .box b { font-size: 22px; color: #fff3cf; }
+  .bar { height: 8px; border-radius: 4px; background: #0006; margin-top: 3px; overflow: hidden; } .bar i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #ffd86b, #ff9f3d); }
+  .overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; padding: 20px; background: #12051ccc; transition: opacity .3s; }
+  .overlay.hidden { opacity: 0; pointer-events: none; }
+  .card { width: min(360px, 100%); background: radial-gradient(circle at 50% 0, #6b2c8f, #2a0f3d 70%); border: 3px solid #c9a24a; border-radius: 22px; padding: 26px 22px;
+    text-align: center; display: flex; flex-direction: column; gap: 12px; box-shadow: 0 0 0 6px #2a0f3d, 0 0 0 8px #c9a24a55, 0 20px 50px #000; }
+  .card canvas { width: 120px; height: 120px; margin: 0 auto; }
+  h1 { font-size: clamp(36px, 11vw, 54px); letter-spacing: 3px; color: #ffe7a0; text-shadow: 0 3px 0 #8a5a12, 0 0 20px #ffd86b55; line-height: 1; }
+  p { font-family: Georgia, serif; font-size: 15px; line-height: 1.55; color: #e9d6ff; }
+  .stat { font-size: 17px; } .stat b { color: #fff3cf; }
+  .btn { border: 2px solid #fff3cf; background: linear-gradient(#ffd86b, #c98a1c); color: #3a1a05; font: inherit; font-weight: bold; font-size: 20px; letter-spacing: 2px; padding: 12px; border-radius: 30px; cursor: pointer; box-shadow: 0 5px 0 #7a4a0c; }
+  .btn:active { transform: translateY(3px); box-shadow: 0 2px 0 #7a4a0c; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud">
+  <div class="box"><small>LEVEL</small><b id="level">1</b></div>
+  <div class="box" style="flex:2"><small>SCORE</small><b id="score">0</b><div class="bar"><i id="prog"></i></div></div>
+  <div class="box"><small>MOVES</small><b id="moves">0</b></div>
+</div>
+
+<div class="overlay" id="menu"><div class="card">
+  <canvas id="logo" width="240" height="240"></canvas>
+  <h1>GEM CRUSH</h1>
+  <p><b>Swipe</b> a gem (or tap two neighbours) to swap. Line up 3 or more. Four in a row makes a <b>line gem</b>, an L or T makes a <b>bomb</b>, five makes a <b>prism</b> that clears a whole colour.</p>
+  <div class="stat" id="bestMenu"></div>
+  <button class="btn" id="startBtn">PLAY</button>
+</div></div>
+<div class="overlay hidden" id="win"><div class="card">
+  <h1>LEVEL<br>COMPLETE</h1>
+  <div class="stat">Score <b id="winScore">0</b></div>
+  <div class="stat" id="stars" style="font-size:34px">★★★</div>
+  <button class="btn" id="nextBtn">NEXT LEVEL</button>
+</div></div>
+<div class="overlay hidden" id="over"><div class="card">
+  <h1>OUT OF<br>MOVES</h1>
+  <div class="stat">Reached level <b id="finalLevel">1</b></div>
+  <div class="stat">Best level <b id="bestOver">1</b></div>
+  <button class="btn" id="againBtn">TRY AGAIN</button>
+</div></div>
+
+<script>
+/*AUDIO-ENGINE-START*/
+// ---------- audio: procedural background music + sound effects ----------
+// Every note is synthesized with the Web Audio API at runtime, so the music
+// needs no files, works offline and carries no copyright.
+const GameAudio = (cfg) => {
+  let ctx = null, master = null, musicBus = null, sfxBus = null;
+  let timer = null, step = 0, nextT = 0, playing = false;
+  let musicOn = true;
+  try { musicOn = localStorage.getItem('music_off') !== '1'; } catch (e) {}
+
+  const SCALES = {
+    major: [0, 2, 4, 5, 7, 9, 11], minor: [0, 2, 3, 5, 7, 8, 10],
+    dorian: [0, 2, 3, 5, 7, 9, 10], lydian: [0, 2, 4, 6, 7, 9, 11],
+    pentaMajor: [0, 2, 4, 7, 9], pentaMinor: [0, 3, 5, 7, 10],
+    japanese: [0, 1, 5, 7, 8], phrygian: [0, 1, 3, 5, 7, 8, 10]
+  };
+  const scale = SCALES[cfg.scale] || SCALES.major;
+  const root = cfg.root || 57;
+  const bpm = cfg.bpm || 110;
+  const prog = cfg.prog || [0, 5, 3, 4];
+  const sixteenth = 60 / bpm / 4;
+
+  // deterministic random so each game always plays "its" tune
+  let seed = cfg.seed || 1;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
+
+  const deg = (d, oct = 0) => {
+    const n = scale.length;
+    const o = Math.floor(d / n);
+    return root + scale[((d % n) + n) % n] + 12 * (o + oct);
+  };
+  const hz = m => 440 * Math.pow(2, (m - 69) / 12);
+
+  // melody: two 2-bar phrases (A, B) arranged A A B A
+  function phrase() {
+    const notes = [];
+    let d = 2 + Math.floor(rnd() * 3);
+    for (let i = 0; i < 32; i++) {
+      const strong = i % 4 === 0;
+      if (rnd() < (strong ? 0.85 : (cfg.leadDensity || 0.35))) {
+        d += Math.round((rnd() - 0.5) * 4);
+        d = Math.max(0, Math.min(scale.length * 2, d));
+        const len = strong && rnd() < 0.5 ? 2 : 1;
+        notes.push({ i, d, len });
+      }
+    }
+    return notes;
+  }
+  const A = phrase(), B = phrase();
+  const song = [A, A, B, A];
+
+  function init() {
+    if (ctx) return;
+    try {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      master = ctx.createGain(); master.gain.value = 0.9; master.connect(ctx.destination);
+      musicBus = ctx.createGain(); musicBus.gain.value = cfg.volume || 0.16; musicBus.connect(master);
+      sfxBus = ctx.createGain(); sfxBus.gain.value = 1; sfxBus.connect(master);
+    } catch (e) { ctx = null; }
+  }
+
+  function voice(t, freq, dur, type, vol, opts = {}) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, t);
+    if (opts.detune) o.detune.value = opts.detune;
+    let node = o;
+    if (opts.cutoff) {
+      const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = opts.cutoff; f.Q.value = opts.q || 1;
+      o.connect(f); node = f;
+    }
+    const a = opts.attack || 0.008;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(vol, t + a);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    node.connect(g); g.connect(opts.bus || musicBus);
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+
+  let noiseBuf = null;
+  function noise(t, dur, vol, hp) {
+    if (!noiseBuf) {
+      noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 0.5, ctx.sampleRate);
+      const d = noiseBuf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    }
+    const s = ctx.createBufferSource(); s.buffer = noiseBuf;
+    const f = ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = hp;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.connect(f); f.connect(g); g.connect(musicBus);
+    s.start(t); s.stop(t + dur + 0.02);
+  }
+
+  function kick(t) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.setValueAtTime(140, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+    g.gain.setValueAtTime(0.9, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+    o.connect(g); g.connect(musicBus); o.start(t); o.stop(t + 0.25);
+  }
+
+  function playStep(s, t) {
+    const bar = Math.floor(s / 16);
+    const i16 = s % 16;
+    const chordDeg = prog[bar % prog.length];
+    const w = cfg.waves || {};
+    // bass
+    const bassPat = cfg.bassPattern || [0, 8];
+    if (bassPat.includes(i16)) voice(t, hz(deg(chordDeg, -2)), sixteenth * 3.5, w.bass || 'triangle', 0.5, { cutoff: 600 });
+    // pad (chord) at bar start
+    if (cfg.pad && i16 === 0) {
+      for (const k of [0, 2, 4]) voice(t, hz(deg(chordDeg + k, -1)), sixteenth * 15, w.pad || 'sine', 0.12, { attack: 0.3, cutoff: 1400, detune: k * 3 });
+    }
+    // arpeggio
+    if (cfg.arp && i16 % (cfg.arpEvery || 2) === 0) {
+      const k = [0, 2, 4, 2][(i16 / (cfg.arpEvery || 2)) % 4];
+      voice(t, hz(deg(chordDeg + k, cfg.arpOct || 0)), sixteenth * 1.6, w.arp || 'square', 0.1, { cutoff: cfg.arpCutoff || 2200 });
+    }
+    // lead melody
+    const ph = song[Math.floor(bar / 2) % song.length];
+    const pi = (bar % 2) * 16 + i16;
+    for (const n of ph) if (n.i === pi) {
+      voice(t, hz(deg(n.d, cfg.leadOct || 0)), sixteenth * (n.len * 2 + 0.5), w.lead || 'triangle', 0.22, { cutoff: cfg.leadCutoff || 3000 });
+    }
+    // drums
+    if (cfg.drums) {
+      if (i16 % 8 === 0 || (cfg.drums === 'busy' && i16 === 10)) kick(t);
+      if (i16 % 8 === 4) noise(t, 0.14, 0.35, 1500);
+      if (i16 % 2 === 0) noise(t, 0.04, cfg.drums === 'soft' ? 0.06 : 0.12, 7000);
+    }
+  }
+
+  function scheduler() {
+    if (!ctx || !playing) return;
+    while (nextT < ctx.currentTime + 0.15) {
+      playStep(step, nextT);
+      nextT += sixteenth * (cfg.swing && step % 2 === 0 ? 1 + cfg.swing : cfg.swing ? 1 - cfg.swing : 1);
+      step++;
+    }
+  }
+
+  function startMusic() {
+    if (!ctx || playing || !musicOn) return;
+    playing = true;
+    musicBus.gain.cancelScheduledValues(ctx.currentTime);
+    musicBus.gain.setValueAtTime(0.0001, ctx.currentTime);
+    musicBus.gain.linearRampToValueAtTime(cfg.volume || 0.16, ctx.currentTime + 1.2);
+    nextT = ctx.currentTime + 0.05;
+    timer = setInterval(scheduler, 40);
+  }
+  function stopMusic() {
+    playing = false;
+    if (timer) clearInterval(timer);
+    timer = null;
+  }
+
+  // mute button
+  const btn = document.createElement('button');
+  btn.setAttribute('aria-label', 'Toggle music');
+  btn.style.cssText = 'position:fixed;z-index:50;right:max(14px,env(safe-area-inset-right));bottom:max(14px,env(safe-area-inset-bottom));' +
+    'width:42px;height:42px;border-radius:50%;border:none;cursor:pointer;font-size:20px;line-height:42px;padding:0;' +
+    'background:' + (cfg.btnBg || 'rgba(0,0,0,.35)') + ';color:' + (cfg.btnColor || '#fff') + ';backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);';
+  const paint = () => { btn.textContent = musicOn ? '♪' : '✕'; btn.style.opacity = musicOn ? '1' : '.6'; };
+  paint();
+  const toggle = e => {
+    e.stopPropagation(); e.preventDefault();
+    musicOn = !musicOn;
+    try { localStorage.setItem('music_off', musicOn ? '0' : '1'); } catch (err) {}
+    init();
+    if (ctx && ctx.state === 'suspended') ctx.resume();
+    if (musicOn) startMusic(); else stopMusic();
+    paint();
+  };
+  btn.addEventListener('pointerdown', e => e.stopPropagation());
+  btn.addEventListener('pointerup', e => e.stopPropagation());
+  btn.addEventListener('click', toggle);
+  document.addEventListener('DOMContentLoaded', () => document.body.appendChild(btn));
+  if (document.body) document.body.appendChild(btn);
+
+  document.addEventListener('visibilitychange', () => {
+    if (!ctx) return;
+    if (document.hidden) ctx.suspend(); else ctx.resume();
+  });
+
+  return {
+    // call from a user gesture (start button) — browsers only allow audio after one
+    start() {
+      init();
+      if (!ctx) return;
+      if (ctx.state === 'suspended') ctx.resume();
+      startMusic();
+    },
+    sfx(freq, dur, type = 'sine', vol = 0.07, to = 0) {
+      init();
+      if (!ctx) return;
+      try {
+        const t = ctx.currentTime;
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.type = type; o.frequency.setValueAtTime(freq, t);
+        if (to) o.frequency.exponentialRampToValueAtTime(Math.max(30, to), t + dur);
+        g.gain.setValueAtTime(vol, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+        o.connect(g); g.connect(sfxBus);
+        o.start(t); o.stop(t + dur + 0.02);
+      } catch (e) {}
+    }
+  };
+};
+/*AUDIO-ENGINE-END*/
+/*SPRITES-START*/
+// ---------- sprites: detailed SVG artwork rasterised once into canvases ----------
+// Each piece is authored as an SVG (gradients, highlights, shadows, glow) and
+// drawn into an offscreen canvas at load time, so the game loop just blits images.
+const loadSprites = (defs, px = 160) => Promise.all(Object.entries(defs).map(([name, svg]) => new Promise(done => {
+  const img = new Image();
+  const finish = ok => {
+    const c = document.createElement('canvas');
+    const w = Array.isArray(px) ? px[0] : px, h = Array.isArray(px) ? px[1] : px;
+    c.width = w; c.height = h;
+    if (ok) c.getContext('2d').drawImage(img, 0, 0, w, h);
+    done([name, c]);
+  };
+  img.onload = () => finish(true);
+  img.onerror = () => finish(false);
+  img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+}))).then(entries => Object.fromEntries(entries));
+
+// small helpers for writing SVG
+const svgDoc = (body, vb = '0 0 100 100') => '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + vb + '">' + body + '</svg>';
+const shade = (hex, amt) => {
+  const n = parseInt(hex.slice(1), 16);
+  const f = v => Math.max(0, Math.min(255, Math.round(amt < 0 ? v * (1 + amt) : v + (255 - v) * amt)));
+  return '#' + [n >> 16, (n >> 8) & 255, n & 255].map(f).map(v => v.toString(16).padStart(2, '0')).join('');
+};
+/*SPRITES-END*/
+/*MATCH3-ENGINE-START*/
+// ---------- match-3 engine: swaps, matches, specials, cascades, blockers ----------
+// Game code renders pieces from engine.grid using each piece's animated x/y (in cell units)
+// and reacts to events (onClear, onCascade, onSettled ...).
+const Match3 = (opts) => {
+  const C = opts.cols, R = opts.rows, K = opts.kinds;
+  let uid = 1, phase = 'idle', timer = 0, cascade = 0, swapPair = null, idleT = 0;
+  const grid = [], layer = [];
+  const mk = (kind, r, c, y) => ({ id: uid++, kind, special: null, r, c, x: c, y: y === undefined ? r : y, vy: 0, dying: 0, pop: 0 });
+  const inside = (r, c) => r >= 0 && r < R && c >= 0 && c < C;
+  const holeAt = (r, c) => opts.hole ? opts.hole(r, c) : false;
+  const rk = () => Math.floor(Math.random() * K);
+
+  for (let r = 0; r < R; r++) {
+    grid.push([]); layer.push([]);
+    for (let c = 0; c < C; c++) {
+      layer[r].push(opts.layer ? opts.layer(r, c) : 0);
+      if (holeAt(r, c)) { grid[r].push(null); continue; }
+      let k;
+      do { k = rk(); } while ((c >= 2 && grid[r][c - 1] && grid[r][c - 2] && grid[r][c - 1].kind === k && grid[r][c - 2].kind === k) ||
+                              (r >= 2 && grid[r - 1][c] && grid[r - 2][c] && grid[r - 1][c].kind === k && grid[r - 2][c].kind === k));
+      grid[r].push(mk(k, r, c, r - R - 1));
+    }
+  }
+  phase = 'fall';
+
+  const at = (r, c) => inside(r, c) ? grid[r][c] : null;
+  const same = (a, b) => a && b && !a.dying && !b.dying && a.kind >= 0 && a.kind === b.kind;
+
+  function findRuns() {
+    const runs = [];
+    for (let r = 0; r < R; r++) for (let c = 0; c < C;) {
+      let e = c + 1; while (e < C && same(grid[r][c], grid[r][e])) e++;
+      if (e - c >= 3 && grid[r][c] && grid[r][c].kind >= 0) runs.push({ dir: 'h', cells: Array.from({ length: e - c }, (_, i) => [r, c + i]) });
+      c = e;
+    }
+    for (let c = 0; c < C; c++) for (let r = 0; r < R;) {
+      let e = r + 1; while (e < R && same(grid[r][c], grid[e][c])) e++;
+      if (e - r >= 3 && grid[r][c] && grid[r][c].kind >= 0) runs.push({ dir: 'v', cells: Array.from({ length: e - r }, (_, i) => [r + i, c]) });
+      r = e;
+    }
+    return runs;
+  }
+
+  // queue every cell to clear, chaining through special pieces
+  function blast(seed) {
+    const out = new Map(), q = [...seed];
+    while (q.length) {
+      const [r, c] = q.pop(), key = r * C + c;
+      if (out.has(key) || !inside(r, c)) continue;
+      const p = grid[r][c];
+      out.set(key, [r, c]);
+      if (!p || !p.special) continue;
+      if (p.special === 'h') for (let x = 0; x < C; x++) q.push([r, x]);
+      else if (p.special === 'v') for (let y = 0; y < R; y++) q.push([y, c]);
+      else if (p.special === 'bomb') for (let y = -1; y <= 1; y++) for (let x = -1; x <= 1; x++) q.push([r + y, c + x]);
+      else if (p.special === 'color') { const k = p.target !== undefined ? p.target : rk(); for (let y = 0; y < R; y++) for (let x = 0; x < C; x++) if (grid[y][x] && grid[y][x].kind === k) q.push([y, x]); }
+    }
+    return [...out.values()];
+  }
+
+  function clearCells(cells, keep) {
+    const cleared = [];
+    for (const [r, c] of cells) {
+      const p = grid[r][c];
+      if (layer[r][c] > 0) { layer[r][c]--; opts.onLayer && opts.onLayer(r, c, layer[r][c]); }
+      if (!p || p.dying || keep.has(p)) continue;
+      p.dying = 0.0001;
+      cleared.push(p);
+    }
+    if (cleared.length) opts.onClear && opts.onClear(cleared, cascade);
+    return cleared.length;
+  }
+
+  function resolve(preferred) {
+    const runs = findRuns();
+    if (!runs.length) return false;
+    cascade++;
+    const count = {};
+    runs.forEach((run, i) => run.cells.forEach(([r, c]) => { (count[r * C + c] = count[r * C + c] || []).push(i); }));
+    const keep = new Set(), used = new Set();
+    const promote = (r, c, special, target) => {
+      const p = grid[r][c]; if (!p) return;
+      p.special = special; p.pop = 1; keep.add(p);
+      if (special === 'color') { p.kind = -1; }
+      opts.onSpecial && opts.onSpecial(p);
+    };
+    const pick = run => {
+      if (preferred) for (const p of preferred) if (p && run.cells.some(([r, c]) => r === p.r && c === p.c)) return [p.r, p.c];
+      return run.cells[Math.floor(run.cells.length / 2)];
+    };
+    if (opts.specials !== false) {
+      runs.forEach((run, i) => { if (run.cells.length >= 5) { used.add(i); const [r, c] = pick(run); promote(r, c, 'color'); } });
+      for (const key in count) {
+        const ids = count[key].filter(i => !used.has(i));
+        if (ids.length >= 2) { ids.forEach(i => used.add(i)); promote(Math.floor(key / C), key % C, 'bomb'); }
+      }
+      runs.forEach((run, i) => { if (!used.has(i) && run.cells.length === 4) { const [r, c] = pick(run); promote(r, c, run.dir === 'h' ? 'v' : 'h'); } });
+    }
+    const seed = [];
+    runs.forEach(run => run.cells.forEach(cell => { const p = grid[cell[0]][cell[1]]; if (!keep.has(p)) seed.push(cell); }));
+    clearCells(blast(seed), keep);
+    phase = 'clear'; timer = 0.24;
+    return true;
+  }
+
+  function collapse() {
+    for (let c = 0; c < C; c++) {
+      // pieces drop through each column; holes stay empty
+      const stack = [];
+      for (let r = R - 1; r >= 0; r--) { if (holeAt(r, c)) continue; const p = grid[r][c]; if (p && !p.dying) stack.push(p); grid[r][c] = null; }
+      let spawn = 0;
+      for (let r = R - 1; r >= 0; r--) {
+        if (holeAt(r, c)) continue;
+        let p = stack.shift();
+        if (!p) { spawn++; p = mk(rk(), r, c, -spawn); }
+        p.r = r; p.c = c; grid[r][c] = p;
+      }
+    }
+    phase = 'fall';
+  }
+
+  function swapKinds(a, b) { const t = grid[a.r][a.c]; grid[a.r][a.c] = grid[b.r][b.c]; grid[b.r][b.c] = t; }
+  function hasMove() {
+    for (let r = 0; r < R; r++) for (let c = 0; c < C; c++) {
+      const p = grid[r][c]; if (!p) continue;
+      if (p.special === 'color') return [[r, c], inside(r, c + 1) && grid[r][c + 1] ? [r, c + 1] : [r + 1, c]];
+      for (const [dr, dc] of [[0, 1], [1, 0]]) {
+        const q = at(r + dr, c + dc); if (!q) continue;
+        swapKinds({ r, c }, { r: r + dr, c: c + dc });
+        const ok = findRuns().length > 0;
+        swapKinds({ r, c }, { r: r + dr, c: c + dc });
+        if (ok) return [[r, c], [r + dr, c + dc]];
+      }
+    }
+    return null;
+  }
+  function shuffle() {
+    const all = []; for (let r = 0; r < R; r++) for (let c = 0; c < C; c++) if (grid[r][c]) all.push(grid[r][c]);
+    for (let tries = 0; tries < 200; tries++) {
+      all.forEach(p => { if (!p.special) p.kind = rk(); });
+      if (!findRuns().length && hasMove()) break;
+    }
+    opts.onShuffle && opts.onShuffle();
+  }
+
+  const api = {
+    grid, layer, R, C, selected: null, hint: null,
+    get phase() { return phase; },
+    get busy() { return phase !== 'idle'; },
+    trySwap(r1, c1, r2, c2) {
+      if (phase !== 'idle' || !inside(r1, c1) || !inside(r2, c2) || Math.abs(r1 - r2) + Math.abs(c1 - c2) !== 1) return false;
+      const a = grid[r1][c1], b = grid[r2][c2];
+      if (!a || !b || (opts.canSwap && !opts.canSwap())) return false;
+      api.selected = null; api.hint = null; idleT = 0;
+      grid[r1][c1] = b; grid[r2][c2] = a;
+      a.r = r2; a.c = c2; b.r = r1; b.c = c1;
+      swapPair = [a, b]; cascade = 0; phase = 'swap';
+      opts.onSwap && opts.onSwap();
+      return true;
+    },
+    update(dt) {
+      let moving = false;
+      for (let r = 0; r < R; r++) for (let c = 0; c < C; c++) {
+        const p = grid[r][c]; if (!p) continue;
+        if (p.pop > 0) p.pop = Math.max(0, p.pop - dt * 3);
+        if (p.dying) { p.dying += dt; continue; }
+        if (phase === 'swap' || phase === 'unswap') {
+          const dx = p.c - p.x, dy = p.r - p.y, d = Math.hypot(dx, dy), st = dt * 8;
+          if (d > 0.001) { moving = true; if (d <= st) { p.x = p.c; p.y = p.r; } else { p.x += dx / d * st; p.y += dy / d * st; } }
+        } else {
+          p.x += (p.c - p.x) * Math.min(1, dt * 20);
+          if (p.y < p.r) { p.vy += 45 * dt; p.y = Math.min(p.r, p.y + p.vy * dt); moving = true; if (p.y >= p.r) { p.vy = 0; p.land = 0.15; } }
+          else { p.y = p.r; p.vy = 0; }
+          if (p.land) p.land = Math.max(0, p.land - dt);
+        }
+      }
+      if (phase === 'swap' && !moving) {
+        const [a, b] = swapPair;
+        let accepted = true;
+        if (a.special === 'color' || b.special === 'color') {
+          cascade = 1;
+          const cs = a.special === 'color' ? a : b, other = cs === a ? b : a;
+          const cells = [];
+          if (other.special === 'color') { for (let r = 0; r < R; r++) for (let c = 0; c < C; c++) cells.push([r, c]); }
+          else { for (let r = 0; r < R; r++) for (let c = 0; c < C; c++) if (grid[r][c] && grid[r][c].kind === other.kind) cells.push([r, c]); cells.push([cs.r, cs.c]); }
+          cs.special = null;
+          clearCells(blast(cells), new Set());
+          phase = 'clear'; timer = 0.3;
+        } else if (a.special && b.special) {
+          cascade = 1; clearCells(blast([[a.r, a.c], [b.r, b.c]]), new Set()); phase = 'clear'; timer = 0.3;
+        } else if (!resolve(swapPair)) {
+          accepted = false;
+          grid[a.r][a.c] = b; grid[b.r][b.c] = a;
+          const ar = a.r, ac = a.c; a.r = b.r; a.c = b.c; b.r = ar; b.c = ac;
+          phase = 'unswap'; opts.onSwapFail && opts.onSwapFail();
+        }
+        if (accepted) opts.onMove && opts.onMove();
+      } else if (phase === 'unswap' && !moving) phase = 'idle';
+      else if (phase === 'clear') {
+        timer -= dt;
+        if (timer <= 0) {
+          for (let r = 0; r < R; r++) for (let c = 0; c < C; c++) if (grid[r][c] && grid[r][c].dying) grid[r][c] = null;
+          collapse();
+        }
+      } else if (phase === 'fall' && !moving) {
+        if (!resolve(null)) {
+          phase = 'idle';
+          if (!hasMove()) shuffle();
+          opts.onSettled && opts.onSettled(cascade);
+          cascade = 0;
+        }
+      }
+      if (phase === 'idle') { idleT += dt; if (idleT > 6 && !api.hint) api.hint = hasMove(); }
+    }
+  };
+  return api;
+};
+
+// input: drag a piece onto a neighbour, or tap one piece and then a neighbour.
+// getEngine() returns the current board, so levels can swap engines freely.
+const attachMatch3Input = (el, getEngine, cellAt) => {
+  let start = null, done = false;
+  el.addEventListener('pointerdown', e => {
+    const cell = cellAt(e.clientX, e.clientY); if (!cell) return;
+    start = { x: e.clientX, y: e.clientY, cell }; done = false;
+  });
+  el.addEventListener('pointermove', e => {
+    const eng = getEngine();
+    if (!start || done || !eng) return;
+    const dx = e.clientX - start.x, dy = e.clientY - start.y;
+    if (Math.hypot(dx, dy) < 18) return;
+    done = true;
+    const [r, c] = start.cell;
+    if (Math.abs(dx) > Math.abs(dy)) eng.trySwap(r, c, r, c + Math.sign(dx)); else eng.trySwap(r, c, r + Math.sign(dy), c);
+  });
+  addEventListener('pointerup', () => {
+    const eng = getEngine();
+    if (start && !done && eng) {
+      const [r, c] = start.cell, s = eng.selected;
+      if (s && Math.abs(s[0] - r) + Math.abs(s[1] - c) === 1) eng.trySwap(s[0], s[1], r, c);
+      else eng.selected = s && s[0] === r && s[1] === c ? null : [r, c];
+    }
+    start = null;
+  });
+};
+/*MATCH3-ENGINE-END*/
+(() => {
+  const audio = GameAudio({
+    bpm: 96, scale: 'minor', root: 57, prog: [0, 5, 2, 4], seed: 401,
+    waves: { lead: 'triangle', bass: 'triangle', arp: 'sine', pad: 'sine' },
+    pad: true, arp: true, arpEvery: 1, arpOct: 1, leadOct: 1, leadDensity: 0.28, drums: 'soft', bassPattern: [0, 6, 10], volume: 0.17,
+    btnBg: 'rgba(201,162,74,.35)', btnColor: '#fff3cf'
+  });
+  const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+  const $ = id => document.getElementById(id);
+  const KEY = 'gem_crush_best_level';
+  let best = 1; try { best = +localStorage.getItem(KEY) || 1; } catch (e) {}
+  $('bestMenu').innerHTML = best > 1 ? 'Best level <b>' + best + '</b>' : '';
+
+  // ---------- gem artwork: procedurally cut facets lit from the top-left ----------
+  const GEMS = [
+    { name: 'ruby', col: '#e0193f', pts: [[50, 8], [80, 20], [92, 50], [80, 80], [50, 92], [20, 80], [8, 50], [20, 20]] },
+    { name: 'sapphire', col: '#1f63e0', pts: Array.from({ length: 14 }, (_, i) => [50 + Math.cos(i / 14 * Math.PI * 2 - Math.PI / 2) * 42, 50 + Math.sin(i / 14 * Math.PI * 2 - Math.PI / 2) * 42]) },
+    { name: 'emerald', col: '#16a85a', pts: [[24, 12], [76, 12], [90, 26], [90, 74], [76, 88], [24, 88], [10, 74], [10, 26]] },
+    { name: 'topaz', col: '#ffb11f', pts: [[50, 8], [94, 86], [6, 86]] },
+    { name: 'amethyst', col: '#9b3ce0', pts: [[50, 6], [92, 50], [50, 94], [8, 50]] },
+    { name: 'diamond', col: '#8fe6ff', pts: [[30, 10], [70, 10], [92, 50], [70, 90], [30, 90], [8, 50]] }
+  ];
+  function gemSVG(g) {
+    const P = g.pts, n = P.length;
+    const cx = P.reduce((s, p) => s + p[0], 0) / n, cy = P.reduce((s, p) => s + p[1], 0) / n;
+    const Q = P.map(([x, y]) => [cx + (x - cx) * 0.52, cy + (y - cy) * 0.52 - 3]);
+    const light = -Math.PI * 0.75;            // light from the top-left
+    let facets = '';
+    for (let i = 0; i < n; i++) {
+      const a = P[i], b = P[(i + 1) % n], c = Q[(i + 1) % n], d = Q[i];
+      const mx = (a[0] + b[0]) / 2 - cx, my = (a[1] + b[1]) / 2 - cy;
+      const lit = Math.cos(Math.atan2(my, mx) - light);         // -1..1
+      const col = shade(g.col, lit > 0 ? lit * 0.55 : lit * 0.45);
+      facets += '<polygon points="' + [a, b, c, d].map(p => p.join(',')).join(' ') + '" fill="' + col + '"/>';
+      // thin bright edge between facets
+      facets += '<line x1="' + a[0] + '" y1="' + a[1] + '" x2="' + d[0] + '" y2="' + d[1] + '" stroke="' + shade(g.col, 0.6) + '" stroke-width="0.8" opacity=".6"/>';
+    }
+    const poly = pts => pts.map(p => p.join(',')).join(' ');
+    return svgDoc(
+      '<defs>' +
+        '<radialGradient id="t" cx="35%" cy="30%" r="80%"><stop offset="0" stop-color="#fff" stop-opacity=".95"/><stop offset=".35" stop-color="' + shade(g.col, 0.45) + '"/><stop offset="1" stop-color="' + shade(g.col, -0.1) + '"/></radialGradient>' +
+        '<filter id="s" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="4" stdDeviation="3" flood-color="#000" flood-opacity=".45"/></filter>' +
+        '<radialGradient id="glint"><stop offset="0" stop-color="#fff"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></radialGradient>' +
+      '</defs>' +
+      '<g filter="url(#s)">' +
+        '<polygon points="' + poly(P) + '" fill="' + shade(g.col, -0.35) + '"/>' + facets +
+        '<polygon points="' + poly(Q) + '" fill="url(#t)"/>' +
+        '<polygon points="' + poly(P) + '" fill="none" stroke="' + shade(g.col, -0.55) + '" stroke-width="2.2" stroke-linejoin="round"/>' +
+      '</g>' +
+      // sparkle glints
+      '<circle cx="' + (Q[0][0] - 6) + '" cy="' + (Q[0][1] + 8) + '" r="9" fill="url(#glint)" opacity=".8"/>' +
+      '<path d="M' + (cx - 14) + ' ' + (cy - 14) + ' l2 -7 l2 7 l7 2 l-7 2 l-2 7 l-2 -7 l-7 -2z" fill="#fff" opacity=".9"/>'
+    );
+  }
+  const prismSVG = svgDoc(
+    '<defs><radialGradient id="b" cx="35%" cy="30%" r="75%"><stop offset="0" stop-color="#fff"/><stop offset=".25" stop-color="#ffe9ff"/><stop offset="1" stop-color="#4a1c66"/></radialGradient>' +
+    '<linearGradient id="r" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff4d6d"/><stop offset=".2" stop-color="#ffb11f"/><stop offset=".4" stop-color="#ffee55"/><stop offset=".6" stop-color="#3ddc84"/><stop offset=".8" stop-color="#3d8bff"/><stop offset="1" stop-color="#b14dff"/></linearGradient>' +
+    '<filter id="s"><feDropShadow dx="0" dy="4" stdDeviation="3" flood-opacity=".5"/></filter></defs>' +
+    '<g filter="url(#s)"><circle cx="50" cy="50" r="40" fill="url(#r)"/><circle cx="50" cy="50" r="40" fill="url(#b)" opacity=".55"/>' +
+    '<circle cx="50" cy="50" r="40" fill="none" stroke="#fff" stroke-width="2" opacity=".7"/></g>' +
+    '<ellipse cx="38" cy="32" rx="12" ry="7" fill="#fff" opacity=".85" transform="rotate(-30 38 32)"/>'
+  );
+  const tileSVG = svgDoc('<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5a2a78"/><stop offset="1" stop-color="#3a1652"/></linearGradient></defs>' +
+    '<rect x="3" y="3" width="94" height="94" rx="14" fill="url(#g)"/><rect x="3" y="3" width="94" height="94" rx="14" fill="none" stroke="#7a4a98" stroke-width="2"/>' +
+    '<rect x="10" y="8" width="80" height="16" rx="8" fill="#fff" opacity=".05"/>');
+
+  let SPR = null;
+  const defs = { tile: tileSVG, prism: prismSVG };
+  GEMS.forEach((g, i) => defs['g' + i] = gemSVG(g));
+  loadSprites(defs, 160).then(s => {
+    SPR = s;
+    const lc = $('logo').getContext('2d');
+    [[0, 30, 40], [1, 120, 30], [4, 75, 110]].forEach(([k, x, y]) => lc.drawImage(SPR['g' + k], x, y, 100, 100));
+  });
+
+  // ---------- layout ----------
+  let W, H, DPR, cell, bx, by;
+  const N = 8;
+  function resize() {
+    DPR = Math.min(devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight;
+    canvas.width = W * DPR; canvas.height = H * DPR; ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    const size = Math.min(W * 0.94, (H - 150) * 0.95, 560);
+    cell = size / N; bx = (W - size) / 2; by = Math.max(90, (H - size) / 2 + 30);
+  }
+  addEventListener('resize', resize); resize();
+
+  // ---------- game state ----------
+  let state = 'menu', eng, level = 1, score = 0, target, moves, t = 0, parts = [], texts = [], shake = 0;
+  const WORDS = ['', '', 'Sweet!', 'Great!', 'Brilliant!', 'Dazzling!', 'Legendary!'];
+  function newLevel() {
+    target = 1200 + level * 700; moves = Math.max(14, 24 - Math.floor(level / 2)); score = 0;
+    eng = Match3({
+      cols: N, rows: N, kinds: Math.min(6, 5 + (level > 3 ? 1 : 0)),
+      onClear(list, cascade) {
+        const mult = Math.max(1, cascade);
+        for (const p of list) {
+          score += 10 * mult * (p.special ? 3 : 1);
+          const x = bx + (p.c + 0.5) * cell, y = by + (p.r + 0.5) * cell, col = p.kind >= 0 ? GEMS[p.kind].col : '#ffffff';
+          for (let i = 0; i < 5; i++) parts.push({ x, y, vx: (Math.random() - .5) * 300, vy: (Math.random() - .5) * 300 - 80, life: 0.6, col, star: i === 0 });
+        }
+        audio.sfx(440 * Math.pow(2, Math.min(12, (cascade - 1) * 2) / 12), 0.18, 'triangle', 0.07, 880 * Math.pow(2, Math.min(12, cascade * 2) / 12));
+        if (cascade >= 2 && WORDS[Math.min(6, cascade)]) texts.push({ txt: WORDS[Math.min(6, cascade)], x: W / 2, y: by + N * cell / 2, life: 1.1, big: true });
+        if (list.length >= 10) shake = 8;
+      },
+      onSpecial(p) { audio.sfx(660, 0.3, 'sine', 0.07, 1320); },
+      onMove() { moves--; },
+      onSwapFail() { audio.sfx(180, 0.12, 'square', 0.04); },
+      onShuffle() { texts.push({ txt: 'Shuffle!', x: W / 2, y: by + N * cell / 2, life: 1.2, big: true }); },
+      onSettled(cascade) {
+        if (state !== 'play') return;
+        if (score >= target) win();
+        else if (moves <= 0) lose();
+      },
+      canSwap: () => state === 'play' && moves > 0
+    });
+  }
+  attachMatch3Input(canvas, () => (state === 'play' ? eng : null), (x, y) => { const c = Math.floor((x - bx) / cell), r = Math.floor((y - by) / cell); return r >= 0 && r < N && c >= 0 && c < N ? [r, c] : null; });
+  function start() { if (!SPR) return; level = 1; newLevel(); state = 'play'; audio.start(); for (const id of ['menu', 'over', 'win']) $(id).classList.add('hidden'); }
+  function win() {
+    state = 'won';
+    const stars = score >= target * 1.6 ? 3 : score >= target * 1.25 ? 2 : 1;
+    $('winScore').textContent = score; $('stars').textContent = '★'.repeat(stars) + '☆'.repeat(3 - stars);
+    if (level + 1 > best) { best = level + 1; try { localStorage.setItem(KEY, best); } catch (e) {} }
+    [523, 659, 784, 1046].forEach((f, i) => setTimeout(() => audio.sfx(f, 0.25, 'triangle', 0.08), i * 110));
+    setTimeout(() => $('win').classList.remove('hidden'), 500);
+  }
+  function lose() {
+    state = 'over';
+    $('finalLevel').textContent = level; $('bestOver').textContent = best;
+    audio.sfx(330, 0.6, 'sine', 0.07, 160);
+    setTimeout(() => $('over').classList.remove('hidden'), 400);
+  }
+  $('startBtn').onclick = start; $('againBtn').onclick = start;
+  $('nextBtn').onclick = () => { level++; newLevel(); state = 'play'; $('win').classList.add('hidden'); };
+  addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && state === 'menu') { e.preventDefault(); start(); } });
+
+  function update(dt) {
+    t += dt;
+    if (eng) eng.update(dt);
+    for (const p of parts) { p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 500 * dt; p.life -= dt; }
+    parts = parts.filter(p => p.life > 0);
+    for (const x of texts) { x.y -= 30 * dt; x.life -= dt; }
+    texts = texts.filter(x => x.life > 0);
+    shake = Math.max(0, shake - dt * 30);
+  }
+
+  function drawPiece(p) {
+    let s = 1, a = 1;
+    if (p.dying) { s = Math.max(0, 1 - p.dying * 4.5) * (1 + p.dying * 2); a = Math.max(0, 1 - p.dying * 4); }
+    if (p.pop) s *= 1 + Math.sin(p.pop * Math.PI) * 0.25;
+    const sel = eng.selected && eng.selected[0] === p.r && eng.selected[1] === p.c;
+    const hint = eng.hint && eng.hint.some(([r, c]) => r === p.r && c === p.c);
+    if (sel) s *= 1.1 + Math.sin(t * 10) * 0.04;
+    if (hint) s *= 1 + Math.sin(t * 8) * 0.07;
+    const x = bx + (p.x + 0.5) * cell, y = by + (p.y + 0.5) * cell;
+    const sz = cell * 0.9 * s;
+    const sq = p.land ? 1 - p.land * 0.8 : 1;
+    ctx.globalAlpha = a;
+    const img = p.special === 'color' ? SPR.prism : SPR['g' + p.kind];
+    ctx.save(); ctx.translate(x, y + (1 - sq) * sz * 0.3); ctx.scale(1 / Math.sqrt(sq), sq);
+    if (p.special === 'color') ctx.rotate(t * 1.5);
+    ctx.drawImage(img, -sz / 2, -sz / 2, sz, sz);
+    ctx.restore();
+    if (p.special === 'h' || p.special === 'v') {
+      ctx.save(); ctx.translate(x, y); if (p.special === 'v') ctx.rotate(Math.PI / 2);
+      const g = ctx.createLinearGradient(-sz / 2, 0, sz / 2, 0);
+      g.addColorStop(0, 'rgba(255,255,255,0)'); g.addColorStop(0.5, 'rgba(255,255,255,.95)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = g; ctx.fillRect(-sz / 2, -sz * 0.07, sz, sz * 0.14);
+      ctx.fillStyle = '#fff'; for (const d of [-1, 1]) { ctx.beginPath(); ctx.moveTo(d * sz * 0.48, 0); ctx.lineTo(d * sz * 0.34, -sz * 0.1); ctx.lineTo(d * sz * 0.34, sz * 0.1); ctx.fill(); }
+      ctx.restore();
+    } else if (p.special === 'bomb') {
+      ctx.save(); ctx.translate(x, y); ctx.strokeStyle = 'rgba(255,230,140,' + (0.6 + Math.sin(t * 8) * 0.4) + ')'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(0, 0, sz * 0.5, 0, Math.PI * 2); ctx.stroke();
+      for (let k = 0; k < 8; k++) { const ang = k / 8 * Math.PI * 2 + t; ctx.beginPath(); ctx.moveTo(Math.cos(ang) * sz * 0.5, Math.sin(ang) * sz * 0.5); ctx.lineTo(Math.cos(ang) * sz * 0.6, Math.sin(ang) * sz * 0.6); ctx.stroke(); }
+      ctx.restore();
+    }
+    if (sel) { ctx.strokeStyle = '#ffe7a0'; ctx.lineWidth = 3; ctx.strokeRect(bx + p.c * cell + 3, by + p.r * cell + 3, cell - 6, cell - 6); }
+    ctx.globalAlpha = 1;
+  }
+
+  function render() {
+    // velvet backdrop with a soft spotlight and damask dots
+    const g = ctx.createRadialGradient(W / 2, H * 0.4, 50, W / 2, H * 0.5, Math.max(W, H) * 0.8);
+    g.addColorStop(0, '#5a2378'); g.addColorStop(1, '#16061f');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = 'rgba(201,162,74,.06)';
+    for (let y = 0; y < H; y += 36) for (let x = (y / 36) % 2 * 18; x < W; x += 36) { ctx.beginPath(); ctx.moveTo(x, y - 6); ctx.lineTo(x + 6, y); ctx.lineTo(x, y + 6); ctx.lineTo(x - 6, y); ctx.fill(); }
+    if (!SPR || !eng) return;
+    ctx.save();
+    if (shake) ctx.translate((Math.random() - .5) * shake, (Math.random() - .5) * shake);
+    // gold frame
+    const fw = N * cell;
+    ctx.fillStyle = '#16061f'; ctx.fillRect(bx - 10, by - 10, fw + 20, fw + 20);
+    const fg = ctx.createLinearGradient(bx, by - 14, bx, by + fw + 14);
+    fg.addColorStop(0, '#ffe7a0'); fg.addColorStop(0.5, '#c9a24a'); fg.addColorStop(1, '#7a5418');
+    ctx.strokeStyle = fg; ctx.lineWidth = 6; ctx.strokeRect(bx - 8, by - 8, fw + 16, fw + 16);
+    for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) { ctx.globalAlpha = (r + c) % 2 ? 0.85 : 1; ctx.drawImage(SPR.tile, bx + c * cell, by + r * cell, cell, cell); }
+    ctx.globalAlpha = 1;
+    ctx.save(); ctx.beginPath(); ctx.rect(bx, by, fw, fw); ctx.clip();
+    for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) { const p = eng.grid[r][c]; if (p) drawPiece(p); }
+    ctx.restore();
+    for (const p of parts) {
+      ctx.globalAlpha = Math.max(0, p.life * 1.6); ctx.fillStyle = p.col;
+      if (p.star) { ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(t * 6); ctx.fillStyle = '#fff'; ctx.fillRect(-1.5, -7, 3, 14); ctx.fillRect(-7, -1.5, 14, 3); ctx.restore(); }
+      else { ctx.beginPath(); ctx.arc(p.x, p.y, 3.5, 0, Math.PI * 2); ctx.fill(); }
+    }
+    ctx.globalAlpha = 1;
+    for (const x of texts) {
+      ctx.globalAlpha = Math.min(1, x.life * 2); ctx.textAlign = 'center';
+      ctx.font = 'bold ' + Math.round(cell * 0.75) + 'px Georgia, serif';
+      ctx.lineWidth = 6; ctx.strokeStyle = '#3a1a05'; ctx.strokeText(x.txt, x.x, x.y); ctx.fillStyle = '#ffe7a0'; ctx.fillText(x.txt, x.x, x.y);
+    }
+    ctx.globalAlpha = 1;
+    ctx.restore();
+    $('level').textContent = level; $('score').textContent = score; $('moves').textContent = Math.max(0, moves);
+    $('prog').style.width = Math.min(100, score / target * 100) + '%';
+  }
+
+  let last = performance.now();
+  (function loop(now) {
+    const dt = Math.max(0, Math.min(0.033, (now - last) / 1000)); last = now;
+    update(dt); render(); requestAnimationFrame(loop);
+  })(last);
+})();
+</script>
+</body>
+</html>

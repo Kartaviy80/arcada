@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#060818">
+<title>Space Link</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #060818;
+    font-family: "Avenir Next", "Segoe UI", sans-serif; color: #e8ecff;
+    touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+  canvas { display: block; width: 100%; height: 100%; }
+  .hud { position: fixed; top: max(12px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); width: min(440px, 94vw); display: flex; align-items: center; gap: 10px; pointer-events: none; }
+  .hud .n { text-align: center; min-width: 60px; } .hud .n small { display: block; font-size: 10px; letter-spacing: 3px; opacity: .6; } .hud .n b { font-size: 26px; font-weight: 300; }
+  .goals { flex: 1; display: flex; justify-content: center; gap: 12px; }
+  .goal { display: flex; flex-direction: column; align-items: center; font-size: 13px; gap: 2px; }
+  .goal canvas { width: 34px; height: 34px; }
+  .goal.done { opacity: .45; }
+  .overlay { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; padding: 24px; text-align: center; background: #060818dd; transition: opacity .3s; }
+  .overlay.hidden { opacity: 0; pointer-events: none; }
+  .overlay canvas { width: 200px; height: 100px; }
+  h1 { font-size: clamp(36px, 11vw, 58px); font-weight: 200; letter-spacing: 12px; }
+  p { max-width: 310px; font-size: 15px; line-height: 1.7; color: #b8c0ee; }
+  .stat { letter-spacing: 2px; } .stat b { color: #8fe3ff; font-weight: 400; }
+  .btn { border: 1px solid #8fe3ff; background: #8fe3ff1a; color: #e8ecff; font: inherit; font-size: 16px; letter-spacing: 6px; padding: 14px 40px; border-radius: 40px; cursor: pointer; }
+  .btn:active { background: #8fe3ff44; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud">
+  <div class="n"><small>LEVEL</small><b id="level">1</b></div>
+  <div class="goals" id="goals"></div>
+  <div class="n"><small>MOVES</small><b id="moves">0</b></div>
+</div>
+
+<div class="overlay" id="menu">
+  <canvas id="logo" width="400" height="200"></canvas>
+  <h1>SPACE LINK</h1>
+  <p><b>Drag</b> to link neighbouring planets of the same kind — up, down, left or right. Close a <b>square loop</b> to clear every planet of that kind at once.</p>
+  <div class="stat" id="bestMenu"></div>
+  <button class="btn" id="startBtn">LAUNCH</button>
+</div>
+<div class="overlay hidden" id="win">
+  <h1>SECTOR CLEAR</h1>
+  <div class="stat">Moves left <b id="left">0</b></div>
+  <button class="btn" id="nextBtn">NEXT SECTOR</button>
+</div>
+<div class="overlay hidden" id="over">
+  <h1>OUT OF FUEL</h1>
+  <div class="stat">Reached sector <b id="finalLevel">1</b> · best <b id="bestOver">1</b></div>
+  <button class="btn" id="againBtn">RETRY</button>
+</div>
+
+<script>
+/*AUDIO-ENGINE-START*/
+// ---------- audio: procedural background music + sound effects ----------
+// Every note is synthesized with the Web Audio API at runtime, so the music
+// needs no files, works offline and carries no copyright.
+const GameAudio = (cfg) => {
+  let ctx = null, master = null, musicBus = null, sfxBus = null;
+  let timer = null, step = 0, nextT = 0, playing = false;
+  let musicOn = true;
+  try { musicOn = localStorage.getItem('music_off') !== '1'; } catch (e) {}
+
+  const SCALES = {
+    major: [0, 2, 4, 5, 7, 9, 11], minor: [0, 2, 3, 5, 7, 8, 10],
+    dorian: [0, 2, 3, 5, 7, 9, 10], lydian: [0, 2, 4, 6, 7, 9, 11],
+    pentaMajor: [0, 2, 4, 7, 9], pentaMinor: [0, 3, 5, 7, 10],
+    japanese: [0, 1, 5, 7, 8], phrygian: [0, 1, 3, 5, 7, 8, 10]
+  };
+  const scale = SCALES[cfg.scale] || SCALES.major;
+  const root = cfg.root || 57;
+  const bpm = cfg.bpm || 110;
+  const prog = cfg.prog || [0, 5, 3, 4];
+  const sixteenth = 60 / bpm / 4;
+
+  // deterministic random so each game always plays "its" tune
+  let seed = cfg.seed || 1;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
+
+  const deg = (d, oct = 0) => {
+    const n = scale.length;
+    const o = Math.floor(d / n);
+    return root + scale[((d % n) + n) % n] + 12 * (o + oct);
+  };
+  const hz = m => 440 * Math.pow(2, (m - 69) / 12);
+
+  // melody: two 2-bar phrases (A, B) arranged A A B A
+  function phrase() {
+    const notes = [];
+    let d = 2 + Math.floor(rnd() * 3);
+    for (let i = 0; i < 32; i++) {
+      const strong = i % 4 === 0;
+      if (rnd() < (strong ? 0.85 : (cfg.leadDensity || 0.35))) {
+        d += Math.round((rnd() - 0.5) * 4);
+        d = Math.max(0, Math.min(scale.length * 2, d));
+        const len = strong && rnd() < 0.5 ? 2 : 1;
+        notes.push({ i, d, len });
+      }
+    }
+    return notes;
+  }
+  const A = phrase(), B = phrase();
+  const song = [A, A, B, A];
+
+  function init() {
+    if (ctx) return;
+    try {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      master = ctx.createGain(); master.gain.value = 0.9; master.connect(ctx.destination);
+      musicBus = ctx.createGain(); musicBus.gain.value = cfg.volume || 0.16; musicBus.connect(master);
+      sfxBus = ctx.createGain(); sfxBus.gain.value = 1; sfxBus.connect(master);
+    } catch (e) { ctx = null; }
+  }
+
+  function voice(t, freq, dur, type, vol, opts = {}) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, t);
+    if (opts.detune) o.detune.value = opts.detune;
+    let node = o;
+    if (opts.cutoff) {
+      const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = opts.cutoff; f.Q.value = opts.q || 1;
+      o.connect(f); node = f;
+    }
+    const a = opts.attack || 0.008;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(vol, t + a);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    node.connect(g); g.connect(opts.bus || musicBus);
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+
+  let noiseBuf = null;
+  function noise(t, dur, vol, hp) {
+    if (!noiseBuf) {
+      noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 0.5, ctx.sampleRate);
+      const d = noiseBuf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    }
+    const s = ctx.createBufferSource(); s.buffer = noiseBuf;
+    const f = ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = hp;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.connect(f); f.connect(g); g.connect(musicBus);
+    s.start(t); s.stop(t + dur + 0.02);
+  }
+
+  function kick(t) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.setValueAtTime(140, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+    g.gain.setValueAtTime(0.9, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+    o.connect(g); g.connect(musicBus); o.start(t); o.stop(t + 0.25);
+  }
+
+  function playStep(s, t) {
+    const bar = Math.floor(s / 16);
+    const i16 = s % 16;
+    const chordDeg = prog[bar % prog.length];
+    const w = cfg.waves || {};
+    // bass
+    const bassPat = cfg.bassPattern || [0, 8];
+    if (bassPat.includes(i16)) voice(t, hz(deg(chordDeg, -2)), sixteenth * 3.5, w.bass || 'triangle', 0.5, { cutoff: 600 });
+    // pad (chord) at bar start
+    if (cfg.pad && i16 === 0) {
+      for (const k of [0, 2, 4]) voice(t, hz(deg(chordDeg + k, -1)), sixteenth * 15, w.pad || 'sine', 0.12, { attack: 0.3, cutoff: 1400, detune: k * 3 });
+    }
+    // arpeggio
+    if (cfg.arp && i16 % (cfg.arpEvery || 2) === 0) {
+      const k = [0, 2, 4, 2][(i16 / (cfg.arpEvery || 2)) % 4];
+      voice(t, hz(deg(chordDeg + k, cfg.arpOct || 0)), sixteenth * 1.6, w.arp || 'square', 0.1, { cutoff: cfg.arpCutoff || 2200 });
+    }
+    // lead melody
+    const ph = song[Math.floor(bar / 2) % song.length];
+    const pi = (bar % 2) * 16 + i16;
+    for (const n of ph) if (n.i === pi) {
+      voice(t, hz(deg(n.d, cfg.leadOct || 0)), sixteenth * (n.len * 2 + 0.5), w.lead || 'triangle', 0.22, { cutoff: cfg.leadCutoff || 3000 });
+    }
+    // drums
+    if (cfg.drums) {
+      if (i16 % 8 === 0 || (cfg.drums === 'busy' && i16 === 10)) kick(t);
+      if (i16 % 8 === 4) noise(t, 0.14, 0.35, 1500);
+      if (i16 % 2 === 0) noise(t, 0.04, cfg.drums === 'soft' ? 0.06 : 0.12, 7000);
+    }
+  }
+
+  function scheduler() {
+    if (!ctx || !playing) return;
+    while (nextT < ctx.currentTime + 0.15) {
+      playStep(step, nextT);
+      nextT += sixteenth * (cfg.swing && step % 2 === 0 ? 1 + cfg.swing : cfg.swing ? 1 - cfg.swing : 1);
+      step++;
+    }
+  }
+
+  function startMusic() {
+    if (!ctx || playing || !musicOn) return;
+    playing = true;
+    musicBus.gain.cancelScheduledValues(ctx.currentTime);
+    musicBus.gain.setValueAtTime(0.0001, ctx.currentTime);
+    musicBus.gain.linearRampToValueAtTime(cfg.volume || 0.16, ctx.currentTime + 1.2);
+    nextT = ctx.currentTime + 0.05;
+    timer = setInterval(scheduler, 40);
+  }
+  function stopMusic() {
+    playing = false;
+    if (timer) clearInterval(timer);
+    timer = null;
+  }
+
+  // mute button
+  const btn = document.createElement('button');
+  btn.setAttribute('aria-label', 'Toggle music');
+  btn.style.cssText = 'position:fixed;z-index:50;right:max(14px,env(safe-area-inset-right));bottom:max(14px,env(safe-area-inset-bottom));' +
+    'width:42px;height:42px;border-radius:50%;border:none;cursor:pointer;font-size:20px;line-height:42px;padding:0;' +
+    'background:' + (cfg.btnBg || 'rgba(0,0,0,.35)') + ';color:' + (cfg.btnColor || '#fff') + ';backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);';
+  const paint = () => { btn.textContent = musicOn ? '♪' : '✕'; btn.style.opacity = musicOn ? '1' : '.6'; };
+  paint();
+  const toggle = e => {
+    e.stopPropagation(); e.preventDefault();
+    musicOn = !musicOn;
+    try { localStorage.setItem('music_off', musicOn ? '0' : '1'); } catch (err) {}
+    init();
+    if (ctx && ctx.state === 'suspended') ctx.resume();
+    if (musicOn) startMusic(); else stopMusic();
+    paint();
+  };
+  btn.addEventListener('pointerdown', e => e.stopPropagation());
+  btn.addEventListener('pointerup', e => e.stopPropagation());
+  btn.addEventListener('click', toggle);
+  document.addEventListener('DOMContentLoaded', () => document.body.appendChild(btn));
+  if (document.body) document.body.appendChild(btn);
+
+  document.addEventListener('visibilitychange', () => {
+    if (!ctx) return;
+    if (document.hidden) ctx.suspend(); else ctx.resume();
+  });
+
+  return {
+    // call from a user gesture (start button) — browsers only allow audio after one
+    start() {
+      init();
+      if (!ctx) return;
+      if (ctx.state === 'suspended') ctx.resume();
+      startMusic();
+    },
+    sfx(freq, dur, type = 'sine', vol = 0.07, to = 0) {
+      init();
+      if (!ctx) return;
+      try {
+        const t = ctx.currentTime;
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.type = type; o.frequency.setValueAtTime(freq, t);
+        if (to) o.frequency.exponentialRampToValueAtTime(Math.max(30, to), t + dur);
+        g.gain.setValueAtTime(vol, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+        o.connect(g); g.connect(sfxBus);
+        o.start(t); o.stop(t + dur + 0.02);
+      } catch (e) {}
+    }
+  };
+};
+/*AUDIO-ENGINE-END*/
+/*SPRITES-START*/
+// ---------- sprites: detailed SVG artwork rasterised once into canvases ----------
+// Each piece is authored as an SVG (gradients, highlights, shadows, glow) and
+// drawn into an offscreen canvas at load time, so the game loop just blits images.
+const loadSprites = (defs, px = 160) => Promise.all(Object.entries(defs).map(([name, svg]) => new Promise(done => {
+  const img = new Image();
+  const finish = ok => {
+    const c = document.createElement('canvas');
+    const w = Array.isArray(px) ? px[0] : px, h = Array.isArray(px) ? px[1] : px;
+    c.width = w; c.height = h;
+    if (ok) c.getContext('2d').drawImage(img, 0, 0, w, h);
+    done([name, c]);
+  };
+  img.onload = () => finish(true);
+  img.onerror = () => finish(false);
+  img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+}))).then(entries => Object.fromEntries(entries));
+
+// small helpers for writing SVG
+const svgDoc = (body, vb = '0 0 100 100') => '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + vb + '">' + body + '</svg>';
+const shade = (hex, amt) => {
+  const n = parseInt(hex.slice(1), 16);
+  const f = v => Math.max(0, Math.min(255, Math.round(amt < 0 ? v * (1 + amt) : v + (255 - v) * amt)));
+  return '#' + [n >> 16, (n >> 8) & 255, n & 255].map(f).map(v => v.toString(16).padStart(2, '0')).join('');
+};
+/*SPRITES-END*/
+(() => {
+  const audio = GameAudio({
+    bpm: 84, scale: 'lydian', root: 57, prog: [0, 4, 1, 3], seed: 405,
+    waves: { lead: 'sine', bass: 'sine', arp: 'sine', pad: 'sawtooth' },
+    pad: true, arp: true, arpEvery: 1, arpOct: 1, arpCutoff: 2200, leadOct: 1, leadDensity: 0.22, drums: false, bassPattern: [0, 8], volume: 0.17,
+    btnBg: 'rgba(143,227,255,.15)'
+  });
+  const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+  const $ = id => document.getElementById(id);
+  const KEY = 'space_link_best_level';
+  let best = 1; try { best = +localStorage.getItem(KEY) || 1; } catch (e) {}
+  $('bestMenu').innerHTML = best > 1 ? 'Best sector <b>' + best + '</b>' : '';
+
+  // ---------- planet artwork ----------
+  const lightOverlay = '<radialGradient id="sh" cx="30%" cy="28%" r="85%"><stop offset="0" stop-color="#fff" stop-opacity=".35"/><stop offset=".45" stop-color="#fff" stop-opacity="0"/><stop offset=".8" stop-color="#000" stop-opacity=".45"/><stop offset="1" stop-color="#000" stop-opacity=".75"/></radialGradient>' +
+    '<clipPath id="cl"><circle cx="50" cy="50" r="36"/></clipPath>';
+  const atmo = c => '<circle cx="50" cy="50" r="42" fill="none" stroke="' + c + '" stroke-width="6" opacity=".25"/><circle cx="50" cy="50" r="39" fill="none" stroke="' + c + '" stroke-width="3" opacity=".35"/>';
+  const PLANETS = [
+    { col: '#ff6a3a', body: '<circle cx="50" cy="50" r="36" fill="#c2300a"/>' +
+      '<path d="M14 44 C 30 40, 36 52, 52 46 S 78 40, 88 50 M20 66 C 34 58, 50 70, 64 62 S 82 64, 86 70 M30 26 C 40 32, 54 24, 70 30" stroke="#ffb347" stroke-width="3" fill="none" opacity=".9"/>' +
+      '<circle cx="40" cy="58" r="6" fill="#ffd27a" opacity=".6"/><circle cx="66" cy="38" r="4" fill="#ffd27a" opacity=".6"/>', glow: '#ff8a3a' },
+    { col: '#2f8cff', body: '<circle cx="50" cy="50" r="36" fill="#1c5ad0"/>' +
+      '<path d="M22 36 C 30 26, 46 30, 44 40 C 42 50, 30 48, 26 56 C 20 52, 18 42, 22 36 Z M56 56 C 66 50, 82 56, 80 68 C 74 78, 60 76, 56 68 Z M60 24 C 66 20, 76 24, 74 30 C 70 34, 62 32, 60 24 Z" fill="#3fbf6a"/>' +
+      '<path d="M18 30 C 30 26, 44 34, 60 30 M30 74 C 44 70, 58 80, 76 74" stroke="#fff" stroke-width="3" fill="none" opacity=".55" stroke-linecap="round"/>', glow: '#6ab8ff' },
+    { col: '#e0b27a', body: '<circle cx="50" cy="50" r="36" fill="#c9965a"/>' +
+      [[22, '#f3d2a0', 6], [32, '#a8743a', 5], [42, '#f8e0b8', 7], [54, '#b07a40', 5], [64, '#f0c890', 6], [74, '#9a6430', 5]].map(([y, c, h]) => '<rect x="10" y="' + y + '" width="80" height="' + h + '" fill="' + c + '"/>').join('') +
+      '<ellipse cx="62" cy="58" rx="8" ry="5" fill="#a04a2a"/>', glow: '#ffd9a0', ring: true },
+    { col: '#9be8ff', body: '<circle cx="50" cy="50" r="36" fill="#6ac8e8"/>' +
+      '<path d="M14 40 C 24 36, 30 44, 40 40 S 60 36, 70 42 S 84 40, 88 44 L 88 14 L 14 14 Z" fill="#f2fdff"/><path d="M14 70 C 30 66, 44 72, 60 68 S 80 72, 88 68 L 88 90 L 14 90 Z" fill="#f2fdff"/>' +
+      '<path d="M30 54 L 46 50 L 54 58 M60 50 L 72 54" stroke="#3a9ac0" stroke-width="2" fill="none"/>', glow: '#c8f6ff' },
+    { col: '#b45cff', body: '<circle cx="50" cy="50" r="36" fill="#6a1ca8"/>' +
+      '<path d="M50 50 m-26 0 a 26 20 0 1 1 52 0 a 18 14 0 1 1 -36 0 a 10 8 0 1 1 20 0" stroke="#d99aff" stroke-width="5" fill="none" opacity=".85"/>' +
+      '<circle cx="30" cy="32" r="5" fill="#ff7ad9" opacity=".7"/><circle cx="72" cy="70" r="7" fill="#ff7ad9" opacity=".6"/>', glow: '#d99aff' }
+  ];
+  const planetSVG = p => svgDoc('<defs>' + lightOverlay + '</defs>' + atmo(p.glow) +
+    (p.ring ? '<ellipse cx="50" cy="50" rx="48" ry="12" fill="none" stroke="#f3d2a0" stroke-width="4" opacity=".7" transform="rotate(-20 50 50)"/>' : '') +
+    '<g clip-path="url(#cl)">' + p.body + '</g><circle cx="50" cy="50" r="36" fill="url(#sh)"/>' +
+    (p.ring ? '<path d="M2 50 A 48 12 0 0 0 98 50" fill="none" stroke="#fff0d0" stroke-width="4" opacity=".9" transform="rotate(-20 50 50)"/>' : ''));
+
+  let SPR = null;
+  const defs = {}; PLANETS.forEach((p, i) => defs['p' + i] = planetSVG(p));
+  loadSprites(defs, 160).then(s => { SPR = s; const lc = $('logo').getContext('2d'); [0, 2, 1, 4].forEach((k, i) => lc.drawImage(SPR['p' + k], 10 + i * 95, i % 2 ? 70 : 20, 110, 110)); });
+
+  const C = 6, R = 7;
+  let W, H, DPR, cell, bx, by;
+  function resize() {
+    DPR = Math.min(devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight;
+    canvas.width = W * DPR; canvas.height = H * DPR; ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    cell = Math.min(W * 0.94 / C, (H - 140) * 0.92 / R, 80);
+    bx = (W - cell * C) / 2; by = Math.max(84, (H - cell * R) / 2 + 30);
+  }
+  addEventListener('resize', resize); resize();
+  const stars = Array.from({ length: 160 }, () => ({ x: Math.random(), y: Math.random(), s: Math.random() * 1.6 + 0.3, tw: Math.random() * 6 }));
+
+  let state = 'menu', grid, path = [], loop = false, level = 1, moves, goals, t = 0, parts = [], drag = false, flash = 0;
+  const K = 5;
+  const mk = (k, r, y) => ({ kind: k, x: 0, y, vy: 0, dying: 0, pop: 0 });
+  function fill() {
+    grid = []; for (let r = 0; r < R; r++) { grid.push([]); for (let c = 0; c < C; c++) grid[r].push(mk(Math.floor(Math.random() * K), r, r - R - 2)); }
+  }
+  function goalsHud() {
+    const box = $('goals'); box.innerHTML = '';
+    for (const g of goals) {
+      const d = document.createElement('div'); d.className = 'goal';
+      const cv = document.createElement('canvas'); cv.width = 68; cv.height = 68; cv.getContext('2d').drawImage(SPR['p' + g.kind], 0, 0, 68, 68);
+      const s = document.createElement('span'); d.append(cv, s); box.append(d); g.el = d; g.sp = s;
+    }
+    refreshGoals();
+  }
+  function refreshGoals() { for (const g of goals) { g.sp.textContent = g.left > 0 ? g.left : '✓'; g.el.classList.toggle('done', g.left <= 0); } }
+  function newLevel() {
+    fill();
+    const n = Math.min(4, 2 + Math.floor(level / 3));
+    goals = [0, 1, 2, 3, 4].sort(() => Math.random() - 0.5).slice(0, n).map(k => ({ kind: k, left: 10 + level * 3 }));
+    moves = 16 + n * 2 + Math.floor(level / 2);
+    goalsHud();
+  }
+  function start() { if (!SPR) return; level = 1; newLevel(); state = 'play'; audio.start(); for (const id of ['menu', 'over', 'win']) $(id).classList.add('hidden'); }
+  function next() { level++; newLevel(); state = 'play'; $('win').classList.add('hidden'); }
+  $('startBtn').onclick = start; $('againBtn').onclick = start; $('nextBtn').onclick = next;
+  addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && state === 'menu') { e.preventDefault(); start(); } });
+
+  const settled = () => grid.every(row => row.every(p => p && !p.dying && Math.abs(p.y - grid.indexOf(row)) < 0.01));
+  const NOTES = [0, 2, 4, 7, 9, 12, 14, 16, 19, 21, 24];
+  function cellAt(x, y) {
+    const c = Math.floor((x - bx) / cell), r = Math.floor((y - by) / cell);
+    if (r < 0 || r >= R || c < 0 || c >= C) return null;
+    const cx = bx + (c + 0.5) * cell, cy = by + (r + 0.5) * cell;
+    return Math.hypot(x - cx, y - cy) < cell * 0.42 ? [r, c] : null;
+  }
+  canvas.addEventListener('pointerdown', e => {
+    if (state !== 'play' || !settled()) return;
+    const cl = cellAt(e.clientX, e.clientY); if (!cl) return;
+    drag = true; path = [cl]; loop = false;
+    audio.sfx(440, 0.08, 'sine', 0.05);
+  });
+  addEventListener('pointermove', e => {
+    if (!drag || loop) { if (drag && loop) { const cl = cellAt(e.clientX, e.clientY); const pv = path[path.length - 2]; if (cl && pv && cl[0] === pv[0] && cl[1] === pv[1]) { path.pop(); loop = false; } } return; }
+    const cl = cellAt(e.clientX, e.clientY); if (!cl) return;
+    const last = path[path.length - 1];
+    if (cl[0] === last[0] && cl[1] === last[1]) return;
+    if (Math.abs(cl[0] - last[0]) + Math.abs(cl[1] - last[1]) !== 1) return;
+    const kind = grid[path[0][0]][path[0][1]].kind;
+    if (grid[cl[0]][cl[1]].kind !== kind) return;
+    const prev = path[path.length - 2];
+    if (prev && prev[0] === cl[0] && prev[1] === cl[1]) { path.pop(); audio.sfx(330, 0.05, 'sine', 0.04); return; }
+    const idx = path.findIndex(p => p[0] === cl[0] && p[1] === cl[1]);
+    if (idx >= 0) { if (path.length >= 4) { path.push(cl); loop = true; audio.sfx(880, 0.3, 'triangle', 0.07, 1760); } return; }
+    path.push(cl);
+    audio.sfx(440 * Math.pow(2, NOTES[Math.min(10, path.length - 1)] / 12), 0.1, 'sine', 0.06);
+  });
+  addEventListener('pointerup', () => {
+    if (!drag) return;
+    drag = false;
+    if (path.length >= 2) commit();
+    path = []; loop = false;
+  });
+
+  function commit() {
+    const kind = grid[path[0][0]][path[0][1]].kind;
+    const cells = loop ? grid.flatMap((row, r) => row.map((p, c) => p.kind === kind ? [r, c] : null).filter(Boolean)) : path;
+    const uniq = new Map(cells.map(([r, c]) => [r * C + c, [r, c]]));
+    for (const [r, c] of uniq.values()) {
+      grid[r][c].dying = 0.001;
+      const x = bx + (c + 0.5) * cell, y = by + (r + 0.5) * cell;
+      for (let i = 0; i < 6; i++) parts.push({ x, y, vx: (Math.random() - .5) * 220, vy: (Math.random() - .5) * 220, life: 0.7, col: PLANETS[kind].glow });
+    }
+    const g = goals.find(g => g.kind === kind); if (g) g.left = Math.max(0, g.left - uniq.size);
+    refreshGoals();
+    if (loop) flash = 0.4;
+    moves--;
+    audio.sfx(loop ? 220 : 520, loop ? 0.6 : 0.2, 'triangle', 0.07, loop ? 1760 : 1040);
+    setTimeout(collapse, 230);
+  }
+  function collapse() {
+    for (let c = 0; c < C; c++) {
+      const keep = []; for (let r = R - 1; r >= 0; r--) if (!grid[r][c].dying) keep.push(grid[r][c]);
+      let spawn = 0;
+      for (let r = R - 1; r >= 0; r--) { let p = keep.shift(); if (!p) { spawn++; p = mk(Math.floor(Math.random() * K), r, -spawn); } grid[r][c] = p; }
+    }
+    setTimeout(check, 450);
+  }
+  function check() {
+    if (state !== 'play') return;
+    if (goals.every(g => g.left <= 0)) {
+      state = 'won'; $('left').textContent = moves;
+      if (level + 1 > best) { best = level + 1; try { localStorage.setItem(KEY, best); } catch (e) {} }
+      [523, 659, 784, 1046].forEach((f, i) => setTimeout(() => audio.sfx(f, 0.3, 'sine', 0.07), i * 110));
+      setTimeout(() => $('win').classList.remove('hidden'), 300);
+    } else if (moves <= 0) {
+      state = 'over'; $('finalLevel').textContent = level; $('bestOver').textContent = best;
+      audio.sfx(330, 0.8, 'sine', 0.07, 120);
+      setTimeout(() => $('over').classList.remove('hidden'), 300);
+    }
+  }
+
+  function update(dt) {
+    t += dt;
+    if (grid) for (let r = 0; r < R; r++) for (let c = 0; c < C; c++) {
+      const p = grid[r][c];
+      if (p.dying) { p.dying += dt; continue; }
+      if (p.y < r) { p.vy += 40 * dt; p.y = Math.min(r, p.y + p.vy * dt); if (p.y >= r) p.vy = 0; } else p.y = r;
+    }
+    for (const p of parts) { p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; }
+    parts = parts.filter(p => p.life > 0);
+    flash = Math.max(0, flash - dt);
+  }
+
+  function render() {
+    ctx.fillStyle = '#060818'; ctx.fillRect(0, 0, W, H);
+    const neb = ctx.createRadialGradient(W * 0.7, H * 0.3, 0, W * 0.7, H * 0.3, Math.max(W, H) * 0.7);
+    neb.addColorStop(0, 'rgba(90,40,160,.35)'); neb.addColorStop(1, 'rgba(90,40,160,0)'); ctx.fillStyle = neb; ctx.fillRect(0, 0, W, H);
+    const neb2 = ctx.createRadialGradient(W * 0.2, H * 0.8, 0, W * 0.2, H * 0.8, Math.max(W, H) * 0.5);
+    neb2.addColorStop(0, 'rgba(20,120,160,.3)'); neb2.addColorStop(1, 'rgba(20,120,160,0)'); ctx.fillStyle = neb2; ctx.fillRect(0, 0, W, H);
+    for (const s of stars) { ctx.fillStyle = 'rgba(255,255,255,' + (0.4 + 0.6 * Math.abs(Math.sin(t + s.tw))) + ')'; ctx.fillRect(s.x * W, s.y * H, s.s, s.s); }
+    if (!SPR || !grid) return;
+    if (flash) { ctx.fillStyle = 'rgba(255,255,255,' + flash * 0.5 + ')'; ctx.fillRect(0, 0, W, H); }
+    // grid dots
+    for (let r = 0; r < R; r++) for (let c = 0; c < C; c++) { ctx.fillStyle = 'rgba(255,255,255,.06)'; ctx.beginPath(); ctx.arc(bx + (c + 0.5) * cell, by + (r + 0.5) * cell, cell * 0.36, 0, Math.PI * 2); ctx.fill(); }
+    // link line
+    if (path.length) {
+      const kind = grid[path[0][0]][path[0][1]].kind, col = PLANETS[kind].glow;
+      ctx.strokeStyle = col; ctx.lineWidth = cell * 0.14; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.shadowColor = col; ctx.shadowBlur = 18;
+      ctx.beginPath(); path.forEach(([r, c], i) => { const x = bx + (c + 0.5) * cell, y = by + (r + 0.5) * cell; i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.stroke();
+      ctx.shadowBlur = 0;
+      if (loop) { ctx.strokeStyle = col; ctx.lineWidth = 6; ctx.globalAlpha = 0.5 + Math.sin(t * 12) * 0.3; ctx.strokeRect(bx - 6, by - 6, C * cell + 12, R * cell + 12); ctx.globalAlpha = 1; }
+    }
+    const inPath = new Set(path.map(([r, c]) => r * C + c));
+    for (let r = 0; r < R; r++) for (let c = 0; c < C; c++) {
+      const p = grid[r][c];
+      let s = 1, a = 1;
+      if (p.dying) { s = 1 + p.dying * 2; a = Math.max(0, 1 - p.dying * 4); }
+      if (inPath.has(r * C + c)) s *= 1.12 + Math.sin(t * 10) * 0.04;
+      const x = bx + (c + 0.5) * cell, y = by + (p.y + 0.5) * cell, sz = cell * 0.92 * s;
+      ctx.globalAlpha = a;
+      ctx.save(); ctx.translate(x, y); ctx.rotate(Math.sin(t * 0.5 + r + c) * 0.08);
+      ctx.drawImage(SPR['p' + p.kind], -sz / 2, -sz / 2, sz, sz);
+      ctx.restore();
+    }
+    ctx.globalAlpha = 1;
+    for (const p of parts) { ctx.globalAlpha = Math.max(0, p.life * 1.4); ctx.fillStyle = p.col; ctx.beginPath(); ctx.arc(p.x, p.y, 2.5, 0, Math.PI * 2); ctx.fill(); }
+    ctx.globalAlpha = 1;
+    $('level').textContent = level; $('moves').textContent = Math.max(0, moves);
+  }
+
+  let last = performance.now();
+  (function loop_(now) {
+    const dt = Math.max(0, Math.min(0.033, (now - last) / 1000)); last = now;
+    update(dt); render(); requestAnimationFrame(loop_);
+  })(last);
+})();
+</script>
+</body>
+</html>

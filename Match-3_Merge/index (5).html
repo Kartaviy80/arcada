@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#ffe3c2">
+<title>Fruit Drop</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #ffe3c2;
+    font-family: "Arial Rounded MT Bold", "Nunito", "Segoe UI", sans-serif; color: #6b3a1c;
+    touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+  canvas { display: block; width: 100%; height: 100%; }
+  .hud { position: fixed; top: max(10px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); width: min(420px, 94vw); display: flex; justify-content: space-between; align-items: center; pointer-events: none; }
+  .bub { background: #fff8ee; border: 3px solid #6b3a1c; border-radius: 20px; padding: 4px 14px; text-align: center; box-shadow: 0 4px 0 #6b3a1c; }
+  .bub small { display: block; font-size: 10px; letter-spacing: 2px; color: #b0703c; }
+  .bub b { font-size: 24px; }
+  .bub canvas { width: 40px; height: 40px; display: block; margin: 0 auto; }
+  .overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; padding: 20px; background: #6b3a1c66; transition: opacity .3s; }
+  .overlay.hidden { opacity: 0; pointer-events: none; }
+  .card { width: min(360px, 100%); background: #fff8ee; border: 4px solid #6b3a1c; border-radius: 26px; padding: 22px 18px; text-align: center; display: flex; flex-direction: column; gap: 12px; box-shadow: 0 10px 0 #6b3a1c; }
+  .card canvas { width: 100%; height: auto; }
+  h1 { font-size: clamp(40px, 12vw, 56px); color: #ff5a5a; text-shadow: 3px 3px 0 #ffd23f; line-height: 1; }
+  p { font-size: 15px; line-height: 1.5; }
+  .stat { font-size: 18px; } .stat b { color: #ff5a5a; }
+  .btn { border: 3px solid #6b3a1c; background: #7cd35a; color: #fff; font: inherit; font-size: 22px; padding: 12px; border-radius: 18px; cursor: pointer; box-shadow: 0 5px 0 #6b3a1c; text-shadow: 0 2px 0 #3c8a1c; }
+  .btn:active { transform: translateY(4px); box-shadow: 0 1px 0 #6b3a1c; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud">
+  <div class="bub"><small>SCORE</small><b id="score">0</b></div>
+  <div class="bub"><small>NEXT</small><canvas id="next" width="80" height="80"></canvas></div>
+  <div class="bub"><small>BEST</small><b id="bestHud">0</b></div>
+</div>
+
+<div class="overlay" id="menu"><div class="card">
+  <canvas id="logo" width="660" height="140"></canvas>
+  <h1>Fruit Drop</h1>
+  <p><b>Drag</b> to aim and <b>release</b> to drop. Two identical fruits merge into the next one — cherry all the way up to a giant watermelon! Don't let the jar overflow the red line.</p>
+  <button class="btn" id="startBtn">Let's drop!</button>
+</div></div>
+<div class="overlay hidden" id="over"><div class="card">
+  <h1>Overflow!</h1>
+  <div class="stat">Score <b id="finalScore">0</b></div>
+  <div class="stat">Biggest fruit <b id="biggest">-</b></div>
+  <div class="stat">Best <b id="bestOver">0</b></div>
+  <button class="btn" id="againBtn">Play again</button>
+</div></div>
+
+<script>
+/*AUDIO-ENGINE-START*/
+// ---------- audio: procedural background music + sound effects ----------
+// Every note is synthesized with the Web Audio API at runtime, so the music
+// needs no files, works offline and carries no copyright.
+const GameAudio = (cfg) => {
+  let ctx = null, master = null, musicBus = null, sfxBus = null;
+  let timer = null, step = 0, nextT = 0, playing = false;
+  let musicOn = true;
+  try { musicOn = localStorage.getItem('music_off') !== '1'; } catch (e) {}
+
+  const SCALES = {
+    major: [0, 2, 4, 5, 7, 9, 11], minor: [0, 2, 3, 5, 7, 8, 10],
+    dorian: [0, 2, 3, 5, 7, 9, 10], lydian: [0, 2, 4, 6, 7, 9, 11],
+    pentaMajor: [0, 2, 4, 7, 9], pentaMinor: [0, 3, 5, 7, 10],
+    japanese: [0, 1, 5, 7, 8], phrygian: [0, 1, 3, 5, 7, 8, 10]
+  };
+  const scale = SCALES[cfg.scale] || SCALES.major;
+  const root = cfg.root || 57;
+  const bpm = cfg.bpm || 110;
+  const prog = cfg.prog || [0, 5, 3, 4];
+  const sixteenth = 60 / bpm / 4;
+
+  // deterministic random so each game always plays "its" tune
+  let seed = cfg.seed || 1;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
+
+  const deg = (d, oct = 0) => {
+    const n = scale.length;
+    const o = Math.floor(d / n);
+    return root + scale[((d % n) + n) % n] + 12 * (o + oct);
+  };
+  const hz = m => 440 * Math.pow(2, (m - 69) / 12);
+
+  // melody: two 2-bar phrases (A, B) arranged A A B A
+  function phrase() {
+    const notes = [];
+    let d = 2 + Math.floor(rnd() * 3);
+    for (let i = 0; i < 32; i++) {
+      const strong = i % 4 === 0;
+      if (rnd() < (strong ? 0.85 : (cfg.leadDensity || 0.35))) {
+        d += Math.round((rnd() - 0.5) * 4);
+        d = Math.max(0, Math.min(scale.length * 2, d));
+        const len = strong && rnd() < 0.5 ? 2 : 1;
+        notes.push({ i, d, len });
+      }
+    }
+    return notes;
+  }
+  const A = phrase(), B = phrase();
+  const song = [A, A, B, A];
+
+  function init() {
+    if (ctx) return;
+    try {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      master = ctx.createGain(); master.gain.value = 0.9; master.connect(ctx.destination);
+      musicBus = ctx.createGain(); musicBus.gain.value = cfg.volume || 0.16; musicBus.connect(master);
+      sfxBus = ctx.createGain(); sfxBus.gain.value = 1; sfxBus.connect(master);
+    } catch (e) { ctx = null; }
+  }
+
+  function voice(t, freq, dur, type, vol, opts = {}) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, t);
+    if (opts.detune) o.detune.value = opts.detune;
+    let node = o;
+    if (opts.cutoff) {
+      const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = opts.cutoff; f.Q.value = opts.q || 1;
+      o.connect(f); node = f;
+    }
+    const a = opts.attack || 0.008;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(vol, t + a);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    node.connect(g); g.connect(opts.bus || musicBus);
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+
+  let noiseBuf = null;
+  function noise(t, dur, vol, hp) {
+    if (!noiseBuf) {
+      noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 0.5, ctx.sampleRate);
+      const d = noiseBuf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    }
+    const s = ctx.createBufferSource(); s.buffer = noiseBuf;
+    const f = ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = hp;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.connect(f); f.connect(g); g.connect(musicBus);
+    s.start(t); s.stop(t + dur + 0.02);
+  }
+
+  function kick(t) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.setValueAtTime(140, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+    g.gain.setValueAtTime(0.9, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+    o.connect(g); g.connect(musicBus); o.start(t); o.stop(t + 0.25);
+  }
+
+  function playStep(s, t) {
+    const bar = Math.floor(s / 16);
+    const i16 = s % 16;
+    const chordDeg = prog[bar % prog.length];
+    const w = cfg.waves || {};
+    // bass
+    const bassPat = cfg.bassPattern || [0, 8];
+    if (bassPat.includes(i16)) voice(t, hz(deg(chordDeg, -2)), sixteenth * 3.5, w.bass || 'triangle', 0.5, { cutoff: 600 });
+    // pad (chord) at bar start
+    if (cfg.pad && i16 === 0) {
+      for (const k of [0, 2, 4]) voice(t, hz(deg(chordDeg + k, -1)), sixteenth * 15, w.pad || 'sine', 0.12, { attack: 0.3, cutoff: 1400, detune: k * 3 });
+    }
+    // arpeggio
+    if (cfg.arp && i16 % (cfg.arpEvery || 2) === 0) {
+      const k = [0, 2, 4, 2][(i16 / (cfg.arpEvery || 2)) % 4];
+      voice(t, hz(deg(chordDeg + k, cfg.arpOct || 0)), sixteenth * 1.6, w.arp || 'square', 0.1, { cutoff: cfg.arpCutoff || 2200 });
+    }
+    // lead melody
+    const ph = song[Math.floor(bar / 2) % song.length];
+    const pi = (bar % 2) * 16 + i16;
+    for (const n of ph) if (n.i === pi) {
+      voice(t, hz(deg(n.d, cfg.leadOct || 0)), sixteenth * (n.len * 2 + 0.5), w.lead || 'triangle', 0.22, { cutoff: cfg.leadCutoff || 3000 });
+    }
+    // drums
+    if (cfg.drums) {
+      if (i16 % 8 === 0 || (cfg.drums === 'busy' && i16 === 10)) kick(t);
+      if (i16 % 8 === 4) noise(t, 0.14, 0.35, 1500);
+      if (i16 % 2 === 0) noise(t, 0.04, cfg.drums === 'soft' ? 0.06 : 0.12, 7000);
+    }
+  }
+
+  function scheduler() {
+    if (!ctx || !playing) return;
+    while (nextT < ctx.currentTime + 0.15) {
+      playStep(step, nextT);
+      nextT += sixteenth * (cfg.swing && step % 2 === 0 ? 1 + cfg.swing : cfg.swing ? 1 - cfg.swing : 1);
+      step++;
+    }
+  }
+
+  function startMusic() {
+    if (!ctx || playing || !musicOn) return;
+    playing = true;
+    musicBus.gain.cancelScheduledValues(ctx.currentTime);
+    musicBus.gain.setValueAtTime(0.0001, ctx.currentTime);
+    musicBus.gain.linearRampToValueAtTime(cfg.volume || 0.16, ctx.currentTime + 1.2);
+    nextT = ctx.currentTime + 0.05;
+    timer = setInterval(scheduler, 40);
+  }
+  function stopMusic() {
+    playing = false;
+    if (timer) clearInterval(timer);
+    timer = null;
+  }
+
+  // mute button
+  const btn = document.createElement('button');
+  btn.setAttribute('aria-label', 'Toggle music');
+  btn.style.cssText = 'position:fixed;z-index:50;right:max(14px,env(safe-area-inset-right));bottom:max(14px,env(safe-area-inset-bottom));' +
+    'width:42px;height:42px;border-radius:50%;border:none;cursor:pointer;font-size:20px;line-height:42px;padding:0;' +
+    'background:' + (cfg.btnBg || 'rgba(0,0,0,.35)') + ';color:' + (cfg.btnColor || '#fff') + ';backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);';
+  const paint = () => { btn.textContent = musicOn ? '♪' : '✕'; btn.style.opacity = musicOn ? '1' : '.6'; };
+  paint();
+  const toggle = e => {
+    e.stopPropagation(); e.preventDefault();
+    musicOn = !musicOn;
+    try { localStorage.setItem('music_off', musicOn ? '0' : '1'); } catch (err) {}
+    init();
+    if (ctx && ctx.state === 'suspended') ctx.resume();
+    if (musicOn) startMusic(); else stopMusic();
+    paint();
+  };
+  btn.addEventListener('pointerdown', e => e.stopPropagation());
+  btn.addEventListener('pointerup', e => e.stopPropagation());
+  btn.addEventListener('click', toggle);
+  document.addEventListener('DOMContentLoaded', () => document.body.appendChild(btn));
+  if (document.body) document.body.appendChild(btn);
+
+  document.addEventListener('visibilitychange', () => {
+    if (!ctx) return;
+    if (document.hidden) ctx.suspend(); else ctx.resume();
+  });
+
+  return {
+    // call from a user gesture (start button) — browsers only allow audio after one
+    start() {
+      init();
+      if (!ctx) return;
+      if (ctx.state === 'suspended') ctx.resume();
+      startMusic();
+    },
+    sfx(freq, dur, type = 'sine', vol = 0.07, to = 0) {
+      init();
+      if (!ctx) return;
+      try {
+        const t = ctx.currentTime;
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.type = type; o.frequency.setValueAtTime(freq, t);
+        if (to) o.frequency.exponentialRampToValueAtTime(Math.max(30, to), t + dur);
+        g.gain.setValueAtTime(vol, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+        o.connect(g); g.connect(sfxBus);
+        o.start(t); o.stop(t + dur + 0.02);
+      } catch (e) {}
+    }
+  };
+};
+/*AUDIO-ENGINE-END*/
+/*SPRITES-START*/
+// ---------- sprites: detailed SVG artwork rasterised once into canvases ----------
+// Each piece is authored as an SVG (gradients, highlights, shadows, glow) and
+// drawn into an offscreen canvas at load time, so the game loop just blits images.
+const loadSprites = (defs, px = 160) => Promise.all(Object.entries(defs).map(([name, svg]) => new Promise(done => {
+  const img = new Image();
+  const finish = ok => {
+    const c = document.createElement('canvas');
+    const w = Array.isArray(px) ? px[0] : px, h = Array.isArray(px) ? px[1] : px;
+    c.width = w; c.height = h;
+    if (ok) c.getContext('2d').drawImage(img, 0, 0, w, h);
+    done([name, c]);
+  };
+  img.onload = () => finish(true);
+  img.onerror = () => finish(false);
+  img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+}))).then(entries => Object.fromEntries(entries));
+
+// small helpers for writing SVG
+const svgDoc = (body, vb = '0 0 100 100') => '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + vb + '">' + body + '</svg>';
+const shade = (hex, amt) => {
+  const n = parseInt(hex.slice(1), 16);
+  const f = v => Math.max(0, Math.min(255, Math.round(amt < 0 ? v * (1 + amt) : v + (255 - v) * amt)));
+  return '#' + [n >> 16, (n >> 8) & 255, n & 255].map(f).map(v => v.toString(16).padStart(2, '0')).join('');
+};
+/*SPRITES-END*/
+(() => {
+  const audio = GameAudio({
+    bpm: 108, scale: 'pentaMajor', root: 64, prog: [0, 3, 1, 4], seed: 406,
+    waves: { lead: 'triangle', bass: 'sine', arp: 'sine' },
+    arp: true, arpEvery: 2, arpOct: 1, leadOct: 1, leadDensity: 0.32, drums: 'soft', swing: 0.15, bassPattern: [0, 6, 10], volume: 0.17,
+    btnBg: 'rgba(107,58,28,.5)', btnColor: '#fff8ee'
+  });
+  const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+  const $ = id => document.getElementById(id);
+  const KEY = 'fruit_drop_best';
+  let best = 0; try { best = +localStorage.getItem(KEY) || 0; } catch (e) {}
+  $('bestHud').textContent = best;
+
+  // ---------- 11 fruit characters, each built from the same customisable template ----------
+  const TIERS = [
+    { name: 'Cherry', r: 15, a: '#ff8a9a', b: '#e0193f', c: '#8a0a20', stem: 'long' },
+    { name: 'Strawberry', r: 20, a: '#ffb0b8', b: '#ff3b5c', c: '#a0102c', seeds: '#ffe680', leaf: 'crown' },
+    { name: 'Grape', r: 26, a: '#d9b0ff', b: '#8a4ad0', c: '#40166a', bloom: true, stem: 'short' },
+    { name: 'Orange', r: 32, a: '#ffd29a', b: '#ff9a1f', c: '#c25a00', dimples: true, leaf: 'one' },
+    { name: 'Persimmon', r: 38, a: '#ffc08a', b: '#ff7a1a', c: '#b04000', leaf: 'calyx' },
+    { name: 'Apple', r: 46, a: '#ff9a8a', b: '#e0412f', c: '#8a1a12', leaf: 'one', stem: 'short' },
+    { name: 'Pear', r: 54, a: '#f8ffb0', b: '#c8dc4a', c: '#7a8a1c', freckles: true, stem: 'short' },
+    { name: 'Peach', r: 62, a: '#fff0e0', b: '#ffb0a0', c: '#e0605a', crease: true, leaf: 'one' },
+    { name: 'Pineapple', r: 72, a: '#fff3a0', b: '#ffcf3a', c: '#c08a00', diamonds: true, leaf: 'tuft' },
+    { name: 'Melon', r: 84, a: '#eaffc0', b: '#a8d870', c: '#5a8a2c', net: true, stem: 'short' },
+    { name: 'Watermelon', r: 98, a: '#9ae07a', b: '#3fa83a', c: '#145a14', stripes: true }
+  ];
+  function fruitSVG(f) {
+    let body = '<circle cx="50" cy="52" r="42" fill="url(#g)"/>';
+    if (f.seeds) for (let i = 0; i < 14; i++) { const a = i * 2.4, d = 14 + (i % 3) * 9; body += '<ellipse cx="' + (50 + Math.cos(a) * d).toFixed(1) + '" cy="' + (56 + Math.sin(a) * d * 0.9).toFixed(1) + '" rx="1.6" ry="2.6" fill="' + f.seeds + '"/>'; }
+    if (f.dimples) body += '<circle cx="50" cy="52" r="42" fill="url(#dots)"/>';
+    if (f.freckles) for (let i = 0; i < 12; i++) body += '<circle cx="' + (24 + (i * 37) % 54) + '" cy="' + (30 + (i * 23) % 50) + '" r="1.4" fill="#7a8a1c" opacity=".5"/>';
+    if (f.crease) body += '<path d="M50 12 C 40 30, 40 70, 50 94" stroke="' + f.c + '" stroke-width="2.5" fill="none" opacity=".45"/>';
+    if (f.diamonds) body += '<circle cx="50" cy="52" r="42" fill="url(#dia)"/>';
+    if (f.net) body += '<circle cx="50" cy="52" r="42" fill="url(#net)"/>';
+    if (f.stripes) body += [-30, -16, 0, 16, 30].map(dx => '<path d="M' + (50 + dx) + ' 11 C ' + (50 + dx * 1.5) + ' 40, ' + (50 + dx * 1.5) + ' 64, ' + (50 + dx) + ' 93" stroke="#145a14" stroke-width="6" fill="none" opacity=".75"/>').join('');
+    if (f.bloom) body += '<circle cx="50" cy="52" r="42" fill="#fff" opacity=".12"/>';
+    let top = '';
+    if (f.stem === 'long') top += '<path d="M50 12 C 52 0, 60 -6, 70 -8" stroke="#3c7a1c" stroke-width="3.5" fill="none" stroke-linecap="round"/>';
+    if (f.stem === 'short') top += '<path d="M50 14 C 50 8, 52 4, 55 2" stroke="#6b3a14" stroke-width="4" fill="none" stroke-linecap="round"/>';
+    if (f.leaf === 'one') top += '<path d="M53 10 C 62 -2, 78 0, 82 4 C 74 12, 62 14, 53 10 Z" fill="#5cb030"/>';
+    if (f.leaf === 'crown') top += '<path d="M50 14 L 36 4 L 44 12 L 30 12 L 46 18 L 50 22 L 54 18 L 70 12 L 56 12 L 64 4 Z" fill="#3c9a2c"/>';
+    if (f.leaf === 'calyx') top += '<path d="M50 16 C 38 6, 28 12, 32 18 C 40 20, 46 20, 50 16 C 62 6, 72 12, 68 18 C 60 20, 54 20, 50 16 Z" fill="#4c8a2c"/><circle cx="50" cy="14" r="4" fill="#3c6a1c"/>';
+    if (f.leaf === 'tuft') top += '<path d="M50 14 L 36 -10 L 46 8 L 42 -16 L 50 6 L 58 -16 L 54 8 L 64 -10 Z" fill="#3c9a2c"/>';
+    // kawaii face
+    const face = '<ellipse cx="38" cy="54" rx="4" ry="5" fill="#2a1a10"/><ellipse cx="62" cy="54" rx="4" ry="5" fill="#2a1a10"/>' +
+      '<circle cx="39.5" cy="52" r="1.5" fill="#fff"/><circle cx="63.5" cy="52" r="1.5" fill="#fff"/>' +
+      '<path d="M45 62 Q 50 67 55 62" stroke="#2a1a10" stroke-width="2.2" fill="none" stroke-linecap="round"/>' +
+      '<ellipse cx="30" cy="62" rx="5" ry="3" fill="#ff6a8a" opacity=".45"/><ellipse cx="70" cy="62" rx="5" ry="3" fill="#ff6a8a" opacity=".45"/>';
+    return svgDoc('<defs><radialGradient id="g" cx="35%" cy="30%" r="75%"><stop offset="0" stop-color="' + f.a + '"/><stop offset=".55" stop-color="' + f.b + '"/><stop offset="1" stop-color="' + f.c + '"/></radialGradient>' +
+      '<pattern id="dots" width="6" height="6" patternUnits="userSpaceOnUse"><circle cx="2" cy="2" r=".9" fill="#a04000" opacity=".3"/></pattern>' +
+      '<pattern id="dia" width="12" height="12" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="12" height="12" fill="none" stroke="#a07000" stroke-width="1.5" opacity=".6"/><circle cx="6" cy="6" r="1.5" fill="#7a5000" opacity=".5"/></pattern>' +
+      '<pattern id="net" width="10" height="10" patternUnits="userSpaceOnUse" patternTransform="rotate(30)"><path d="M0 5 Q 5 2 10 5 M5 0 Q 8 5 5 10" stroke="#f4ffe0" stroke-width="1.2" fill="none" opacity=".75"/></pattern>' +
+      '<clipPath id="cl"><circle cx="50" cy="52" r="42"/></clipPath>' +
+      '<filter id="s" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="3" stdDeviation="2" flood-color="#6b3a1c" flood-opacity=".35"/></filter></defs>' +
+      '<g filter="url(#s)"><g clip-path="url(#cl)">' + body + '</g>' + top + '</g>' + face +
+      '<ellipse cx="32" cy="30" rx="12" ry="7" fill="#fff" opacity=".55" transform="rotate(-30 32 30)"/>', '0 -18 100 120');
+  }
+
+  let SPR = null;
+  const defs = {}; TIERS.forEach((f, i) => defs['f' + i] = fruitSVG(f));
+  loadSprites(defs, [200, 240]).then(s => {
+    SPR = s;
+    const lc = $('logo').getContext('2d');
+    TIERS.forEach((f, i) => { const sz = 34 + i * 6.5; lc.drawImage(SPR['f' + i], i * 58 + 4 - (sz - 50) / 2 + 0, 130 - sz * 1.2, sz, sz * 1.2); });
+  });
+  // the fruit body circle sits at (50,52) r=42 inside a 100x120 box starting at y=-18
+  function drawFruit(i, x, y, r, rot = 0, sq = 0) {
+    const s = r / 42, w = 100 * s, h = 120 * s;
+    ctx.save(); ctx.translate(x, y); ctx.rotate(rot); ctx.scale(1 + sq, 1 - sq);
+    ctx.drawImage(SPR['f' + i], -50 * s, -(52 + 18) * s, w, h);
+    ctx.restore();
+  }
+
+  // ---------- jar & physics ----------
+  const JW = 340, JH = 470, LINE = 70, G = 1500;
+  let W, H, DPR, S, ox, oy;
+  function resize() {
+    DPR = Math.min(devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight;
+    canvas.width = W * DPR; canvas.height = H * DPR;
+    S = Math.min(W / (JW + 40), (H - 120) / (JH + 70)); ox = (W / S - JW) / 2; oy = (H / S - JH) / 2 + 40 / S;
+  }
+  addEventListener('resize', resize); resize();
+
+  let state = 'menu', bodies = [], aimX = JW / 2, cur = 0, nextT = 1, score = 0, cool = 0, t = 0, danger = 0, biggest = 0, pops = [], uid = 0;
+  const randTier = () => Math.floor(Math.random() * 5);
+  function reset() { bodies = []; aimX = JW / 2; cur = randTier(); nextT = randTier(); score = 0; cool = 0; danger = 0; biggest = 0; pops = []; drawNext(); }
+  function drawNext() { const nc = $('next').getContext('2d'); nc.clearRect(0, 0, 80, 80); if (SPR) nc.drawImage(SPR['f' + nextT], 12, 4, 56, 67); }
+  function start() { if (!SPR) return; reset(); state = 'play'; audio.start(); $('menu').classList.add('hidden'); $('over').classList.add('hidden'); }
+  $('startBtn').onclick = start; $('againBtn').onclick = start;
+
+  function drop() {
+    if (state !== 'play' || cool > 0) return;
+    const r = TIERS[cur].r;
+    const x = Math.max(r, Math.min(JW - r, aimX));
+    bodies.push({ id: uid++, tier: cur, x, y: 20, px: x, py: 20, r, born: t, rot: 0, sq: 0 });
+    audio.sfx(500, 0.08, 'sine', 0.05, 300);
+    cur = nextT; nextT = randTier(); drawNext(); cool = 0.5;
+  }
+  const toJar = e => (e.clientX / S) - ox;
+  let aiming = false;
+  canvas.addEventListener('pointerdown', e => { if (state !== 'play') return; aiming = true; aimX = toJar(e); });
+  addEventListener('pointermove', e => { if (state === 'play' && (aiming || e.pointerType === 'mouse')) aimX = toJar(e); });
+  addEventListener('pointerup', () => { if (aiming) { aiming = false; drop(); } });
+  const keys = {};
+  addEventListener('keydown', e => {
+    if ((e.key === 'Enter' || e.key === ' ') && state !== 'play') { if (state === 'menu' || !$('over').classList.contains('hidden')) { e.preventDefault(); start(); } return; }
+    keys[e.key] = true; if (e.key === ' ' || e.key === 'ArrowDown') { e.preventDefault(); drop(); }
+  });
+  addEventListener('keyup', e => { keys[e.key] = false; });
+
+  function physics(h) {
+    for (const b of bodies) {
+      const vx = (b.x - b.px) * 0.995, vy = (b.y - b.py) * 0.995;
+      b.px = b.x; b.py = b.y;
+      b.x += vx; b.y += vy + G * h * h;
+      b.rot += vx / b.r;
+    }
+    for (let it = 0; it < 4; it++) {
+      for (let i = 0; i < bodies.length; i++) {
+        const a = bodies[i];
+        for (let j = i + 1; j < bodies.length; j++) {
+          const b = bodies[j], dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy), min = a.r + b.r;
+          if (d < min && d > 0.0001) {
+            const ov = (min - d), nx = dx / d, ny = dy / d, ma = a.r * a.r, mb = b.r * b.r, tot = ma + mb;
+            a.x -= nx * ov * (mb / tot); a.y -= ny * ov * (mb / tot);
+            b.x += nx * ov * (ma / tot); b.y += ny * ov * (ma / tot);
+          }
+        }
+        if (a.x < a.r) { a.x = a.r; } if (a.x > JW - a.r) { a.x = JW - a.r; }
+        if (a.y > JH - a.r) { a.y = JH - a.r; a.px += (a.x - a.px) * 0.1; }
+      }
+    }
+  }
+  function merges() {
+    for (let i = 0; i < bodies.length; i++) for (let j = i + 1; j < bodies.length; j++) {
+      const a = bodies[i], b = bodies[j];
+      if (a.tier !== b.tier || a.dead || b.dead) continue;
+      if (Math.hypot(a.x - b.x, a.y - b.y) > a.r + b.r + 1) continue;
+      a.dead = b.dead = true;
+      const nt = a.tier + 1, mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+      score += (nt + 1) * (nt + 2) / 2;
+      for (let k = 0; k < 10; k++) pops.push({ x: mx, y: my, vx: (Math.random() - .5) * 300, vy: (Math.random() - .5) * 300, life: 0.6, col: TIERS[a.tier].b });
+      if (nt < TIERS.length) {
+        const r = TIERS[nt].r;
+        bodies.push({ id: uid++, tier: nt, x: mx, y: my, px: mx, py: my + 2, r, born: t - 2, rot: 0, sq: 0.25 });
+        biggest = Math.max(biggest, nt);
+        audio.sfx(300 * Math.pow(2, nt / 6), 0.25, 'triangle', 0.08, 600 * Math.pow(2, nt / 6));
+      } else { score += 200; audio.sfx(1046, 0.6, 'triangle', 0.08, 2093); }
+    }
+    bodies = bodies.filter(b => !b.dead);
+  }
+
+  function update(dt) {
+    t += dt;
+    if (state !== 'play') return;
+    const kd = (keys.ArrowRight ? 1 : 0) - (keys.ArrowLeft ? 1 : 0);
+    aimX = Math.max(0, Math.min(JW, aimX + kd * 300 * dt));
+    cool -= dt;
+    const n = 4, h = dt / n;
+    for (let k = 0; k < n; k++) physics(h);
+    merges();
+    for (const b of bodies) b.sq = Math.max(0, b.sq - dt * 1.5);
+    // overflow: a resting fruit above the line for too long
+    const over = bodies.some(b => t - b.born > 1.2 && b.y - b.r < LINE && Math.abs(b.y - b.py) < 2);
+    danger = over ? danger + dt : Math.max(0, danger - dt * 2);
+    if (danger > 2) {
+      state = 'over';
+      if (score > best) { best = score; try { localStorage.setItem(KEY, best); } catch (e) {} }
+      $('finalScore').textContent = score; $('bestOver').textContent = best; $('bestHud').textContent = best; $('biggest').textContent = TIERS[biggest].name;
+      audio.sfx(300, 0.8, 'sawtooth', 0.07, 80);
+      setTimeout(() => $('over').classList.remove('hidden'), 500);
+    }
+    for (const p of pops) { p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 500 * dt; p.life -= dt; }
+    pops = pops.filter(p => p.life > 0);
+  }
+
+  function render() {
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#ffeedd'); g.addColorStop(1, '#ffd2a8');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    // polka dots
+    ctx.fillStyle = 'rgba(255,255,255,.5)';
+    for (let y = 0; y < H; y += 40) for (let x = (y / 40 % 2) * 20; x < W; x += 40) { ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI * 2); ctx.fill(); }
+    ctx.save(); ctx.scale(S, S); ctx.translate(ox, oy);
+    // table
+    ctx.fillStyle = '#c98a5a'; ctx.fillRect(-ox, JH + 14, W / S, 400);
+    ctx.fillStyle = '#e0a878'; ctx.fillRect(-ox, JH + 10, W / S, 8);
+    // jar back
+    ctx.fillStyle = 'rgba(255,255,255,.45)'; ctx.beginPath(); ctx.roundRect ? ctx.roundRect(-12, 0, JW + 24, JH + 12, [6, 6, 30, 30]) : ctx.rect(-12, 0, JW + 24, JH + 12); ctx.fill();
+    // danger line
+    ctx.strokeStyle = danger > 0 ? 'rgba(255,60,60,' + (0.5 + Math.sin(t * 20) * 0.5) + ')' : 'rgba(255,90,90,.45)'; ctx.setLineDash([8, 8]); ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(0, LINE); ctx.lineTo(JW, LINE); ctx.stroke(); ctx.setLineDash([]);
+    if (SPR) {
+      // aim guide + held fruit
+      if (state === 'play') {
+        const r = TIERS[cur].r, x = Math.max(r, Math.min(JW - r, aimX));
+        ctx.strokeStyle = 'rgba(107,58,28,.25)'; ctx.lineWidth = 2; ctx.setLineDash([4, 8]); ctx.beginPath(); ctx.moveTo(x, 20 + r); ctx.lineTo(x, JH); ctx.stroke(); ctx.setLineDash([]);
+        if (cool <= 0) drawFruit(cur, x, 20, r, Math.sin(t * 3) * 0.1);
+      }
+      for (const b of bodies) drawFruit(b.tier, b.x, b.y, b.r, b.rot * 0.15, b.sq);
+    }
+    for (const p of pops) { ctx.globalAlpha = Math.max(0, p.life * 1.6); ctx.fillStyle = p.col; ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, Math.PI * 2); ctx.fill(); }
+    ctx.globalAlpha = 1;
+    // jar glass front
+    ctx.strokeStyle = '#6b3a1c'; ctx.lineWidth = 5; ctx.beginPath(); ctx.moveTo(-12, 0); ctx.lineTo(-12, JH - 18); ctx.quadraticCurveTo(-12, JH + 12, 18, JH + 12); ctx.lineTo(JW - 18, JH + 12); ctx.quadraticCurveTo(JW + 12, JH + 12, JW + 12, JH - 18); ctx.lineTo(JW + 12, 0); ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,.35)'; ctx.fillRect(-4, 20, 10, JH - 60); ctx.fillRect(JW - 30, 30, 5, JH - 120);
+    ctx.restore();
+    $('score').textContent = score;
+  }
+
+  let last = performance.now();
+  (function loop(now) {
+    const dt = Math.max(0, Math.min(0.033, (now - last) / 1000)); last = now;
+    update(dt); render(); requestAnimationFrame(loop);
+  })(last);
+})();
+</script>
+</body>
+</html>

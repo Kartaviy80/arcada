@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#ffde3b">
+<title>Swing Hook</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #ffde3b;
+    font-family: "Bangers", "Impact", "Arial Black", sans-serif; color: #111;
+    touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+  canvas { display: block; width: 100%; height: 100%; }
+  .hud { position: fixed; top: max(12px, env(safe-area-inset-top)); left: 16px; pointer-events: none; font-size: 30px; background: #fff; border: 3px solid #111; padding: 2px 12px;
+    transform: rotate(-2deg); box-shadow: 4px 4px 0 #111; }
+  .overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; padding: 20px; transition: opacity .3s;
+    background: radial-gradient(#111 1.5px, #0000 2px) 0 0 / 10px 10px, #ff4b3a55; }
+  .overlay.hidden { opacity: 0; pointer-events: none; }
+  .panel { width: min(350px, 100%); background: #fff; border: 4px solid #111; box-shadow: 10px 10px 0 #111; padding: 20px; text-align: center; display: flex; flex-direction: column; gap: 12px; transform: rotate(-1.5deg); }
+  h1 { font-size: clamp(46px, 14vw, 70px); line-height: .9; color: #ff4b3a; -webkit-text-stroke: 2px #111; text-shadow: 4px 4px 0 #111; letter-spacing: 2px; }
+  .bubble { background: #ffde3b; border: 3px solid #111; border-radius: 18px; padding: 10px 12px; font-family: "Comic Sans MS", "Chalkboard SE", sans-serif; font-size: 15px; line-height: 1.4; }
+  .stat { font-size: 24px; } .stat b { color: #ff4b3a; }
+  .btn { border: 4px solid #111; background: #3a8bff; color: #fff; font: inherit; font-size: 28px; padding: 8px; cursor: pointer; box-shadow: 5px 5px 0 #111; letter-spacing: 2px; }
+  .btn:active { transform: translate(4px, 4px); box-shadow: 1px 1px 0 #111; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud" id="score">0 m</div>
+
+<div class="overlay" id="menu"><div class="panel">
+  <h1>SWING<br>HOOK!</h1>
+  <div class="bubble"><b>HOLD</b> to shoot your grapple at the nearest hook and swing. <b>RELEASE</b> at the right moment to fly forward. Don't fall into the street!</div>
+  <div class="stat" id="bestMenu"></div>
+  <button class="btn" id="startBtn">THWIP!</button>
+</div></div>
+<div class="overlay hidden" id="over"><div class="panel">
+  <h1>KA-BOOM!</h1>
+  <div class="stat">DISTANCE <b id="finalScore">0</b></div>
+  <div class="stat">BEST <b id="bestOver">0</b></div>
+  <button class="btn" id="againBtn">AGAIN!</button>
+</div></div>
+
+<script>
+/*AUDIO-ENGINE-START*/
+// ---------- audio: procedural background music + sound effects ----------
+// Every note is synthesized with the Web Audio API at runtime, so the music
+// needs no files, works offline and carries no copyright.
+const GameAudio = (cfg) => {
+  let ctx = null, master = null, musicBus = null, sfxBus = null;
+  let timer = null, step = 0, nextT = 0, playing = false;
+  let musicOn = true;
+  try { musicOn = localStorage.getItem('music_off') !== '1'; } catch (e) {}
+
+  const SCALES = {
+    major: [0, 2, 4, 5, 7, 9, 11], minor: [0, 2, 3, 5, 7, 8, 10],
+    dorian: [0, 2, 3, 5, 7, 9, 10], lydian: [0, 2, 4, 6, 7, 9, 11],
+    pentaMajor: [0, 2, 4, 7, 9], pentaMinor: [0, 3, 5, 7, 10],
+    japanese: [0, 1, 5, 7, 8], phrygian: [0, 1, 3, 5, 7, 8, 10]
+  };
+  const scale = SCALES[cfg.scale] || SCALES.major;
+  const root = cfg.root || 57;
+  const bpm = cfg.bpm || 110;
+  const prog = cfg.prog || [0, 5, 3, 4];
+  const sixteenth = 60 / bpm / 4;
+
+  // deterministic random so each game always plays "its" tune
+  let seed = cfg.seed || 1;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
+
+  const deg = (d, oct = 0) => {
+    const n = scale.length;
+    const o = Math.floor(d / n);
+    return root + scale[((d % n) + n) % n] + 12 * (o + oct);
+  };
+  const hz = m => 440 * Math.pow(2, (m - 69) / 12);
+
+  // melody: two 2-bar phrases (A, B) arranged A A B A
+  function phrase() {
+    const notes = [];
+    let d = 2 + Math.floor(rnd() * 3);
+    for (let i = 0; i < 32; i++) {
+      const strong = i % 4 === 0;
+      if (rnd() < (strong ? 0.85 : (cfg.leadDensity || 0.35))) {
+        d += Math.round((rnd() - 0.5) * 4);
+        d = Math.max(0, Math.min(scale.length * 2, d));
+        const len = strong && rnd() < 0.5 ? 2 : 1;
+        notes.push({ i, d, len });
+      }
+    }
+    return notes;
+  }
+  const A = phrase(), B = phrase();
+  const song = [A, A, B, A];
+
+  function init() {
+    if (ctx) return;
+    try {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      master = ctx.createGain(); master.gain.value = 0.9; master.connect(ctx.destination);
+      musicBus = ctx.createGain(); musicBus.gain.value = cfg.volume || 0.16; musicBus.connect(master);
+      sfxBus = ctx.createGain(); sfxBus.gain.value = 1; sfxBus.connect(master);
+    } catch (e) { ctx = null; }
+  }
+
+  function voice(t, freq, dur, type, vol, opts = {}) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, t);
+    if (opts.detune) o.detune.value = opts.detune;
+    let node = o;
+    if (opts.cutoff) {
+      const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = opts.cutoff; f.Q.value = opts.q || 1;
+      o.connect(f); node = f;
+    }
+    const a = opts.attack || 0.008;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(vol, t + a);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    node.connect(g); g.connect(opts.bus || musicBus);
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+
+  let noiseBuf = null;
+  function noise(t, dur, vol, hp) {
+    if (!noiseBuf) {
+      noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 0.5, ctx.sampleRate);
+      const d = noiseBuf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    }
+    const s = ctx.createBufferSource(); s.buffer = noiseBuf;
+    const f = ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = hp;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.connect(f); f.connect(g); g.connect(musicBus);
+    s.start(t); s.stop(t + dur + 0.02);
+  }
+
+  function kick(t) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.setValueAtTime(140, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+    g.gain.setValueAtTime(0.9, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+    o.connect(g); g.connect(musicBus); o.start(t); o.stop(t + 0.25);
+  }
+
+  function playStep(s, t) {
+    const bar = Math.floor(s / 16);
+    const i16 = s % 16;
+    const chordDeg = prog[bar % prog.length];
+    const w = cfg.waves || {};
+    // bass
+    const bassPat = cfg.bassPattern || [0, 8];
+    if (bassPat.includes(i16)) voice(t, hz(deg(chordDeg, -2)), sixteenth * 3.5, w.bass || 'triangle', 0.5, { cutoff: 600 });
+    // pad (chord) at bar start
+    if (cfg.pad && i16 === 0) {
+      for (const k of [0, 2, 4]) voice(t, hz(deg(chordDeg + k, -1)), sixteenth * 15, w.pad || 'sine', 0.12, { attack: 0.3, cutoff: 1400, detune: k * 3 });
+    }
+    // arpeggio
+    if (cfg.arp && i16 % (cfg.arpEvery || 2) === 0) {
+      const k = [0, 2, 4, 2][(i16 / (cfg.arpEvery || 2)) % 4];
+      voice(t, hz(deg(chordDeg + k, cfg.arpOct || 0)), sixteenth * 1.6, w.arp || 'square', 0.1, { cutoff: cfg.arpCutoff || 2200 });
+    }
+    // lead melody
+    const ph = song[Math.floor(bar / 2) % song.length];
+    const pi = (bar % 2) * 16 + i16;
+    for (const n of ph) if (n.i === pi) {
+      voice(t, hz(deg(n.d, cfg.leadOct || 0)), sixteenth * (n.len * 2 + 0.5), w.lead || 'triangle', 0.22, { cutoff: cfg.leadCutoff || 3000 });
+    }
+    // drums
+    if (cfg.drums) {
+      if (i16 % 8 === 0 || (cfg.drums === 'busy' && i16 === 10)) kick(t);
+      if (i16 % 8 === 4) noise(t, 0.14, 0.35, 1500);
+      if (i16 % 2 === 0) noise(t, 0.04, cfg.drums === 'soft' ? 0.06 : 0.12, 7000);
+    }
+  }
+
+  function scheduler() {
+    if (!ctx || !playing) return;
+    while (nextT < ctx.currentTime + 0.15) {
+      playStep(step, nextT);
+      nextT += sixteenth * (cfg.swing && step % 2 === 0 ? 1 + cfg.swing : cfg.swing ? 1 - cfg.swing : 1);
+      step++;
+    }
+  }
+
+  function startMusic() {
+    if (!ctx || playing || !musicOn) return;
+    playing = true;
+    musicBus.gain.cancelScheduledValues(ctx.currentTime);
+    musicBus.gain.setValueAtTime(0.0001, ctx.currentTime);
+    musicBus.gain.linearRampToValueAtTime(cfg.volume || 0.16, ctx.currentTime + 1.2);
+    nextT = ctx.currentTime + 0.05;
+    timer = setInterval(scheduler, 40);
+  }
+  function stopMusic() {
+    playing = false;
+    if (timer) clearInterval(timer);
+    timer = null;
+  }
+
+  // mute button
+  const btn = document.createElement('button');
+  btn.setAttribute('aria-label', 'Toggle music');
+  btn.style.cssText = 'position:fixed;z-index:50;right:max(14px,env(safe-area-inset-right));bottom:max(14px,env(safe-area-inset-bottom));' +
+    'width:42px;height:42px;border-radius:50%;border:none;cursor:pointer;font-size:20px;line-height:42px;padding:0;' +
+    'background:' + (cfg.btnBg || 'rgba(0,0,0,.35)') + ';color:' + (cfg.btnColor || '#fff') + ';backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);';
+  const paint = () => { btn.textContent = musicOn ? '♪' : '✕'; btn.style.opacity = musicOn ? '1' : '.6'; };
+  paint();
+  const toggle = e => {
+    e.stopPropagation(); e.preventDefault();
+    musicOn = !musicOn;
+    try { localStorage.setItem('music_off', musicOn ? '0' : '1'); } catch (err) {}
+    init();
+    if (ctx && ctx.state === 'suspended') ctx.resume();
+    if (musicOn) startMusic(); else stopMusic();
+    paint();
+  };
+  btn.addEventListener('pointerdown', e => e.stopPropagation());
+  btn.addEventListener('pointerup', e => e.stopPropagation());
+  btn.addEventListener('click', toggle);
+  document.addEventListener('DOMContentLoaded', () => document.body.appendChild(btn));
+  if (document.body) document.body.appendChild(btn);
+
+  document.addEventListener('visibilitychange', () => {
+    if (!ctx) return;
+    if (document.hidden) ctx.suspend(); else ctx.resume();
+  });
+
+  return {
+    // call from a user gesture (start button) — browsers only allow audio after one
+    start() {
+      init();
+      if (!ctx) return;
+      if (ctx.state === 'suspended') ctx.resume();
+      startMusic();
+    },
+    sfx(freq, dur, type = 'sine', vol = 0.07, to = 0) {
+      init();
+      if (!ctx) return;
+      try {
+        const t = ctx.currentTime;
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.type = type; o.frequency.setValueAtTime(freq, t);
+        if (to) o.frequency.exponentialRampToValueAtTime(Math.max(30, to), t + dur);
+        g.gain.setValueAtTime(vol, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+        o.connect(g); g.connect(sfxBus);
+        o.start(t); o.stop(t + dur + 0.02);
+      } catch (e) {}
+    }
+  };
+};
+/*AUDIO-ENGINE-END*/
+(() => {
+  const audio = GameAudio({
+    bpm: 132, scale: 'dorian', root: 57, prog: [0, 3, 4, 3], seed: 304,
+    waves: { lead: 'sawtooth', bass: 'square', arp: 'triangle' },
+    arp: true, arpEvery: 2, arpOct: 1, leadCutoff: 2000, leadOct: 0, leadDensity: 0.4, drums: 'busy', bassPattern: [0, 3, 6, 10, 12], volume: 0.12,
+    btnBg: 'rgba(17,17,17,.7)', btnColor: '#ffde3b'
+  });
+  const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+  const $ = id => document.getElementById(id);
+  const KEY = 'swing_hook_best';
+  let best = 0; try { best = +localStorage.getItem(KEY) || 0; } catch (e) {}
+  const showBest = () => { $('bestMenu').innerHTML = best ? 'BEST <b>' + best + ' m</b>' : ''; }; showBest();
+
+  let W, H, DPR, S, LW, LH;
+  const G = 1200, RANGE = 330;
+  function resize() {
+    DPR = Math.min(devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight;
+    canvas.width = W * DPR; canvas.height = H * DPR;
+    S = Math.min(W / 420, H / 640); LW = W / S; LH = H / S;
+  }
+  addEventListener('resize', resize); resize();
+  const hash = n => { const x = Math.sin(n * 12.7) * 43758.5; return x - Math.floor(x); };
+
+  let touched = false;
+  let state = 'menu', p, hooks, rope, cam, holding = false, t = 0, maxX, trail = [], booms = [], nextHook;
+  function reset() {
+    hooks = []; nextHook = 180; cam = 0; maxX = 0; trail = []; booms = [];
+    while (nextHook < 1600) addHook();
+    // start already hanging from the first hook, swinging forward; the first release is up to the player
+    const h0 = hooks[0];
+    p = { x: h0.x - 150, y: h0.y + 90, vx: 120, vy: 260 };
+    rope = { h: h0, len: Math.hypot(150, 90) };
+  }
+  function addHook() {
+    const d = Math.min(1, nextHook / 20000);
+    hooks.push({ x: nextHook, y: LH * (0.12 + Math.random() * 0.2) });
+    nextHook += 170 + Math.random() * (110 + d * 90);
+  }
+  reset();
+  const score = () => Math.floor(maxX / 20);
+  const STREET = () => LH - 40;
+
+  function start() { reset(); touched = false; state = 'play'; audio.start(); $('menu').classList.add('hidden'); $('over').classList.add('hidden'); }
+  function target() {
+    let bestH = null, bd = Infinity;
+    for (const h of hooks) {
+      if (h.x < p.x - 30 || h.y > p.y - 10) continue;
+      const d = Math.hypot(h.x - p.x, h.y - p.y);
+      if (d < RANGE && d < bd) { bd = d; bestH = h; }
+    }
+    return bestH;
+  }
+  function grab() {
+    if (state !== 'play' || rope) return;
+    const h = target();
+    if (!h) { audio.sfx(200, 0.05, 'square', 0.03); return; }
+    rope = { h, len: Math.hypot(h.x - p.x, h.y - p.y) };
+    audio.sfx(1200, 0.08, 'sawtooth', 0.05, 400);
+  }
+  function letGo() { if (rope) { rope = null; audio.sfx(500, 0.1, 'triangle', 0.05, 900); } }
+  function die() {
+    if (state !== 'play') return;
+    state = 'dead';
+    audio.sfx(140, 0.6, 'sawtooth', 0.1, 40);
+    if (navigator.vibrate) try { navigator.vibrate(150); } catch (e) {}
+    booms.push({ x: p.x, y: STREET(), r: 0, life: 1 });
+    const s = score(); if (s > best) { best = s; try { localStorage.setItem(KEY, best); } catch (e) {} }
+    $('finalScore').textContent = s + ' m'; $('bestOver').textContent = best + ' m'; showBest();
+    setTimeout(() => { state = 'over'; $('over').classList.remove('hidden'); }, 900);
+  }
+  canvas.addEventListener('pointerdown', () => { holding = true; touched = true; grab(); });
+  addEventListener('pointerup', () => { holding = false; if (touched) letGo(); });
+  addEventListener('pointercancel', () => { holding = false; letGo(); });
+  addEventListener('keydown', e => {
+    if (e.key !== ' ' && e.key !== 'Enter') return; e.preventDefault();
+    if (e.repeat) return;
+    if (state === 'play') { holding = true; touched = true; grab(); } else if (state === 'menu' || !$('over').classList.contains('hidden')) start();
+  });
+  addEventListener('keyup', e => { if (e.key === ' ') { holding = false; letGo(); } });
+  $('startBtn').onclick = start; $('againBtn').onclick = start;
+
+  function update(dt) {
+    t += dt;
+    if (state === 'menu') { cam += 40 * dt; return; }
+    if (state === 'play') {
+      if (holding && !rope) grab();       // keep trying while held
+      const steps = 4, h = dt / steps;
+      for (let k = 0; k < steps; k++) {
+        p.vy += G * h; p.x += p.vx * h; p.y += p.vy * h;
+        p.vx *= 1 - 0.02 * h;
+        if (rope) {
+          const dx = p.x - rope.h.x, dy = p.y - rope.h.y, d = Math.hypot(dx, dy);
+          if (d > rope.len) {
+            const nx = dx / d, ny = dy / d;
+            p.x = rope.h.x + nx * rope.len; p.y = rope.h.y + ny * rope.len;
+            const vr = p.vx * nx + p.vy * ny;
+            if (vr > 0) { p.vx -= nx * vr; p.vy -= ny * vr; }
+          }
+        }
+      }
+      if (p.y < 10) { p.y = 10; p.vy = Math.max(0, p.vy); }
+      maxX = Math.max(maxX, p.x);
+      if (p.y > STREET() - 8) die();
+      while (nextHook < p.x + LW * 2) addHook();
+      hooks = hooks.filter(hk => hk.x > p.x - LW);
+      trail.push({ x: p.x, y: p.y }); if (trail.length > 24) trail.shift();
+    }
+    cam += (p.x - Math.min(LW * 0.35, 150) - cam) * Math.min(1, dt * 6);
+    for (const b of booms) { b.r += 300 * dt; b.life -= dt * 1.4; }
+    booms = booms.filter(b => b.life > 0);
+  }
+
+  function render() {
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.fillStyle = '#ffde3b'; ctx.fillRect(0, 0, W, H);
+    ctx.save(); ctx.scale(S, S);
+    // comic sun burst
+    ctx.save(); ctx.translate(LW * 0.7, LH * 0.3);
+    for (let i = 0; i < 16; i++) { ctx.fillStyle = i % 2 ? '#ffd000' : '#ffe86b'; ctx.beginPath(); ctx.moveTo(0, 0); ctx.arc(0, 0, 900, i * Math.PI / 8 + t * 0.05, (i + 1) * Math.PI / 8 + t * 0.05); ctx.fill(); }
+    ctx.restore();
+    // halftone skyline layers
+    for (const [par, col, hmin, hmax, w] of [[0.2, '#ff8a3a', 120, 260, 70], [0.45, '#ff4b3a', 80, 200, 90]]) {
+      const off = cam * par;
+      for (let i = Math.floor(off / w) - 1; i * w - off < LW + w; i++) {
+        const x = i * w - off, h = hmin + hash(i * 7 + par * 9) * (hmax - hmin);
+        ctx.fillStyle = col; ctx.fillRect(x, STREET() - h, w - 8, h);
+        ctx.strokeStyle = '#111'; ctx.lineWidth = 3; ctx.strokeRect(x, STREET() - h, w - 8, h);
+        ctx.fillStyle = '#11111133';
+        for (let wy = STREET() - h + 12; wy < STREET() - 10; wy += 18) for (let wx = x + 8; wx < x + w - 18; wx += 14) ctx.fillRect(wx, wy, 6, 8);
+      }
+    }
+    // street
+    ctx.fillStyle = '#111'; ctx.fillRect(0, STREET(), LW, 60);
+    ctx.fillStyle = '#ffde3b'; for (let x = -(cam % 50); x < LW; x += 50) ctx.fillRect(x, STREET() + 18, 26, 4);
+    ctx.save(); ctx.translate(-cam, 0);
+    // hooks
+    const tg = state === 'play' && !rope ? target() : null;
+    for (const h of hooks) {
+      ctx.strokeStyle = '#111'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(h.x, 0); ctx.lineTo(h.x, h.y - 10); ctx.stroke();
+      ctx.fillStyle = h === tg ? '#3a8bff' : '#fff';
+      ctx.beginPath(); ctx.arc(h.x, h.y, 10, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      if (h === tg) { ctx.strokeStyle = '#3a8bff'; ctx.lineWidth = 2; ctx.setLineDash([5, 5]); ctx.beginPath(); ctx.arc(h.x, h.y, 18 + Math.sin(t * 10) * 3, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]); }
+    }
+    // speed lines trail
+    ctx.strokeStyle = '#111'; ctx.lineWidth = 2;
+    for (let i = 1; i < trail.length; i += 3) { ctx.globalAlpha = i / trail.length * 0.5; ctx.beginPath(); ctx.moveTo(trail[i - 1].x, trail[i - 1].y); ctx.lineTo(trail[i].x, trail[i].y); ctx.stroke(); }
+    ctx.globalAlpha = 1;
+    if (rope) { ctx.strokeStyle = '#111'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(rope.h.x, rope.h.y); ctx.stroke(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.stroke(); }
+    // hero
+    if (state !== 'dead' && state !== 'over') {
+      const ang = Math.atan2(p.vy, p.vx);
+      ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(rope ? Math.atan2(rope.h.y - p.y, rope.h.x - p.x) + Math.PI / 2 : ang * 0.3);
+      ctx.fillStyle = '#ff4b3a'; ctx.strokeStyle = '#111'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.ellipse(0, 6, 9, 13, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#3a8bff'; ctx.beginPath(); ctx.moveTo(-8, 10); ctx.lineTo(-18 - Math.sin(t * 20) * 4, 26); ctx.lineTo(4, 16); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#ff4b3a'; ctx.beginPath(); ctx.arc(0, -11, 9, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.ellipse(-3, -12, 3, 4, -0.3, 0, Math.PI * 2); ctx.ellipse(4, -12, 3, 4, 0.3, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    }
+    for (const b of booms) {
+      ctx.save(); ctx.translate(b.x, b.y - 30); ctx.globalAlpha = Math.max(0, b.life);
+      ctx.fillStyle = '#ff4b3a'; ctx.strokeStyle = '#111'; ctx.lineWidth = 4;
+      ctx.beginPath(); for (let i = 0; i < 24; i++) { const r = (i % 2 ? 0.5 : 1) * (40 + b.r * 0.3); ctx.lineTo(Math.cos(i / 24 * Math.PI * 2) * r, Math.sin(i / 24 * Math.PI * 2) * r); } ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#ffde3b'; ctx.font = '30px Impact, sans-serif'; ctx.textAlign = 'center'; ctx.fillText('BAM!', 0, 10); ctx.strokeStyle = '#111'; ctx.lineWidth = 1.5; ctx.strokeText('BAM!', 0, 10);
+      ctx.restore();
+    }
+    ctx.restore();
+    ctx.restore();
+    $('score').textContent = score() + ' m';
+  }
+
+  let last = performance.now();
+  (function loop(now) {
+    const dt = Math.max(0, Math.min(0.033, (now - last) / 1000)); last = now;
+    update(dt); render(); requestAnimationFrame(loop);
+  })(last);
+})();
+</script>
+</body>
+</html>

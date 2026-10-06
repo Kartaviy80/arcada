@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#f7c9b6">
+<title>Balloon Drift</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #f7c9b6;
+    font-family: "Didot", "Bodoni MT", "Georgia", serif; color: #4a3550;
+    touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+  canvas { display: block; width: 100%; height: 100%; }
+  .hud { position: fixed; top: max(14px, env(safe-area-inset-top)); left: 16px; right: 16px; display: flex; justify-content: space-between; align-items: center; pointer-events: none; }
+  .hud b { font-size: 34px; font-weight: normal; font-style: italic; }
+  .heat { width: 110px; font-size: 10px; letter-spacing: 3px; text-align: right; }
+  .heat div { height: 8px; border-radius: 4px; background: #ffffff66; overflow: hidden; margin-top: 3px; }
+  .heat i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #ffb347, #ff5e3a); }
+  .overlay { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; padding: 24px; text-align: center;
+    background: #fbe3d6d9; transition: opacity .4s; }
+  .overlay.hidden { opacity: 0; pointer-events: none; }
+  h1 { font-size: clamp(40px, 12vw, 66px); font-weight: normal; font-style: italic; line-height: .95; }
+  h1 small { display: block; font-size: .3em; letter-spacing: 8px; font-style: normal; margin-top: 10px; color: #a0698a; }
+  p { max-width: 300px; font-size: 16px; line-height: 1.7; color: #6d5570; }
+  .stat { font-size: 18px; } .stat b { font-weight: normal; color: #d0563b; font-size: 24px; }
+  .btn { border: 1px solid #4a3550; background: transparent; color: #4a3550; font: inherit; font-style: italic; font-size: 20px; padding: 12px 46px; border-radius: 40px; cursor: pointer; }
+  .btn:active { background: #4a3550; color: #fbe3d6; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud"><b id="score">0 km</b><div class="heat">BURNER<div><i id="heat"></i></div></div></div>
+
+<div class="overlay" id="menu">
+  <h1>Balloon Drift<small>A DAWN VOYAGE</small></h1>
+  <p><b>Hold</b> to fire the burner, release to let the air cool. A balloon is heavy — it answers slowly, so think ahead through the mountain passes.</p>
+  <div class="stat" id="bestMenu"></div>
+  <button class="btn" id="startBtn">Cast off</button>
+</div>
+<div class="overlay hidden" id="over">
+  <h1>Grounded</h1>
+  <div class="stat">voyage <b id="finalScore">0</b></div>
+  <div class="stat">longest <b id="bestOver">0</b></div>
+  <button class="btn" id="againBtn">Fly again</button>
+</div>
+
+<script>
+/*AUDIO-ENGINE-START*/
+// ---------- audio: procedural background music + sound effects ----------
+// Every note is synthesized with the Web Audio API at runtime, so the music
+// needs no files, works offline and carries no copyright.
+const GameAudio = (cfg) => {
+  let ctx = null, master = null, musicBus = null, sfxBus = null;
+  let timer = null, step = 0, nextT = 0, playing = false;
+  let musicOn = true;
+  try { musicOn = localStorage.getItem('music_off') !== '1'; } catch (e) {}
+
+  const SCALES = {
+    major: [0, 2, 4, 5, 7, 9, 11], minor: [0, 2, 3, 5, 7, 8, 10],
+    dorian: [0, 2, 3, 5, 7, 9, 10], lydian: [0, 2, 4, 6, 7, 9, 11],
+    pentaMajor: [0, 2, 4, 7, 9], pentaMinor: [0, 3, 5, 7, 10],
+    japanese: [0, 1, 5, 7, 8], phrygian: [0, 1, 3, 5, 7, 8, 10]
+  };
+  const scale = SCALES[cfg.scale] || SCALES.major;
+  const root = cfg.root || 57;
+  const bpm = cfg.bpm || 110;
+  const prog = cfg.prog || [0, 5, 3, 4];
+  const sixteenth = 60 / bpm / 4;
+
+  // deterministic random so each game always plays "its" tune
+  let seed = cfg.seed || 1;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
+
+  const deg = (d, oct = 0) => {
+    const n = scale.length;
+    const o = Math.floor(d / n);
+    return root + scale[((d % n) + n) % n] + 12 * (o + oct);
+  };
+  const hz = m => 440 * Math.pow(2, (m - 69) / 12);
+
+  // melody: two 2-bar phrases (A, B) arranged A A B A
+  function phrase() {
+    const notes = [];
+    let d = 2 + Math.floor(rnd() * 3);
+    for (let i = 0; i < 32; i++) {
+      const strong = i % 4 === 0;
+      if (rnd() < (strong ? 0.85 : (cfg.leadDensity || 0.35))) {
+        d += Math.round((rnd() - 0.5) * 4);
+        d = Math.max(0, Math.min(scale.length * 2, d));
+        const len = strong && rnd() < 0.5 ? 2 : 1;
+        notes.push({ i, d, len });
+      }
+    }
+    return notes;
+  }
+  const A = phrase(), B = phrase();
+  const song = [A, A, B, A];
+
+  function init() {
+    if (ctx) return;
+    try {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      master = ctx.createGain(); master.gain.value = 0.9; master.connect(ctx.destination);
+      musicBus = ctx.createGain(); musicBus.gain.value = cfg.volume || 0.16; musicBus.connect(master);
+      sfxBus = ctx.createGain(); sfxBus.gain.value = 1; sfxBus.connect(master);
+    } catch (e) { ctx = null; }
+  }
+
+  function voice(t, freq, dur, type, vol, opts = {}) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, t);
+    if (opts.detune) o.detune.value = opts.detune;
+    let node = o;
+    if (opts.cutoff) {
+      const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = opts.cutoff; f.Q.value = opts.q || 1;
+      o.connect(f); node = f;
+    }
+    const a = opts.attack || 0.008;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(vol, t + a);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    node.connect(g); g.connect(opts.bus || musicBus);
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+
+  let noiseBuf = null;
+  function noise(t, dur, vol, hp) {
+    if (!noiseBuf) {
+      noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 0.5, ctx.sampleRate);
+      const d = noiseBuf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    }
+    const s = ctx.createBufferSource(); s.buffer = noiseBuf;
+    const f = ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = hp;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.connect(f); f.connect(g); g.connect(musicBus);
+    s.start(t); s.stop(t + dur + 0.02);
+  }
+
+  function kick(t) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.setValueAtTime(140, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+    g.gain.setValueAtTime(0.9, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+    o.connect(g); g.connect(musicBus); o.start(t); o.stop(t + 0.25);
+  }
+
+  function playStep(s, t) {
+    const bar = Math.floor(s / 16);
+    const i16 = s % 16;
+    const chordDeg = prog[bar % prog.length];
+    const w = cfg.waves || {};
+    // bass
+    const bassPat = cfg.bassPattern || [0, 8];
+    if (bassPat.includes(i16)) voice(t, hz(deg(chordDeg, -2)), sixteenth * 3.5, w.bass || 'triangle', 0.5, { cutoff: 600 });
+    // pad (chord) at bar start
+    if (cfg.pad && i16 === 0) {
+      for (const k of [0, 2, 4]) voice(t, hz(deg(chordDeg + k, -1)), sixteenth * 15, w.pad || 'sine', 0.12, { attack: 0.3, cutoff: 1400, detune: k * 3 });
+    }
+    // arpeggio
+    if (cfg.arp && i16 % (cfg.arpEvery || 2) === 0) {
+      const k = [0, 2, 4, 2][(i16 / (cfg.arpEvery || 2)) % 4];
+      voice(t, hz(deg(chordDeg + k, cfg.arpOct || 0)), sixteenth * 1.6, w.arp || 'square', 0.1, { cutoff: cfg.arpCutoff || 2200 });
+    }
+    // lead melody
+    const ph = song[Math.floor(bar / 2) % song.length];
+    const pi = (bar % 2) * 16 + i16;
+    for (const n of ph) if (n.i === pi) {
+      voice(t, hz(deg(n.d, cfg.leadOct || 0)), sixteenth * (n.len * 2 + 0.5), w.lead || 'triangle', 0.22, { cutoff: cfg.leadCutoff || 3000 });
+    }
+    // drums
+    if (cfg.drums) {
+      if (i16 % 8 === 0 || (cfg.drums === 'busy' && i16 === 10)) kick(t);
+      if (i16 % 8 === 4) noise(t, 0.14, 0.35, 1500);
+      if (i16 % 2 === 0) noise(t, 0.04, cfg.drums === 'soft' ? 0.06 : 0.12, 7000);
+    }
+  }
+
+  function scheduler() {
+    if (!ctx || !playing) return;
+    while (nextT < ctx.currentTime + 0.15) {
+      playStep(step, nextT);
+      nextT += sixteenth * (cfg.swing && step % 2 === 0 ? 1 + cfg.swing : cfg.swing ? 1 - cfg.swing : 1);
+      step++;
+    }
+  }
+
+  function startMusic() {
+    if (!ctx || playing || !musicOn) return;
+    playing = true;
+    musicBus.gain.cancelScheduledValues(ctx.currentTime);
+    musicBus.gain.setValueAtTime(0.0001, ctx.currentTime);
+    musicBus.gain.linearRampToValueAtTime(cfg.volume || 0.16, ctx.currentTime + 1.2);
+    nextT = ctx.currentTime + 0.05;
+    timer = setInterval(scheduler, 40);
+  }
+  function stopMusic() {
+    playing = false;
+    if (timer) clearInterval(timer);
+    timer = null;
+  }
+
+  // mute button
+  const btn = document.createElement('button');
+  btn.setAttribute('aria-label', 'Toggle music');
+  btn.style.cssText = 'position:fixed;z-index:50;right:max(14px,env(safe-area-inset-right));bottom:max(14px,env(safe-area-inset-bottom));' +
+    'width:42px;height:42px;border-radius:50%;border:none;cursor:pointer;font-size:20px;line-height:42px;padding:0;' +
+    'background:' + (cfg.btnBg || 'rgba(0,0,0,.35)') + ';color:' + (cfg.btnColor || '#fff') + ';backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);';
+  const paint = () => { btn.textContent = musicOn ? '♪' : '✕'; btn.style.opacity = musicOn ? '1' : '.6'; };
+  paint();
+  const toggle = e => {
+    e.stopPropagation(); e.preventDefault();
+    musicOn = !musicOn;
+    try { localStorage.setItem('music_off', musicOn ? '0' : '1'); } catch (err) {}
+    init();
+    if (ctx && ctx.state === 'suspended') ctx.resume();
+    if (musicOn) startMusic(); else stopMusic();
+    paint();
+  };
+  btn.addEventListener('pointerdown', e => e.stopPropagation());
+  btn.addEventListener('pointerup', e => e.stopPropagation());
+  btn.addEventListener('click', toggle);
+  document.addEventListener('DOMContentLoaded', () => document.body.appendChild(btn));
+  if (document.body) document.body.appendChild(btn);
+
+  document.addEventListener('visibilitychange', () => {
+    if (!ctx) return;
+    if (document.hidden) ctx.suspend(); else ctx.resume();
+  });
+
+  return {
+    // call from a user gesture (start button) — browsers only allow audio after one
+    start() {
+      init();
+      if (!ctx) return;
+      if (ctx.state === 'suspended') ctx.resume();
+      startMusic();
+    },
+    sfx(freq, dur, type = 'sine', vol = 0.07, to = 0) {
+      init();
+      if (!ctx) return;
+      try {
+        const t = ctx.currentTime;
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.type = type; o.frequency.setValueAtTime(freq, t);
+        if (to) o.frequency.exponentialRampToValueAtTime(Math.max(30, to), t + dur);
+        g.gain.setValueAtTime(vol, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+        o.connect(g); g.connect(sfxBus);
+        o.start(t); o.stop(t + dur + 0.02);
+      } catch (e) {}
+    }
+  };
+};
+/*AUDIO-ENGINE-END*/
+(() => {
+  const audio = GameAudio({
+    bpm: 76, scale: 'major', root: 60, prog: [0, 4, 5, 3], seed: 307,
+    waves: { lead: 'sine', bass: 'sine', arp: 'triangle', pad: 'sine' },
+    pad: true, arp: true, arpEvery: 2, arpOct: 1, leadOct: 1, leadDensity: 0.2, drums: false, bassPattern: [0, 8], volume: 0.21,
+    btnBg: 'rgba(74,53,80,.25)', btnColor: '#4a3550'
+  });
+  const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+  const $ = id => document.getElementById(id);
+  const KEY = 'balloon_drift_best';
+  let best = 0; try { best = +localStorage.getItem(KEY) || 0; } catch (e) {}
+  const showBest = () => { $('bestMenu').innerHTML = best ? 'longest <b>' + best + ' km</b>' : ''; }; showBest();
+
+  let W, H, DPR, S, LW, LH, GROUND;
+  function resize() {
+    DPR = Math.min(devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight;
+    canvas.width = W * DPR; canvas.height = H * DPR;
+    S = Math.min(W / 420, H / 680); LW = W / S; LH = H / S; GROUND = LH - 50;
+  }
+  addEventListener('resize', resize); resize();
+  const hash = n => { const x = Math.sin(n * 33.7) * 43758.5; return x - Math.floor(x); };
+
+  let state = 'menu', bl, obs, cam, holding = false, t = 0, nextX, flames = [], birds = [];
+  function reset() { bl = { y: LH * 0.45, vy: 0, heat: 0.45, dead: false, rot: 0 }; obs = []; cam = 0; nextX = 520; flames = []; birds = []; }
+  reset();
+  const BX = () => Math.min(LW * 0.28, 130);
+  const score = () => Math.floor(cam / 60);
+
+  function start() { reset(); state = 'play'; audio.start(); $('menu').classList.add('hidden'); $('over').classList.add('hidden'); }
+  function crash() {
+    if (bl.dead) return;
+    bl.dead = true;
+    audio.sfx(240, 0.8, 'sine', 0.09, 60);
+    if (navigator.vibrate) try { navigator.vibrate(120); } catch (e) {}
+    const s = score(); if (s > best) { best = s; try { localStorage.setItem(KEY, best); } catch (e) {} }
+    $('finalScore').textContent = s + ' km'; $('bestOver').textContent = best + ' km'; showBest();
+    setTimeout(() => { state = 'over'; $('over').classList.remove('hidden'); }, 1300);
+  }
+  canvas.addEventListener('pointerdown', () => { holding = true; });
+  addEventListener('pointerup', () => { holding = false; });
+  addEventListener('pointercancel', () => { holding = false; });
+  addEventListener('keydown', e => {
+    if (e.key !== ' ' && e.key !== 'ArrowUp' && e.key !== 'Enter') return; e.preventDefault();
+    if (state === 'play') holding = true; else if (!e.repeat && (state === 'menu' || !$('over').classList.contains('hidden'))) start();
+  });
+  addEventListener('keyup', e => { if (e.key === ' ' || e.key === 'ArrowUp') holding = false; });
+  $('startBtn').onclick = start; $('againBtn').onclick = start;
+
+  // mountain profile of an obstacle at world x
+  const peakAt = (o, x) => { const d = Math.abs(x - o.x); return d > o.hw ? 0 : o.peak * (1 - d / o.hw); };
+
+  let roar = 0;
+  function update(dt) {
+    t += dt;
+    if (state === 'menu') { cam += 30 * dt; bl.y = LH * 0.45 + Math.sin(t * 1.2) * 10; }
+    if (state === 'play') {
+      if (!bl.dead) {
+        cam += Math.min(170, 110 + cam / 400) * dt;
+        // the envelope heats and cools slowly; lift follows the air temperature
+        bl.heat += ((holding ? 1 : 0) - bl.heat) * dt * (holding ? 1.1 : 0.6);
+        const lift = (bl.heat - 0.42) * 520;
+        bl.vy += (-lift + 0) * dt - bl.vy * 0.9 * dt;
+        bl.vy = Math.max(-170, Math.min(200, bl.vy));
+        bl.y += bl.vy * dt;
+        if (holding) { roar -= dt; if (roar <= 0) { audio.sfx(70 + Math.random() * 30, 0.12, 'sawtooth', 0.03); roar = 0.1; } if (Math.random() < 0.6) flames.push({ x: cam + BX(), y: bl.y + 12, life: 0.3 }); }
+        bl.rot = Math.sin(t * 1.3) * 0.04;
+        while (nextX < cam + LW + 300) {
+          const d = Math.min(1, cam / 30000);
+          const gap = Math.max(200, 280 - d * 90);
+          const peak = 80 + Math.random() * (GROUND - gap - 160);
+          const cloudBottom = GROUND - peak - gap;
+          obs.push({ x: nextX, hw: 90 + Math.random() * 40, peak, cloud: cloudBottom, seed: Math.random() * 100 });
+          if (Math.random() < 0.35 + d * 0.3) birds.push({ x: nextX + 140, y: cloudBottom + gap * (0.3 + Math.random() * 0.4), ph: Math.random() * 6 });
+          nextX += 280 + Math.random() * 60;
+        }
+        const bx = cam + BX();
+        if (bl.y + 44 > GROUND || bl.y - 30 < 0) crash();
+        for (const o of obs) {
+          // basket corners vs mountain, envelope vs storm cloud
+          for (const dx of [-9, 9]) if (bl.y + 44 > GROUND - peakAt(o, bx + dx)) crash();
+          for (const dx of [-20, 0, 20]) if (bl.y - 26 < o.cloud && Math.abs(bx + dx - o.x) < o.hw * 0.75) crash();
+        }
+        for (const b of birds) { b.x -= 40 * dt; if (Math.hypot(b.x - bx, b.y - bl.y) < 30) crash(); }
+        obs = obs.filter(o => o.x > cam - 200); birds = birds.filter(b => b.x > cam - 100);
+      } else { bl.vy = Math.min(300, bl.vy + 300 * dt); bl.y = Math.min(GROUND - 44, bl.y + bl.vy * dt); bl.rot += dt * 0.6; }
+    }
+    for (const f of flames) f.life -= dt;
+    flames = flames.filter(f => f.life > 0);
+  }
+
+  function render() {
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, '#9fb4e6'); g.addColorStop(0.5, '#f7c9b6'); g.addColorStop(1, '#ffe8c6');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    ctx.save(); ctx.scale(S, S);
+    ctx.fillStyle = '#fff3d6'; ctx.beginPath(); ctx.arc(LW * 0.7, GROUND - 120, 70, 0, Math.PI * 2); ctx.fill();
+    // watercolour ranges
+    for (const [par, col, amp, base] of [[0.1, 'rgba(160,120,170,.35)', 160, 120], [0.25, 'rgba(130,100,150,.4)', 120, 60]]) {
+      ctx.fillStyle = col; ctx.beginPath(); ctx.moveTo(0, GROUND);
+      for (let x = 0; x <= LW + 10; x += 10) { const wx = x + cam * par; ctx.lineTo(x, GROUND - base - Math.abs(Math.sin(wx * 0.006)) * amp - hash(Math.floor(wx / 40)) * 10); }
+      ctx.lineTo(LW, GROUND); ctx.fill();
+    }
+    ctx.save(); ctx.translate(-cam, 0);
+    for (const o of obs) {
+      // storm cloud bank from the top
+      ctx.fillStyle = '#6d6380'; ctx.fillRect(o.x - o.hw * 0.75, -20, o.hw * 1.5, o.cloud - 10);
+      for (let k = 0; k < 6; k++) { const cx = o.x - o.hw * 0.75 + k * o.hw * 0.3; ctx.beginPath(); ctx.arc(cx, o.cloud - 18 + (k % 2) * 6, 26, 0, Math.PI * 2); ctx.fill(); }
+      ctx.fillStyle = '#8a80a0'; for (let k = 0; k < 5; k++) { ctx.beginPath(); ctx.arc(o.x - o.hw * 0.6 + k * o.hw * 0.3, o.cloud - 40, 22, 0, Math.PI * 2); ctx.fill(); }
+      if ((t * 2 + o.seed) % 5 < 0.12) { ctx.strokeStyle = '#fff6b0'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(o.x, o.cloud); ctx.lineTo(o.x - 10, o.cloud + 25); ctx.lineTo(o.x + 6, o.cloud + 25); ctx.lineTo(o.x - 6, o.cloud + 55); ctx.stroke(); }
+      // mountain from the ground with snowy cap
+      ctx.fillStyle = '#5e4a6e'; ctx.beginPath(); ctx.moveTo(o.x - o.hw, GROUND); ctx.lineTo(o.x, GROUND - o.peak); ctx.lineTo(o.x + o.hw, GROUND); ctx.fill();
+      ctx.fillStyle = '#7a6290'; ctx.beginPath(); ctx.moveTo(o.x, GROUND - o.peak); ctx.lineTo(o.x + o.hw, GROUND); ctx.lineTo(o.x + o.hw * 0.3, GROUND); ctx.fill();
+      ctx.fillStyle = '#fff'; const cap = o.hw * 0.22; ctx.beginPath(); ctx.moveTo(o.x - cap, GROUND - o.peak + o.peak * 0.22); ctx.lineTo(o.x, GROUND - o.peak); ctx.lineTo(o.x + cap, GROUND - o.peak + o.peak * 0.22); ctx.lineTo(o.x + cap * 0.3, GROUND - o.peak + o.peak * 0.15); ctx.lineTo(o.x - cap * 0.2, GROUND - o.peak + o.peak * 0.25); ctx.fill();
+    }
+    for (const b of birds) { const f = Math.sin(t * 10 + b.ph) * 6; ctx.strokeStyle = '#4a3550'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(b.x - 12, b.y - f); ctx.quadraticCurveTo(b.x - 5, b.y - 5, b.x, b.y); ctx.quadraticCurveTo(b.x + 5, b.y - 5, b.x + 12, b.y - f); ctx.stroke(); }
+    ctx.restore();
+    // ground
+    ctx.fillStyle = '#8fae7a'; ctx.fillRect(0, GROUND, LW, LH);
+    // balloon
+    const x = BX();
+    ctx.save(); ctx.translate(x, bl.y); ctx.rotate(bl.rot);
+    for (const f of flames) { const a = f.life / 0.3; ctx.fillStyle = 'rgba(255,' + Math.floor(120 + a * 100) + ',60,' + a + ')'; ctx.beginPath(); ctx.ellipse(0, 18 - (1 - a) * 22, 4 * a + 2, 9 * a + 3, 0, 0, Math.PI * 2); ctx.fill(); }
+    // envelope: dome + taper, filled with vertical gores
+    ctx.save();
+    ctx.beginPath(); ctx.arc(0, -6, 30, Math.PI, 0); ctx.quadraticCurveTo(28, 10, 8, 20); ctx.lineTo(-8, 20); ctx.quadraticCurveTo(-28, 10, -30, -6); ctx.closePath();
+    ctx.clip();
+    const gores = ['#d0563b', '#f2b33d', '#fff3d6', '#5a9bd4'];
+    for (let k = 0; k < 8; k++) { ctx.fillStyle = gores[k % 4]; ctx.fillRect(-30 + k * 7.5, -40, 7.5, 62); }
+    const sh = ctx.createLinearGradient(-30, 0, 30, 0); sh.addColorStop(0, 'rgba(255,255,255,.25)'); sh.addColorStop(1, 'rgba(74,53,80,.35)');
+    ctx.fillStyle = sh; ctx.fillRect(-30, -40, 60, 62);
+    ctx.restore();
+    ctx.strokeStyle = '#4a3550'; ctx.lineWidth = 1.2; ctx.beginPath(); ctx.moveTo(-8, 20); ctx.lineTo(-7, 32); ctx.moveTo(8, 20); ctx.lineTo(7, 32); ctx.stroke();
+    ctx.fillStyle = '#8a5a34'; ctx.fillRect(-9, 32, 18, 12); ctx.fillStyle = '#a8744a'; ctx.fillRect(-9, 32, 18, 3);
+    ctx.restore();
+    ctx.restore();
+    $('score').textContent = score() + ' km';
+    $('heat').style.width = Math.round(bl.heat * 100) + '%';
+  }
+
+  let last = performance.now();
+  (function loop(now) {
+    const dt = Math.max(0, Math.min(0.033, (now - last) / 1000)); last = now;
+    update(dt); render(); requestAnimationFrame(loop);
+  })(last);
+})();
+</script>
+</body>
+</html>

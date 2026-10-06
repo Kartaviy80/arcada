@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#3a4048">
+<title>Nut Sort</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #3a4048;
+    font-family: "DIN Alternate", "Arial Narrow", "Segoe UI", sans-serif; color: #f0f2f4;
+    touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+  canvas { display: block; width: 100%; height: 100%; }
+  .hud { position: fixed; top: max(12px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); background: #f2c230; color: #222; padding: 6px 22px; border: 3px solid #222; font-weight: bold; letter-spacing: 3px; font-size: 18px; pointer-events: none; white-space: nowrap;
+    clip-path: polygon(6% 0, 94% 0, 100% 50%, 94% 100%, 6% 100%, 0 50%); }
+  .hud span { font-size: 12px; opacity: .7; margin-left: 8px; }
+  .tools { position: fixed; bottom: max(16px, env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); display: flex; gap: 12px; }
+  .tools button { width: 58px; height: 58px; border-radius: 10px; border: 3px solid #222; background: linear-gradient(#d8dde2, #9aa2aa); color: #222; font-size: 24px; cursor: pointer; box-shadow: 0 4px 0 #222; position: relative; }
+  .tools button:active { transform: translateY(3px); box-shadow: 0 1px 0 #222; }
+  .tools button:disabled { opacity: .4; }
+  .tools button small { position: absolute; right: -6px; top: -6px; background: #e74c3c; color: #fff; border-radius: 10px; font-size: 11px; padding: 1px 6px; }
+  .overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; padding: 20px; background: #1a1e22cc; transition: opacity .3s; }
+  .overlay.hidden { opacity: 0; pointer-events: none; }
+  .plate { width: min(350px, 100%); background: linear-gradient(#e8ecf0, #b8c0c8); color: #222; border-radius: 10px; padding: 24px 20px; text-align: center; display: flex; flex-direction: column; gap: 12px; border: 4px solid #222; position: relative; }
+  .plate::before, .plate::after { content: ""; position: absolute; top: 10px; width: 14px; height: 14px; border-radius: 50%; background: radial-gradient(circle at 40% 40%, #fff, #7a828a); border: 2px solid #444; }
+  .plate::before { left: 10px; } .plate::after { right: 10px; }
+  .plate canvas { width: 100%; height: auto; }
+  h1 { font-size: clamp(38px, 11vw, 54px); letter-spacing: 3px; }
+  p { font-family: "Segoe UI", sans-serif; font-size: 15px; line-height: 1.5; }
+  .stat b { color: #c0392b; }
+  .btn { border: 3px solid #222; background: #f2c230; color: #222; font: inherit; font-weight: bold; font-size: 20px; letter-spacing: 3px; padding: 12px; border-radius: 8px; cursor: pointer; box-shadow: 0 5px 0 #222; }
+  .btn:active { transform: translateY(4px); box-shadow: 0 1px 0 #222; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud" id="level">LEVEL 1<span id="moves">0</span></div>
+<div class="tools"><button id="undo">↶</button><button id="restart">⟳</button><button id="addTube">＋<small>1</small></button></div>
+
+<div class="overlay" id="menu"><div class="plate">
+  <canvas id="logo" width="600" height="150"></canvas>
+  <h1>NUT SORT</h1>
+  <p><b>Tap</b> a bolt to unscrew its top nuts, then tap another bolt to screw them on. Nuts only go onto the same colour or an empty bolt. One colour per bolt!</p>
+  <div class="stat" id="bestMenu"></div>
+  <button class="btn" id="startBtn">START</button>
+</div></div>
+<div class="overlay hidden" id="win"><div class="plate">
+  <h1>TIGHT!</h1>
+  <div class="stat">Moves <b id="winMoves">0</b></div>
+  <button class="btn" id="nextBtn">NEXT</button>
+</div></div>
+
+<script>
+/*AUDIO-ENGINE-START*/
+// ---------- audio: procedural background music + sound effects ----------
+// Every note is synthesized with the Web Audio API at runtime, so the music
+// needs no files, works offline and carries no copyright.
+const GameAudio = (cfg) => {
+  let ctx = null, master = null, musicBus = null, sfxBus = null;
+  let timer = null, step = 0, nextT = 0, playing = false;
+  let musicOn = true;
+  try { musicOn = localStorage.getItem('music_off') !== '1'; } catch (e) {}
+
+  const SCALES = {
+    major: [0, 2, 4, 5, 7, 9, 11], minor: [0, 2, 3, 5, 7, 8, 10],
+    dorian: [0, 2, 3, 5, 7, 9, 10], lydian: [0, 2, 4, 6, 7, 9, 11],
+    pentaMajor: [0, 2, 4, 7, 9], pentaMinor: [0, 3, 5, 7, 10],
+    japanese: [0, 1, 5, 7, 8], phrygian: [0, 1, 3, 5, 7, 8, 10]
+  };
+  const scale = SCALES[cfg.scale] || SCALES.major;
+  const root = cfg.root || 57;
+  const bpm = cfg.bpm || 110;
+  const prog = cfg.prog || [0, 5, 3, 4];
+  const sixteenth = 60 / bpm / 4;
+
+  // deterministic random so each game always plays "its" tune
+  let seed = cfg.seed || 1;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
+
+  const deg = (d, oct = 0) => {
+    const n = scale.length;
+    const o = Math.floor(d / n);
+    return root + scale[((d % n) + n) % n] + 12 * (o + oct);
+  };
+  const hz = m => 440 * Math.pow(2, (m - 69) / 12);
+
+  // melody: two 2-bar phrases (A, B) arranged A A B A
+  function phrase() {
+    const notes = [];
+    let d = 2 + Math.floor(rnd() * 3);
+    for (let i = 0; i < 32; i++) {
+      const strong = i % 4 === 0;
+      if (rnd() < (strong ? 0.85 : (cfg.leadDensity || 0.35))) {
+        d += Math.round((rnd() - 0.5) * 4);
+        d = Math.max(0, Math.min(scale.length * 2, d));
+        const len = strong && rnd() < 0.5 ? 2 : 1;
+        notes.push({ i, d, len });
+      }
+    }
+    return notes;
+  }
+  const A = phrase(), B = phrase();
+  const song = [A, A, B, A];
+
+  function init() {
+    if (ctx) return;
+    try {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      master = ctx.createGain(); master.gain.value = 0.9; master.connect(ctx.destination);
+      musicBus = ctx.createGain(); musicBus.gain.value = cfg.volume || 0.16; musicBus.connect(master);
+      sfxBus = ctx.createGain(); sfxBus.gain.value = 1; sfxBus.connect(master);
+    } catch (e) { ctx = null; }
+  }
+
+  function voice(t, freq, dur, type, vol, opts = {}) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, t);
+    if (opts.detune) o.detune.value = opts.detune;
+    let node = o;
+    if (opts.cutoff) {
+      const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = opts.cutoff; f.Q.value = opts.q || 1;
+      o.connect(f); node = f;
+    }
+    const a = opts.attack || 0.008;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(vol, t + a);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    node.connect(g); g.connect(opts.bus || musicBus);
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+
+  let noiseBuf = null;
+  function noise(t, dur, vol, hp) {
+    if (!noiseBuf) {
+      noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 0.5, ctx.sampleRate);
+      const d = noiseBuf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    }
+    const s = ctx.createBufferSource(); s.buffer = noiseBuf;
+    const f = ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = hp;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.connect(f); f.connect(g); g.connect(musicBus);
+    s.start(t); s.stop(t + dur + 0.02);
+  }
+
+  function kick(t) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.setValueAtTime(140, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+    g.gain.setValueAtTime(0.9, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+    o.connect(g); g.connect(musicBus); o.start(t); o.stop(t + 0.25);
+  }
+
+  function playStep(s, t) {
+    const bar = Math.floor(s / 16);
+    const i16 = s % 16;
+    const chordDeg = prog[bar % prog.length];
+    const w = cfg.waves || {};
+    // bass
+    const bassPat = cfg.bassPattern || [0, 8];
+    if (bassPat.includes(i16)) voice(t, hz(deg(chordDeg, -2)), sixteenth * 3.5, w.bass || 'triangle', 0.5, { cutoff: 600 });
+    // pad (chord) at bar start
+    if (cfg.pad && i16 === 0) {
+      for (const k of [0, 2, 4]) voice(t, hz(deg(chordDeg + k, -1)), sixteenth * 15, w.pad || 'sine', 0.12, { attack: 0.3, cutoff: 1400, detune: k * 3 });
+    }
+    // arpeggio
+    if (cfg.arp && i16 % (cfg.arpEvery || 2) === 0) {
+      const k = [0, 2, 4, 2][(i16 / (cfg.arpEvery || 2)) % 4];
+      voice(t, hz(deg(chordDeg + k, cfg.arpOct || 0)), sixteenth * 1.6, w.arp || 'square', 0.1, { cutoff: cfg.arpCutoff || 2200 });
+    }
+    // lead melody
+    const ph = song[Math.floor(bar / 2) % song.length];
+    const pi = (bar % 2) * 16 + i16;
+    for (const n of ph) if (n.i === pi) {
+      voice(t, hz(deg(n.d, cfg.leadOct || 0)), sixteenth * (n.len * 2 + 0.5), w.lead || 'triangle', 0.22, { cutoff: cfg.leadCutoff || 3000 });
+    }
+    // drums
+    if (cfg.drums) {
+      if (i16 % 8 === 0 || (cfg.drums === 'busy' && i16 === 10)) kick(t);
+      if (i16 % 8 === 4) noise(t, 0.14, 0.35, 1500);
+      if (i16 % 2 === 0) noise(t, 0.04, cfg.drums === 'soft' ? 0.06 : 0.12, 7000);
+    }
+  }
+
+  function scheduler() {
+    if (!ctx || !playing) return;
+    while (nextT < ctx.currentTime + 0.15) {
+      playStep(step, nextT);
+      nextT += sixteenth * (cfg.swing && step % 2 === 0 ? 1 + cfg.swing : cfg.swing ? 1 - cfg.swing : 1);
+      step++;
+    }
+  }
+
+  function startMusic() {
+    if (!ctx || playing || !musicOn) return;
+    playing = true;
+    musicBus.gain.cancelScheduledValues(ctx.currentTime);
+    musicBus.gain.setValueAtTime(0.0001, ctx.currentTime);
+    musicBus.gain.linearRampToValueAtTime(cfg.volume || 0.16, ctx.currentTime + 1.2);
+    nextT = ctx.currentTime + 0.05;
+    timer = setInterval(scheduler, 40);
+  }
+  function stopMusic() {
+    playing = false;
+    if (timer) clearInterval(timer);
+    timer = null;
+  }
+
+  // mute button
+  const btn = document.createElement('button');
+  btn.setAttribute('aria-label', 'Toggle music');
+  btn.style.cssText = 'position:fixed;z-index:50;right:max(14px,env(safe-area-inset-right));bottom:max(14px,env(safe-area-inset-bottom));' +
+    'width:42px;height:42px;border-radius:50%;border:none;cursor:pointer;font-size:20px;line-height:42px;padding:0;' +
+    'background:' + (cfg.btnBg || 'rgba(0,0,0,.35)') + ';color:' + (cfg.btnColor || '#fff') + ';backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);';
+  const paint = () => { btn.textContent = musicOn ? '♪' : '✕'; btn.style.opacity = musicOn ? '1' : '.6'; };
+  paint();
+  const toggle = e => {
+    e.stopPropagation(); e.preventDefault();
+    musicOn = !musicOn;
+    try { localStorage.setItem('music_off', musicOn ? '0' : '1'); } catch (err) {}
+    init();
+    if (ctx && ctx.state === 'suspended') ctx.resume();
+    if (musicOn) startMusic(); else stopMusic();
+    paint();
+  };
+  btn.addEventListener('pointerdown', e => e.stopPropagation());
+  btn.addEventListener('pointerup', e => e.stopPropagation());
+  btn.addEventListener('click', toggle);
+  document.addEventListener('DOMContentLoaded', () => document.body.appendChild(btn));
+  if (document.body) document.body.appendChild(btn);
+
+  document.addEventListener('visibilitychange', () => {
+    if (!ctx) return;
+    if (document.hidden) ctx.suspend(); else ctx.resume();
+  });
+
+  return {
+    // call from a user gesture (start button) — browsers only allow audio after one
+    start() {
+      init();
+      if (!ctx) return;
+      if (ctx.state === 'suspended') ctx.resume();
+      startMusic();
+    },
+    sfx(freq, dur, type = 'sine', vol = 0.07, to = 0) {
+      init();
+      if (!ctx) return;
+      try {
+        const t = ctx.currentTime;
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.type = type; o.frequency.setValueAtTime(freq, t);
+        if (to) o.frequency.exponentialRampToValueAtTime(Math.max(30, to), t + dur);
+        g.gain.setValueAtTime(vol, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+        o.connect(g); g.connect(sfxBus);
+        o.start(t); o.stop(t + dur + 0.02);
+      } catch (e) {}
+    }
+  };
+};
+/*AUDIO-ENGINE-END*/
+/*SPRITES-START*/
+// ---------- sprites: detailed SVG artwork rasterised once into canvases ----------
+// Each piece is authored as an SVG (gradients, highlights, shadows, glow) and
+// drawn into an offscreen canvas at load time, so the game loop just blits images.
+const loadSprites = (defs, px = 160) => Promise.all(Object.entries(defs).map(([name, svg]) => new Promise(done => {
+  const img = new Image();
+  const finish = ok => {
+    const c = document.createElement('canvas');
+    const w = Array.isArray(px) ? px[0] : px, h = Array.isArray(px) ? px[1] : px;
+    c.width = w; c.height = h;
+    if (ok) c.getContext('2d').drawImage(img, 0, 0, w, h);
+    done([name, c]);
+  };
+  img.onload = () => finish(true);
+  img.onerror = () => finish(false);
+  img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+}))).then(entries => Object.fromEntries(entries));
+
+// small helpers for writing SVG
+const svgDoc = (body, vb = '0 0 100 100') => '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + vb + '">' + body + '</svg>';
+const shade = (hex, amt) => {
+  const n = parseInt(hex.slice(1), 16);
+  const f = v => Math.max(0, Math.min(255, Math.round(amt < 0 ? v * (1 + amt) : v + (255 - v) * amt)));
+  return '#' + [n >> 16, (n >> 8) & 255, n & 255].map(f).map(v => v.toString(16).padStart(2, '0')).join('');
+};
+/*SPRITES-END*/
+/*SORT-ENGINE-START*/
+// ---------- sort engine: containers holding stacks of colours ----------
+// tubes[i] is an array bottom → top. A move takes the top run of one colour
+// and drops as much of it as fits onto a tube that is empty or has the same colour on top.
+const SortPuzzle = (opts) => {
+  const cap = opts.cap, single = !!opts.single;
+  let tubes = [], history = [];
+  const top = t => t[t.length - 1];
+  const topRun = t => { let n = 0; for (let i = t.length - 1; i >= 0 && t[i] === top(t); i--) n++; return n; };
+
+  function generate(colors, empty, extraTubes = 0) {
+    // shuffle a full set of pieces until no tube starts finished
+    for (let tries = 0; tries < 200; tries++) {
+      const all = [];
+      for (let c = 0; c < colors; c++) for (let k = 0; k < cap; k++) all.push(c);
+      for (let i = all.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [all[i], all[j]] = [all[j], all[i]]; }
+      tubes = [];
+      for (let c = 0; c < colors; c++) tubes.push(all.slice(c * cap, c * cap + cap));
+      for (let e = 0; e < empty + extraTubes; e++) tubes.push([]);
+      if (!tubes.some(t => t.length === cap && t.every(v => v === t[0]))) break;
+    }
+    history = [];
+    return api;
+  }
+
+  const api = {
+    get tubes() { return tubes; },
+    get cap() { return cap; },
+    generate,
+    load(t) { tubes = t.map(x => x.slice()); history = []; return api; },
+    topRun,
+    canMove(from, to) {
+      if (from === to) return false;
+      const a = tubes[from], b = tubes[to];
+      if (!a || !b || !a.length || b.length >= cap) return false;
+      return !b.length || top(b) === top(a);
+    },
+    // returns how many pieces moved
+    move(from, to) {
+      if (!api.canMove(from, to)) return 0;
+      const a = tubes[from], b = tubes[to];
+      const n = single ? 1 : Math.min(topRun(a), cap - b.length);
+      for (let i = 0; i < n; i++) b.push(a.pop());
+      history.push([from, to, n]);
+      return n;
+    },
+    undo() {
+      const h = history.pop(); if (!h) return null;
+      const [from, to, n] = h;
+      for (let i = 0; i < n; i++) tubes[from].push(tubes[to].pop());
+      return h;
+    },
+    get moves() { return history.length; },
+    complete(i) { const t = tubes[i]; return t.length === cap && t.every(v => v === t[0]); },
+    solved() { return tubes.every(t => !t.length || (t.length === cap && t.every(v => v === t[0]))); },
+    addTube() { tubes.push([]); },
+    stuck() {
+      for (let i = 0; i < tubes.length; i++) for (let j = 0; j < tubes.length; j++) {
+        if (!api.canMove(i, j)) continue;
+        // moving a whole uniform tube into an empty one changes nothing
+        if (!tubes[j].length && topRun(tubes[i]) === tubes[i].length) continue;
+        return false;
+      }
+      return true;
+    }
+  };
+  return api;
+};
+/*SORT-ENGINE-END*/
+(() => {
+  const audio = GameAudio({
+    bpm: 112, scale: 'dorian', root: 50, prog: [0, 3, 6, 4], seed: 503,
+    waves: { lead: 'square', bass: 'triangle', arp: 'triangle' },
+    arp: true, arpEvery: 2, arpOct: 1, leadCutoff: 1800, leadOct: 1, leadDensity: 0.3, drums: true, bassPattern: [0, 3, 8, 11], volume: 0.12,
+    btnBg: 'rgba(34,34,34,.6)', btnColor: '#f2c230'
+  });
+  const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+  const $ = id => document.getElementById(id);
+  const KEY = 'nut_sort_level';
+  let level = 1; try { level = +localStorage.getItem(KEY) || 1; } catch (e) {}
+  $('bestMenu').innerHTML = level > 1 ? 'Continue from level <b>' + level + '</b>' : '';
+
+  // ---------- painted hex nuts in 3/4 view ----------
+  const NCOL = ['#e23b3b', '#f08a24', '#f2c230', '#3bb54a', '#2a9de0', '#3a4fd0', '#8a44c8', '#e04a9a', '#e8e8e8', '#2c2f33', '#1fb5a0', '#a0d030'];
+  const nutSVG = c => svgDoc('<defs>' +
+    '<linearGradient id="f1" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="' + shade(c, 0.25) + '"/><stop offset="1" stop-color="' + shade(c, -0.25) + '"/></linearGradient>' +
+    '<linearGradient id="f2" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="' + c + '"/><stop offset="1" stop-color="' + shade(c, -0.4) + '"/></linearGradient>' +
+    '<linearGradient id="f3" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="' + shade(c, -0.2) + '"/><stop offset="1" stop-color="' + shade(c, -0.6) + '"/></linearGradient>' +
+    '<radialGradient id="top" cx="40%" cy="30%" r="80%"><stop offset="0" stop-color="' + shade(c, 0.55) + '"/><stop offset="1" stop-color="' + shade(c, 0.05) + '"/></radialGradient>' +
+    '<filter id="s" x="-10%" y="-10%" width="120%" height="140%"><feDropShadow dx="0" dy="3" stdDeviation="2" flood-opacity=".5"/></filter></defs>' +
+    '<g filter="url(#s)">' +
+    // side faces of the hexagonal prism
+    '<polygon points="4,22 22,34 22,54 4,42" fill="url(#f1)"/><polygon points="22,34 78,34 78,54 22,54" fill="url(#f2)"/><polygon points="78,34 96,22 96,42 78,54" fill="url(#f3)"/>' +
+    // top hexagon with bevel and threaded hole
+    '<polygon points="4,22 22,10 78,10 96,22 78,34 22,34" fill="url(#top)"/>' +
+    '<polygon points="10,22 25,13 75,13 90,22 75,31 25,31" fill="none" stroke="#fff" stroke-opacity=".35" stroke-width="1.5"/>' +
+    '<ellipse cx="50" cy="22" rx="17" ry="7" fill="' + shade(c, -0.55) + '"/><ellipse cx="50" cy="23.5" rx="13" ry="5" fill="#15181c"/>' +
+    '<path d="M38 21 Q 50 26 62 21" stroke="#9aa2aa" stroke-width="1.2" fill="none" opacity=".6"/>' +
+    '<path d="M24 37 L 24 52 M76 37 L 76 52" stroke="#fff" stroke-opacity=".25" stroke-width="2"/>' +
+    '<path d="M28 38 L 70 38" stroke="#fff" stroke-opacity=".35" stroke-width="2"/></g>', '0 0 100 60');
+
+  let SPR = null;
+  const defs = {}; NCOL.forEach((c, i) => defs['n' + i] = nutSVG(c));
+  loadSprites(defs, [160, 96]).then(s => { SPR = s; const lc = $('logo').getContext('2d'); NCOL.slice(0, 6).forEach((c, i) => [0, 1, 2].forEach(k => lc.drawImage(SPR['n' + ((i + k) % 6)], 20 + i * 95, 96 - k * 28, 90, 54))); });
+
+  const CAP = 4;
+  let W, H, DPR, layout = [], nw, nh, pz = null, held = null, flight = null, t = 0, extraUsed = false, state = 'menu', sparks = [];
+  function resize() { DPR = Math.min(devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight; canvas.width = W * DPR; canvas.height = H * DPR; ctx.setTransform(DPR, 0, 0, DPR, 0, 0); doLayout(); }
+  function doLayout() {
+    if (!pz) return;
+    const n = pz.tubes.length, rows = n > 6 ? 2 : 1, perRow = Math.ceil(n / rows);
+    nw = Math.min(84, (W - 20) / perRow * 0.86, ((H - 240) / rows) / (CAP * 0.62 + 2.2) / 0.6);
+    nh = nw * 0.6;
+    const step = nh * 0.62, boltH = step * CAP + nh * 1.4, rowH = boltH + nh * 2.2;
+    const gap = (W - perRow * nw) / (perRow + 1);
+    layout = [];
+    for (let i = 0; i < n; i++) {
+      const r = Math.floor(i / perRow), inRow = Math.min(perRow, n - r * perRow), k = i - r * perRow, total = inRow * nw + (inRow - 1) * Math.min(gap, nw * 0.4);
+      layout.push({ x: (W - total) / 2 + k * (nw + Math.min(gap, nw * 0.4)), base: (H - rows * rowH) / 2 + r * rowH + rowH - nh * 0.6, h: boltH, step });
+    }
+  }
+  addEventListener('resize', resize); resize();
+
+  function load() {
+    const colors = Math.min(NCOL.length, 3 + Math.floor((level - 1) / 2));
+    pz = SortPuzzle({ cap: CAP }).generate(colors, 2);
+    held = null; flight = null; extraUsed = false; $('addTube').disabled = false; $('addTube').querySelector('small').textContent = '1';
+    doLayout(); hud();
+  }
+  function hud() { $('level').firstChild.textContent = 'LEVEL ' + level; $('moves').textContent = pz.moves + ' MOVES'; $('undo').disabled = !pz.moves; }
+  function start() { if (!SPR) return; load(); state = 'play'; audio.start(); $('menu').classList.add('hidden'); $('win').classList.add('hidden'); }
+  $('startBtn').onclick = start;
+  $('nextBtn').onclick = () => { level++; try { localStorage.setItem(KEY, level); } catch (e) {} start(); };
+  $('undo').onclick = () => { if (state === 'play' && !flight && pz.undo()) { held = null; audio.sfx(300, 0.08, 'square', 0.04); hud(); } };
+  $('restart').onclick = () => { if (state === 'play' && !flight) { while (pz.undo()); held = null; hud(); } };
+  $('addTube').onclick = () => { if (state !== 'play' || extraUsed) return; extraUsed = true; pz.addTube(); doLayout(); $('addTube').disabled = true; $('addTube').querySelector('small').textContent = '0'; };
+
+  const nutY = (i, k) => layout[i].base - nh * 0.9 - k * layout[i].step;
+  const topY = i => layout[i].base - layout[i].h - nh * 0.9;
+  function boltAt(x, y) { for (let i = 0; i < layout.length; i++) { const L = layout[i]; if (x >= L.x - 6 && x <= L.x + nw + 6 && y >= L.base - L.h - nh * 1.6 && y <= L.base + nh) return i; } return -1; }
+  let ratchet = 0;
+  canvas.addEventListener('pointerdown', e => {
+    if (state !== 'play' || flight) return;
+    const i = boltAt(e.clientX, e.clientY); if (i < 0) return;
+    if (held === null) { if (pz.tubes[i].length && !pz.complete(i)) { held = i; audio.sfx(520, 0.1, 'sawtooth', 0.03, 800); } return; }
+    if (i === held) { held = null; return; }
+    if (pz.canMove(held, i)) {
+      const tube = pz.tubes[held], color = tube[tube.length - 1];
+      const startK = pz.tubes[i].length, n = pz.move(held, i);
+      flight = { from: held, to: i, color, n, startK, srcK: pz.tubes[held].length, t: 0 };
+      held = null; hud();
+    } else { layout[i].shake = 0.3; audio.sfx(140, 0.12, 'square', 0.04); }
+  });
+  addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && state === 'menu') { e.preventDefault(); start(); } });
+
+  function update(dt) {
+    t += dt;
+    if (flight) {
+      flight.t += dt * 1.8;
+      ratchet -= dt; if (ratchet <= 0 && flight.t < 1) { audio.sfx(1800 + Math.random() * 400, 0.015, 'square', 0.02); ratchet = 0.05; }
+      if (flight.t >= 1) {
+        const to = flight.to; flight = null; audio.sfx(220, 0.08, 'square', 0.05);
+        if (pz.complete(to)) { const L = layout[to]; for (let k = 0; k < 20; k++) sparks.push({ x: L.x + nw / 2, y: topY(to) + nh, vx: (Math.random() - .5) * 260, vy: -Math.random() * 260, life: 0.8 }); audio.sfx(660, 0.3, 'triangle', 0.07, 1320); }
+        if (pz.solved()) { state = 'won'; $('winMoves').textContent = pz.moves; [392, 523, 659, 784].forEach((f, k) => setTimeout(() => audio.sfx(f, 0.25, 'square', 0.06), k * 110)); setTimeout(() => $('win').classList.remove('hidden'), 600); }
+      }
+    }
+    for (const L of layout) if (L.shake) L.shake = Math.max(0, L.shake - dt);
+    for (const s of sparks) { s.x += s.vx * dt; s.y += s.vy * dt; s.vy += 500 * dt; s.life -= dt; }
+    sparks = sparks.filter(s => s.life > 0);
+  }
+
+  function bolt(i) {
+    const L = layout[i], cx = L.x + nw / 2 + (L.shake ? Math.sin(L.shake * 60) * 4 : 0), rw = nw * 0.22;
+    // base plate
+    ctx.fillStyle = '#5a626a'; ctx.beginPath(); ctx.ellipse(cx, L.base, nw * 0.62, nh * 0.32, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#8a929a'; ctx.beginPath(); ctx.ellipse(cx, L.base - 4, nw * 0.6, nh * 0.28, 0, 0, Math.PI * 2); ctx.fill();
+    // threaded rod
+    const top = L.base - L.h;
+    const g = ctx.createLinearGradient(cx - rw, 0, cx + rw, 0); g.addColorStop(0, '#6a727a'); g.addColorStop(0.35, '#e8ecf0'); g.addColorStop(1, '#5a626a');
+    ctx.fillStyle = g; ctx.fillRect(cx - rw, top, rw * 2, L.h);
+    ctx.strokeStyle = 'rgba(40,44,48,.45)'; ctx.lineWidth = 1.2;
+    for (let y = top + 4; y < L.base - 4; y += 5) { ctx.beginPath(); ctx.moveTo(cx - rw, y + 2); ctx.lineTo(cx + rw, y); ctx.stroke(); }
+    ctx.fillStyle = '#c8ced4'; ctx.beginPath(); ctx.ellipse(cx, top, rw, rw * 0.4, 0, 0, Math.PI * 2); ctx.fill();
+    if (pz.complete(i)) { ctx.fillStyle = '#f2c230'; ctx.font = 'bold ' + Math.round(nw * 0.3) + 'px sans-serif'; ctx.textAlign = 'center'; ctx.fillText('✓', cx, top - nh * 1.4); }
+  }
+  function nut(c, x, y, spin = 0) {
+    const sq = 1 - Math.abs(Math.sin(spin)) * 0.12;
+    ctx.save(); ctx.translate(x, y); ctx.scale(sq, 1);
+    ctx.drawImage(SPR['n' + c], -nw / 2, -nh / 2, nw, nh); ctx.restore();
+  }
+
+  function render() {
+    // pegboard workshop wall
+    ctx.fillStyle = '#c8a878'; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = 'rgba(70,50,30,.35)';
+    for (let y = 14; y < H; y += 28) for (let x = 14; x < W; x += 28) { ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2); ctx.fill(); }
+    // tool silhouettes on the board
+    ctx.fillStyle = 'rgba(70,50,30,.18)'; ctx.save(); ctx.translate(W * 0.12, H * 0.18); ctx.rotate(-0.4); ctx.fillRect(-6, -60, 12, 120); ctx.beginPath(); ctx.arc(0, -66, 18, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+    ctx.save(); ctx.translate(W * 0.88, H * 0.16); ctx.rotate(0.5); ctx.fillRect(-5, -10, 10, 90); ctx.fillRect(-20, -26, 40, 18); ctx.restore();
+    // steel workbench
+    ctx.fillStyle = '#3a4048'; ctx.fillRect(0, H * 0.82, W, H);
+    ctx.fillStyle = '#5a626a'; ctx.fillRect(0, H * 0.82, W, 8);
+    ctx.fillStyle = 'rgba(242,194,48,.85)'; for (let x = -20; x < W; x += 40) { ctx.beginPath(); ctx.moveTo(x, H * 0.82 + 8); ctx.lineTo(x + 20, H * 0.82 + 8); ctx.lineTo(x + 10, H * 0.82 + 20); ctx.lineTo(x - 10, H * 0.82 + 20); ctx.fill(); }
+    if (!pz || !SPR) return;
+    pz.tubes.forEach((tube, i) => {
+      bolt(i);
+      const L = layout[i], cx = L.x + nw / 2 + (L.shake ? Math.sin(L.shake * 60) * 4 : 0);
+      const run = held === i ? pz.topRun(tube) : 0;
+      tube.forEach((c, k) => {
+        if (flight && i === flight.to && k >= flight.startK) return;
+        let y = nutY(i, k);
+        if (held === i && k >= tube.length - run) y = topY(i) - (tube.length - 1 - k) * L.step - Math.abs(Math.sin(t * 5)) * 4;
+        nut(c, cx, y, held === i && k >= tube.length - run ? t * 6 : 0);
+      });
+    });
+    if (flight) {
+      const a = layout[flight.from], b = layout[flight.to], p = Math.min(1, flight.t);
+      const ax = a.x + nw / 2, bx2 = b.x + nw / 2;
+      for (let m = 0; m < flight.n; m++) {
+        const kSrc = flight.srcK + (flight.n - 1 - m), kDst = flight.startK + m;
+        const yUp = topY(flight.from) - (flight.n - 1 - m) * a.step, yTop = topY(flight.to) - m * b.step, yEnd = nutY(flight.to, kDst);
+        let x, y;
+        if (p < 0.25) { const k = p / 0.25; x = ax; y = nutY(flight.from, kSrc) + (yUp - nutY(flight.from, kSrc)) * k; }
+        else if (p < 0.6) { const k = (p - 0.25) / 0.35; x = ax + (bx2 - ax) * k; y = yUp + (yTop - yUp) * k - Math.sin(k * Math.PI) * nh; }
+        else { const k = (p - 0.6) / 0.4; x = bx2; y = yTop + (yEnd - yTop) * k; }
+        nut(flight.color, x, y, p * 20);
+      }
+    }
+    for (const s of sparks) { ctx.globalAlpha = Math.max(0, s.life); ctx.fillStyle = '#fff3b0'; ctx.fillRect(s.x, s.y, 3, 3); }
+    ctx.globalAlpha = 1;
+  }
+
+  let last = performance.now();
+  (function loop(now) {
+    const dt = Math.max(0, Math.min(0.033, (now - last) / 1000)); last = now;
+    update(dt); render(); requestAnimationFrame(loop);
+  })(last);
+})();
+</script>
+</body>
+</html>

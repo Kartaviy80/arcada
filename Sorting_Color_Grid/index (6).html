@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0e1424">
+<title>Pipe Flow</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #0e1424;
+    font-family: "Avenir Next", "Segoe UI", sans-serif; color: #e8eeff;
+    touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+  canvas { display: block; width: 100%; height: 100%; }
+  .hud { position: fixed; top: max(12px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); display: flex; gap: 18px; pointer-events: none; text-align: center; }
+  .hud small { display: block; font-size: 10px; letter-spacing: 3px; opacity: .55; } .hud b { font-size: 22px; font-weight: 500; }
+  .tools { position: fixed; bottom: max(16px, env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); display: flex; gap: 12px; }
+  .tools button { padding: 12px 18px; border-radius: 14px; border: 1px solid #ffffff33; background: #ffffff12; color: #fff; font: inherit; font-size: 15px; cursor: pointer; }
+  .overlay { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; padding: 24px; text-align: center; background: #0e1424e8; transition: opacity .3s; }
+  .overlay.hidden { opacity: 0; pointer-events: none; }
+  .overlay canvas { width: 200px; height: 200px; }
+  h1 { font-size: clamp(38px, 11vw, 60px); font-weight: 700; letter-spacing: 3px; }
+  h1 span { color: #3ad0ff; }
+  p { max-width: 310px; font-size: 15px; line-height: 1.6; color: #a8b4d8; }
+  .stat b { color: #3ad0ff; }
+  .btn { border: none; background: #3ad0ff; color: #0e1424; font: inherit; font-weight: 700; font-size: 18px; letter-spacing: 3px; padding: 15px 46px; border-radius: 40px; cursor: pointer; box-shadow: 0 0 30px #3ad0ff55; }
+  .btn:active { transform: scale(.96); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud"><div><small>LEVEL</small><b id="level">1</b></div><div><small>FLOWS</small><b id="flows">0/0</b></div><div><small>PIPE</small><b id="pipe">0%</b></div></div>
+<div class="tools"><button id="restart">⟳ Clear</button><button id="hint">💡 Hint</button></div>
+
+<div class="overlay" id="menu">
+  <canvas id="logo" width="400" height="400"></canvas>
+  <h1>PIPE <span>FLOW</span></h1>
+  <p><b>Drag</b> from a coloured dot to its twin to lay a pipe. Pipes can't cross — draw over one to cut it. Connect every pair <b>and fill every square</b>.</p>
+  <div class="stat" id="bestMenu"></div>
+  <button class="btn" id="startBtn">PLAY</button>
+</div>
+<div class="overlay hidden" id="win">
+  <h1>PERFECT <span>FLOW</span></h1>
+  <div class="stat">Level <b id="winLevel">1</b> complete</div>
+  <button class="btn" id="nextBtn">NEXT</button>
+</div>
+
+<script>
+/*AUDIO-ENGINE-START*/
+// ---------- audio: procedural background music + sound effects ----------
+// Every note is synthesized with the Web Audio API at runtime, so the music
+// needs no files, works offline and carries no copyright.
+const GameAudio = (cfg) => {
+  let ctx = null, master = null, musicBus = null, sfxBus = null;
+  let timer = null, step = 0, nextT = 0, playing = false;
+  let musicOn = true;
+  try { musicOn = localStorage.getItem('music_off') !== '1'; } catch (e) {}
+
+  const SCALES = {
+    major: [0, 2, 4, 5, 7, 9, 11], minor: [0, 2, 3, 5, 7, 8, 10],
+    dorian: [0, 2, 3, 5, 7, 9, 10], lydian: [0, 2, 4, 6, 7, 9, 11],
+    pentaMajor: [0, 2, 4, 7, 9], pentaMinor: [0, 3, 5, 7, 10],
+    japanese: [0, 1, 5, 7, 8], phrygian: [0, 1, 3, 5, 7, 8, 10]
+  };
+  const scale = SCALES[cfg.scale] || SCALES.major;
+  const root = cfg.root || 57;
+  const bpm = cfg.bpm || 110;
+  const prog = cfg.prog || [0, 5, 3, 4];
+  const sixteenth = 60 / bpm / 4;
+
+  // deterministic random so each game always plays "its" tune
+  let seed = cfg.seed || 1;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
+
+  const deg = (d, oct = 0) => {
+    const n = scale.length;
+    const o = Math.floor(d / n);
+    return root + scale[((d % n) + n) % n] + 12 * (o + oct);
+  };
+  const hz = m => 440 * Math.pow(2, (m - 69) / 12);
+
+  // melody: two 2-bar phrases (A, B) arranged A A B A
+  function phrase() {
+    const notes = [];
+    let d = 2 + Math.floor(rnd() * 3);
+    for (let i = 0; i < 32; i++) {
+      const strong = i % 4 === 0;
+      if (rnd() < (strong ? 0.85 : (cfg.leadDensity || 0.35))) {
+        d += Math.round((rnd() - 0.5) * 4);
+        d = Math.max(0, Math.min(scale.length * 2, d));
+        const len = strong && rnd() < 0.5 ? 2 : 1;
+        notes.push({ i, d, len });
+      }
+    }
+    return notes;
+  }
+  const A = phrase(), B = phrase();
+  const song = [A, A, B, A];
+
+  function init() {
+    if (ctx) return;
+    try {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      master = ctx.createGain(); master.gain.value = 0.9; master.connect(ctx.destination);
+      musicBus = ctx.createGain(); musicBus.gain.value = cfg.volume || 0.16; musicBus.connect(master);
+      sfxBus = ctx.createGain(); sfxBus.gain.value = 1; sfxBus.connect(master);
+    } catch (e) { ctx = null; }
+  }
+
+  function voice(t, freq, dur, type, vol, opts = {}) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, t);
+    if (opts.detune) o.detune.value = opts.detune;
+    let node = o;
+    if (opts.cutoff) {
+      const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = opts.cutoff; f.Q.value = opts.q || 1;
+      o.connect(f); node = f;
+    }
+    const a = opts.attack || 0.008;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(vol, t + a);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    node.connect(g); g.connect(opts.bus || musicBus);
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+
+  let noiseBuf = null;
+  function noise(t, dur, vol, hp) {
+    if (!noiseBuf) {
+      noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 0.5, ctx.sampleRate);
+      const d = noiseBuf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    }
+    const s = ctx.createBufferSource(); s.buffer = noiseBuf;
+    const f = ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = hp;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.connect(f); f.connect(g); g.connect(musicBus);
+    s.start(t); s.stop(t + dur + 0.02);
+  }
+
+  function kick(t) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.setValueAtTime(140, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+    g.gain.setValueAtTime(0.9, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+    o.connect(g); g.connect(musicBus); o.start(t); o.stop(t + 0.25);
+  }
+
+  function playStep(s, t) {
+    const bar = Math.floor(s / 16);
+    const i16 = s % 16;
+    const chordDeg = prog[bar % prog.length];
+    const w = cfg.waves || {};
+    // bass
+    const bassPat = cfg.bassPattern || [0, 8];
+    if (bassPat.includes(i16)) voice(t, hz(deg(chordDeg, -2)), sixteenth * 3.5, w.bass || 'triangle', 0.5, { cutoff: 600 });
+    // pad (chord) at bar start
+    if (cfg.pad && i16 === 0) {
+      for (const k of [0, 2, 4]) voice(t, hz(deg(chordDeg + k, -1)), sixteenth * 15, w.pad || 'sine', 0.12, { attack: 0.3, cutoff: 1400, detune: k * 3 });
+    }
+    // arpeggio
+    if (cfg.arp && i16 % (cfg.arpEvery || 2) === 0) {
+      const k = [0, 2, 4, 2][(i16 / (cfg.arpEvery || 2)) % 4];
+      voice(t, hz(deg(chordDeg + k, cfg.arpOct || 0)), sixteenth * 1.6, w.arp || 'square', 0.1, { cutoff: cfg.arpCutoff || 2200 });
+    }
+    // lead melody
+    const ph = song[Math.floor(bar / 2) % song.length];
+    const pi = (bar % 2) * 16 + i16;
+    for (const n of ph) if (n.i === pi) {
+      voice(t, hz(deg(n.d, cfg.leadOct || 0)), sixteenth * (n.len * 2 + 0.5), w.lead || 'triangle', 0.22, { cutoff: cfg.leadCutoff || 3000 });
+    }
+    // drums
+    if (cfg.drums) {
+      if (i16 % 8 === 0 || (cfg.drums === 'busy' && i16 === 10)) kick(t);
+      if (i16 % 8 === 4) noise(t, 0.14, 0.35, 1500);
+      if (i16 % 2 === 0) noise(t, 0.04, cfg.drums === 'soft' ? 0.06 : 0.12, 7000);
+    }
+  }
+
+  function scheduler() {
+    if (!ctx || !playing) return;
+    while (nextT < ctx.currentTime + 0.15) {
+      playStep(step, nextT);
+      nextT += sixteenth * (cfg.swing && step % 2 === 0 ? 1 + cfg.swing : cfg.swing ? 1 - cfg.swing : 1);
+      step++;
+    }
+  }
+
+  function startMusic() {
+    if (!ctx || playing || !musicOn) return;
+    playing = true;
+    musicBus.gain.cancelScheduledValues(ctx.currentTime);
+    musicBus.gain.setValueAtTime(0.0001, ctx.currentTime);
+    musicBus.gain.linearRampToValueAtTime(cfg.volume || 0.16, ctx.currentTime + 1.2);
+    nextT = ctx.currentTime + 0.05;
+    timer = setInterval(scheduler, 40);
+  }
+  function stopMusic() {
+    playing = false;
+    if (timer) clearInterval(timer);
+    timer = null;
+  }
+
+  // mute button
+  const btn = document.createElement('button');
+  btn.setAttribute('aria-label', 'Toggle music');
+  btn.style.cssText = 'position:fixed;z-index:50;right:max(14px,env(safe-area-inset-right));bottom:max(14px,env(safe-area-inset-bottom));' +
+    'width:42px;height:42px;border-radius:50%;border:none;cursor:pointer;font-size:20px;line-height:42px;padding:0;' +
+    'background:' + (cfg.btnBg || 'rgba(0,0,0,.35)') + ';color:' + (cfg.btnColor || '#fff') + ';backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);';
+  const paint = () => { btn.textContent = musicOn ? '♪' : '✕'; btn.style.opacity = musicOn ? '1' : '.6'; };
+  paint();
+  const toggle = e => {
+    e.stopPropagation(); e.preventDefault();
+    musicOn = !musicOn;
+    try { localStorage.setItem('music_off', musicOn ? '0' : '1'); } catch (err) {}
+    init();
+    if (ctx && ctx.state === 'suspended') ctx.resume();
+    if (musicOn) startMusic(); else stopMusic();
+    paint();
+  };
+  btn.addEventListener('pointerdown', e => e.stopPropagation());
+  btn.addEventListener('pointerup', e => e.stopPropagation());
+  btn.addEventListener('click', toggle);
+  document.addEventListener('DOMContentLoaded', () => document.body.appendChild(btn));
+  if (document.body) document.body.appendChild(btn);
+
+  document.addEventListener('visibilitychange', () => {
+    if (!ctx) return;
+    if (document.hidden) ctx.suspend(); else ctx.resume();
+  });
+
+  return {
+    // call from a user gesture (start button) — browsers only allow audio after one
+    start() {
+      init();
+      if (!ctx) return;
+      if (ctx.state === 'suspended') ctx.resume();
+      startMusic();
+    },
+    sfx(freq, dur, type = 'sine', vol = 0.07, to = 0) {
+      init();
+      if (!ctx) return;
+      try {
+        const t = ctx.currentTime;
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.type = type; o.frequency.setValueAtTime(freq, t);
+        if (to) o.frequency.exponentialRampToValueAtTime(Math.max(30, to), t + dur);
+        g.gain.setValueAtTime(vol, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+        o.connect(g); g.connect(sfxBus);
+        o.start(t); o.stop(t + dur + 0.02);
+      } catch (e) {}
+    }
+  };
+};
+/*AUDIO-ENGINE-END*/
+/*SPRITES-START*/
+// ---------- sprites: detailed SVG artwork rasterised once into canvases ----------
+// Each piece is authored as an SVG (gradients, highlights, shadows, glow) and
+// drawn into an offscreen canvas at load time, so the game loop just blits images.
+const loadSprites = (defs, px = 160) => Promise.all(Object.entries(defs).map(([name, svg]) => new Promise(done => {
+  const img = new Image();
+  const finish = ok => {
+    const c = document.createElement('canvas');
+    const w = Array.isArray(px) ? px[0] : px, h = Array.isArray(px) ? px[1] : px;
+    c.width = w; c.height = h;
+    if (ok) c.getContext('2d').drawImage(img, 0, 0, w, h);
+    done([name, c]);
+  };
+  img.onload = () => finish(true);
+  img.onerror = () => finish(false);
+  img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+}))).then(entries => Object.fromEntries(entries));
+
+// small helpers for writing SVG
+const svgDoc = (body, vb = '0 0 100 100') => '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + vb + '">' + body + '</svg>';
+const shade = (hex, amt) => {
+  const n = parseInt(hex.slice(1), 16);
+  const f = v => Math.max(0, Math.min(255, Math.round(amt < 0 ? v * (1 + amt) : v + (255 - v) * amt)));
+  return '#' + [n >> 16, (n >> 8) & 255, n & 255].map(f).map(v => v.toString(16).padStart(2, '0')).join('');
+};
+/*SPRITES-END*/
+(() => {
+  const audio = GameAudio({
+    bpm: 92, scale: 'minor', root: 57, prog: [0, 5, 3, 6], seed: 507,
+    waves: { lead: 'sine', bass: 'sawtooth', arp: 'triangle', pad: 'sawtooth' },
+    pad: true, arp: true, arpEvery: 2, arpOct: 1, arpCutoff: 1800, leadOct: 1, leadDensity: 0.25, drums: 'soft', bassPattern: [0, 10], volume: 0.14,
+    btnBg: 'rgba(58,208,255,.15)'
+  });
+  const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+  const $ = id => document.getElementById(id);
+  const KEY = 'pipe_flow_level';
+  let level = 1; try { level = +localStorage.getItem(KEY) || 1; } catch (e) {}
+  $('bestMenu').innerHTML = level > 1 ? 'Continue from level <b>' + level + '</b>' : '';
+
+  const COLS = ['#ff3b4e', '#2e8bff', '#3ad06a', '#ffd22e', '#ff8a1e', '#3ad0ff', '#c04aff', '#ff5ab8', '#a0603a', '#e8eef8', '#8ae03a', '#2ab0a0', '#8a8aff', '#ff9aa0'];
+  // glossy end-point spheres
+  const dotSVG = c => svgDoc('<defs><radialGradient id="g" cx="35%" cy="30%" r="75%"><stop offset="0" stop-color="#fff"/><stop offset=".25" stop-color="' + shade(c, 0.35) + '"/><stop offset=".8" stop-color="' + c + '"/><stop offset="1" stop-color="' + shade(c, -0.45) + '"/></radialGradient>' +
+    '<radialGradient id="h"><stop offset="0" stop-color="' + c + '" stop-opacity=".6"/><stop offset="1" stop-color="' + c + '" stop-opacity="0"/></radialGradient></defs>' +
+    '<circle cx="50" cy="50" r="48" fill="url(#h)"/><circle cx="50" cy="50" r="32" fill="url(#g)"/><circle cx="50" cy="50" r="32" fill="none" stroke="' + shade(c, -0.5) + '" stroke-width="2"/>' +
+    '<ellipse cx="40" cy="36" rx="10" ry="6" fill="#fff" opacity=".7" transform="rotate(-30 40 36)"/>');
+  let SPR = null;
+  const defs = {}; COLS.forEach((c, i) => defs['d' + i] = dotSVG(c));
+  loadSprites(defs, 128).then(s => { SPR = s; drawLogo(); });
+
+  let W, H, DPR, N, cell, bx, by, dots, paths, state = 'menu', t = 0, drawing = null, solution = null, sparks = [], flashT = 0;
+
+  // ---------- generator: random Hamiltonian path (backbite moves) cut into flows ----------
+  function generate(n) {
+    let path = []; for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) path.push(r * n + (r % 2 ? n - 1 - c : c));
+    const nb = i => { const r = Math.floor(i / n), c = i % n, o = []; if (r > 0) o.push(i - n); if (r < n - 1) o.push(i + n); if (c > 0) o.push(i - 1); if (c < n - 1) o.push(i + 1); return o; };
+    const pos = new Int32Array(n * n);
+    for (let it = 0; it < n * n * 60; it++) {
+      if (Math.random() < 0.5) path.reverse();
+      path.forEach((v, k) => pos[v] = k);
+      const L = path.length - 1, e = path[L];
+      const cand = nb(e).filter(v => v !== path[L - 1]);
+      const m = cand[Math.floor(Math.random() * cand.length)];
+      const j = pos[m];
+      const seg = path.slice(j + 1).reverse();
+      path = path.slice(0, j + 1).concat(seg);
+    }
+    // cut into flows of length >= 3
+    const flows = []; let i = 0;
+    const target = Math.max(3, Math.round(n * n / (n + 1)));
+    while (i < path.length) {
+      let len = Math.max(3, Math.round(target * (0.6 + Math.random() * 0.8)));
+      if (path.length - (i + len) < 3) len = path.length - i;
+      flows.push(path.slice(i, i + len)); i += len;
+    }
+    return flows;
+  }
+  function load() {
+    N = Math.min(9, 5 + Math.floor((level - 1) / 2));
+    let flows; do { flows = generate(N); } while (flows.length > COLS.length || flows.length < N - 1);
+    solution = flows;
+    dots = new Map(); flows.forEach((f, k) => { dots.set(f[0], k); dots.set(f[f.length - 1], k); });
+    paths = flows.map(() => []);
+    drawing = null; flashT = 0; resize(); hud();
+  }
+  function resize() {
+    DPR = Math.min(devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight; canvas.width = W * DPR; canvas.height = H * DPR; ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    if (!N) return;
+    cell = Math.min((W - 24) / N, (H - 190) / N); bx = (W - cell * N) / 2; by = 80 + (H - 170 - cell * N) / 2;
+  }
+  addEventListener('resize', resize);
+  const owner = () => { const o = new Int16Array(N * N).fill(-1); paths.forEach((p, k) => p.forEach(i => o[i] = k)); dots.forEach((k, i) => o[i] = k); return o; };
+  const connected = k => { const p = paths[k]; if (p.length < 2) return false; const a = p[0], b = p[p.length - 1]; return a !== b && dots.get(a) === k && dots.get(b) === k; };
+  function hud() {
+    const done = paths.filter((_, k) => connected(k)).length, covered = new Set(); paths.forEach(p => p.forEach(i => covered.add(i))); const filled = covered.size;
+    $('level').textContent = level; $('flows').textContent = done + '/' + paths.length; $('pipe').textContent = Math.floor(filled / (N * N) * 100) + '%';
+    return { done, filled };
+  }
+  function start() { if (!SPR) return; load(); state = 'play'; audio.start(); $('menu').classList.add('hidden'); $('win').classList.add('hidden'); }
+  $('startBtn').onclick = start;
+  $('nextBtn').onclick = () => { level++; try { localStorage.setItem(KEY, level); } catch (e) {} start(); };
+  $('restart').onclick = () => { if (state === 'play') { paths = paths.map(() => []); hud(); } };
+  $('hint').onclick = () => {
+    if (state !== 'play') return;
+    const k = paths.findIndex((_, i) => !connected(i)); if (k < 0) return;
+    // lay the solution pipe for one unfinished colour, cutting whatever was in its way
+    const sol = solution[k], set = new Set(sol);
+    paths = paths.map((p, i) => { if (i === k) return sol.slice(); const cut = p.findIndex(c => set.has(c)); return cut < 0 ? p : p.slice(0, cut); });
+    audio.sfx(880, 0.3, 'sine', 0.06, 1320); check();
+  };
+
+  const cellAt = (x, y) => { const c = Math.floor((x - bx) / cell), r = Math.floor((y - by) / cell); return r >= 0 && r < N && c >= 0 && c < N ? r * N + c : -1; };
+  const adj = (a, b) => { const ra = Math.floor(a / N), ca = a % N, rb = Math.floor(b / N), cb = b % N; return Math.abs(ra - rb) + Math.abs(ca - cb) === 1; };
+  canvas.addEventListener('pointerdown', e => {
+    if (state !== 'play') return;
+    const i = cellAt(e.clientX, e.clientY); if (i < 0) return;
+    if (dots.has(i)) { const k = dots.get(i); paths[k] = [i]; drawing = k; audio.sfx(440, 0.05, 'sine', 0.04); hud(); return; }
+    const k = paths.findIndex(p => p.includes(i));
+    if (k >= 0) { paths[k] = paths[k].slice(0, paths[k].indexOf(i) + 1); drawing = k; hud(); }
+  });
+  addEventListener('pointermove', e => {
+    if (drawing === null) return;
+    const i = cellAt(e.clientX, e.clientY); if (i < 0) return;
+    const p = paths[drawing], last = p[p.length - 1];
+    if (i === last) return;
+    const back = p.indexOf(i);
+    if (back >= 0) { paths[drawing] = p.slice(0, back + 1); hud(); return; }
+    if (!adj(last, i)) return;
+    if (connected(drawing)) return;                       // already reached its twin
+    if (dots.has(i) && dots.get(i) !== drawing) return;   // other colours' dots block
+    // cut any other pipe we run over
+    paths.forEach((q, k) => { if (k !== drawing) { const at = q.indexOf(i); if (at >= 0) paths[k] = q.slice(0, at); } });
+    p.push(i);
+    audio.sfx(300 + p.length * 25, 0.04, 'triangle', 0.03);
+    if (connected(drawing)) { audio.sfx(660, 0.25, 'triangle', 0.07, 1320); for (let s = 0; s < 14; s++) sparks.push({ x: bx + (i % N + 0.5) * cell, y: by + (Math.floor(i / N) + 0.5) * cell, vx: (Math.random() - .5) * 220, vy: (Math.random() - .5) * 220, life: 0.6, c: COLS[drawing] }); }
+    hud();
+  });
+  addEventListener('pointerup', () => { if (drawing !== null) { drawing = null; check(); } });
+  function check() {
+    const { done, filled } = hud();
+    if (done === paths.length && filled === N * N) {
+      state = 'won'; flashT = 0.001; $('winLevel').textContent = level;
+      [523, 659, 784, 1046, 1318].forEach((f, k) => setTimeout(() => audio.sfx(f, 0.35, 'triangle', 0.07), k * 110));
+      setTimeout(() => $('win').classList.remove('hidden'), 1200);
+    } else if (done === paths.length) audio.sfx(330, 0.3, 'sine', 0.05);
+  }
+  addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && state === 'menu') { e.preventDefault(); start(); } });
+
+  function update(dt) { t += dt; if (flashT) flashT += dt; for (const s of sparks) { s.x += s.vx * dt; s.y += s.vy * dt; s.life -= dt; } sparks = sparks.filter(s => s.life > 0); }
+  function pipe(p, k, cx = ctx, ox = bx, oy = by, cs = cell) {
+    if (p.length < 2) return;
+    const pt = i => [ox + (i % N + 0.5) * cs, oy + (Math.floor(i / N) + 0.5) * cs];
+    cx.lineCap = 'round'; cx.lineJoin = 'round';
+    const trace = () => { cx.beginPath(); p.forEach((i, n) => { const [x, y] = pt(i); n ? cx.lineTo(x, y) : cx.moveTo(x, y); }); };
+    trace(); cx.strokeStyle = shade(COLS[k], -0.45); cx.lineWidth = cs * 0.42; cx.stroke();
+    trace(); cx.strokeStyle = COLS[k]; cx.lineWidth = cs * 0.34; cx.stroke();
+    cx.save(); cx.translate(-cs * 0.05, -cs * 0.05); trace(); cx.strokeStyle = 'rgba(255,255,255,.45)'; cx.lineWidth = cs * 0.09; cx.stroke(); cx.restore();
+  }
+  function render() {
+    const g = ctx.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, Math.max(W, H) * 0.7); g.addColorStop(0, '#18223c'); g.addColorStop(1, '#0a0f1c');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    if (!SPR || !paths) return;
+    // board + tinted cells
+    ctx.fillStyle = '#0a0f1c'; ctx.fillRect(bx - 6, by - 6, cell * N + 12, cell * N + 12);
+    const o = owner();
+    for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+      const i = r * N + c, k = o[i];
+      ctx.fillStyle = k >= 0 && paths[k].includes(i) ? COLS[k] + (connected(k) ? '44' : '26') : '#141c30';
+      ctx.fillRect(bx + c * cell + 1, by + r * cell + 1, cell - 2, cell - 2);
+    }
+    ctx.strokeStyle = '#26304c'; ctx.lineWidth = 1;
+    for (let k = 0; k <= N; k++) { ctx.beginPath(); ctx.moveTo(bx + k * cell, by); ctx.lineTo(bx + k * cell, by + N * cell); ctx.moveTo(bx, by + k * cell); ctx.lineTo(bx + N * cell, by + k * cell); ctx.stroke(); }
+    paths.forEach((p, k) => pipe(p, k));
+    dots.forEach((k, i) => {
+      const pulse = connected(k) ? 1 : 1 + Math.sin(t * 4 + k) * 0.05, s = cell * 0.92 * pulse;
+      ctx.drawImage(SPR['d' + k], bx + (i % N + 0.5) * cell - s / 2, by + (Math.floor(i / N) + 0.5) * cell - s / 2, s, s);
+    });
+    if (flashT) { ctx.fillStyle = 'rgba(255,255,255,' + Math.max(0, 0.4 - flashT) + ')'; ctx.fillRect(bx, by, cell * N, cell * N); }
+    for (const s of sparks) { ctx.globalAlpha = Math.max(0, s.life * 1.6); ctx.fillStyle = s.c; ctx.beginPath(); ctx.arc(s.x, s.y, 3, 0, Math.PI * 2); ctx.fill(); }
+    ctx.globalAlpha = 1;
+  }
+  function drawLogo() {
+    // a solved 5x5 example for the menu
+    const keep = N; N = 5; const lc = $('logo').getContext('2d'), cs = 80;
+    lc.fillStyle = '#141c30'; lc.fillRect(0, 0, 400, 400);
+    const demo = generate(5);
+    demo.forEach((p, k) => { pipe(p, k, lc, 0, 0, cs); [p[0], p[p.length - 1]].forEach(i => lc.drawImage(SPR['d' + k], (i % 5) * cs + 4, Math.floor(i / 5) * cs + 4, cs - 8, cs - 8)); });
+    N = keep;
+  }
+
+  resize();
+  let last = performance.now();
+  (function loop(now) {
+    const dt = Math.max(0, Math.min(0.033, (now - last) / 1000)); last = now;
+    update(dt); render(); requestAnimationFrame(loop);
+  })(last);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#2a2650">
+<title>Hexa Stack</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #2a2650;
+    font-family: "Futura", "Century Gothic", "Segoe UI", sans-serif; color: #f0eeff;
+    touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+  canvas { display: block; width: 100%; height: 100%; }
+  .hud { position: fixed; top: max(12px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); display: flex; gap: 10px; pointer-events: none; }
+  .hud div { background: #ffffff18; border: 1px solid #ffffff30; border-radius: 14px; padding: 4px 14px; text-align: center; min-width: 84px; }
+  .hud small { display: block; font-size: 10px; letter-spacing: 3px; opacity: .65; } .hud b { font-size: 22px; }
+  .bar { height: 5px; border-radius: 3px; background: #ffffff22; margin-top: 3px; overflow: hidden; } .bar i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #ffd23f, #ff7a59); }
+  .overlay { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; padding: 24px; text-align: center; background: #1a1636e6; transition: opacity .3s; }
+  .overlay.hidden { opacity: 0; pointer-events: none; }
+  .overlay canvas { width: 240px; height: 180px; }
+  h1 { font-size: clamp(38px, 11vw, 60px); letter-spacing: 6px; background: linear-gradient(90deg, #ff6a8a, #ffd23f, #4ae0a0, #4ab0ff); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  p { max-width: 310px; font-size: 15px; line-height: 1.6; color: #c8c4f0; }
+  .stat b { color: #ffd23f; }
+  .btn { border: none; background: linear-gradient(90deg, #ff7a59, #ffd23f); color: #2a2650; font: inherit; font-weight: bold; font-size: 18px; letter-spacing: 4px; padding: 15px 46px; border-radius: 40px; cursor: pointer; box-shadow: 0 8px 24px #ff7a5955; }
+  .btn:active { transform: scale(.96); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud"><div><small>SCORE</small><b id="score">0</b><div class="bar"><i id="goal"></i></div></div><div><small>BEST</small><b id="best">0</b></div></div>
+
+<div class="overlay" id="menu">
+  <canvas id="logo" width="480" height="360"></canvas>
+  <h1>HEXA STACK</h1>
+  <p><b>Drag</b> a stack from the tray onto the board. Matching colours on top of neighbouring stacks slide together. Pile up <b>10 of one colour</b> and they burst! Don't run out of space.</p>
+  <button class="btn" id="startBtn">PLAY</button>
+</div>
+<div class="overlay hidden" id="over">
+  <h1>BOARD FULL</h1>
+  <div class="stat">Score <b id="finalScore">0</b> · Best <b id="bestOver">0</b></div>
+  <button class="btn" id="againBtn">AGAIN</button>
+</div>
+
+<script>
+/*AUDIO-ENGINE-START*/
+// ---------- audio: procedural background music + sound effects ----------
+// Every note is synthesized with the Web Audio API at runtime, so the music
+// needs no files, works offline and carries no copyright.
+const GameAudio = (cfg) => {
+  let ctx = null, master = null, musicBus = null, sfxBus = null;
+  let timer = null, step = 0, nextT = 0, playing = false;
+  let musicOn = true;
+  try { musicOn = localStorage.getItem('music_off') !== '1'; } catch (e) {}
+
+  const SCALES = {
+    major: [0, 2, 4, 5, 7, 9, 11], minor: [0, 2, 3, 5, 7, 8, 10],
+    dorian: [0, 2, 3, 5, 7, 9, 10], lydian: [0, 2, 4, 6, 7, 9, 11],
+    pentaMajor: [0, 2, 4, 7, 9], pentaMinor: [0, 3, 5, 7, 10],
+    japanese: [0, 1, 5, 7, 8], phrygian: [0, 1, 3, 5, 7, 8, 10]
+  };
+  const scale = SCALES[cfg.scale] || SCALES.major;
+  const root = cfg.root || 57;
+  const bpm = cfg.bpm || 110;
+  const prog = cfg.prog || [0, 5, 3, 4];
+  const sixteenth = 60 / bpm / 4;
+
+  // deterministic random so each game always plays "its" tune
+  let seed = cfg.seed || 1;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
+
+  const deg = (d, oct = 0) => {
+    const n = scale.length;
+    const o = Math.floor(d / n);
+    return root + scale[((d % n) + n) % n] + 12 * (o + oct);
+  };
+  const hz = m => 440 * Math.pow(2, (m - 69) / 12);
+
+  // melody: two 2-bar phrases (A, B) arranged A A B A
+  function phrase() {
+    const notes = [];
+    let d = 2 + Math.floor(rnd() * 3);
+    for (let i = 0; i < 32; i++) {
+      const strong = i % 4 === 0;
+      if (rnd() < (strong ? 0.85 : (cfg.leadDensity || 0.35))) {
+        d += Math.round((rnd() - 0.5) * 4);
+        d = Math.max(0, Math.min(scale.length * 2, d));
+        const len = strong && rnd() < 0.5 ? 2 : 1;
+        notes.push({ i, d, len });
+      }
+    }
+    return notes;
+  }
+  const A = phrase(), B = phrase();
+  const song = [A, A, B, A];
+
+  function init() {
+    if (ctx) return;
+    try {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      master = ctx.createGain(); master.gain.value = 0.9; master.connect(ctx.destination);
+      musicBus = ctx.createGain(); musicBus.gain.value = cfg.volume || 0.16; musicBus.connect(master);
+      sfxBus = ctx.createGain(); sfxBus.gain.value = 1; sfxBus.connect(master);
+    } catch (e) { ctx = null; }
+  }
+
+  function voice(t, freq, dur, type, vol, opts = {}) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, t);
+    if (opts.detune) o.detune.value = opts.detune;
+    let node = o;
+    if (opts.cutoff) {
+      const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = opts.cutoff; f.Q.value = opts.q || 1;
+      o.connect(f); node = f;
+    }
+    const a = opts.attack || 0.008;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(vol, t + a);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    node.connect(g); g.connect(opts.bus || musicBus);
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+
+  let noiseBuf = null;
+  function noise(t, dur, vol, hp) {
+    if (!noiseBuf) {
+      noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 0.5, ctx.sampleRate);
+      const d = noiseBuf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    }
+    const s = ctx.createBufferSource(); s.buffer = noiseBuf;
+    const f = ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = hp;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.connect(f); f.connect(g); g.connect(musicBus);
+    s.start(t); s.stop(t + dur + 0.02);
+  }
+
+  function kick(t) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.setValueAtTime(140, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+    g.gain.setValueAtTime(0.9, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+    o.connect(g); g.connect(musicBus); o.start(t); o.stop(t + 0.25);
+  }
+
+  function playStep(s, t) {
+    const bar = Math.floor(s / 16);
+    const i16 = s % 16;
+    const chordDeg = prog[bar % prog.length];
+    const w = cfg.waves || {};
+    // bass
+    const bassPat = cfg.bassPattern || [0, 8];
+    if (bassPat.includes(i16)) voice(t, hz(deg(chordDeg, -2)), sixteenth * 3.5, w.bass || 'triangle', 0.5, { cutoff: 600 });
+    // pad (chord) at bar start
+    if (cfg.pad && i16 === 0) {
+      for (const k of [0, 2, 4]) voice(t, hz(deg(chordDeg + k, -1)), sixteenth * 15, w.pad || 'sine', 0.12, { attack: 0.3, cutoff: 1400, detune: k * 3 });
+    }
+    // arpeggio
+    if (cfg.arp && i16 % (cfg.arpEvery || 2) === 0) {
+      const k = [0, 2, 4, 2][(i16 / (cfg.arpEvery || 2)) % 4];
+      voice(t, hz(deg(chordDeg + k, cfg.arpOct || 0)), sixteenth * 1.6, w.arp || 'square', 0.1, { cutoff: cfg.arpCutoff || 2200 });
+    }
+    // lead melody
+    const ph = song[Math.floor(bar / 2) % song.length];
+    const pi = (bar % 2) * 16 + i16;
+    for (const n of ph) if (n.i === pi) {
+      voice(t, hz(deg(n.d, cfg.leadOct || 0)), sixteenth * (n.len * 2 + 0.5), w.lead || 'triangle', 0.22, { cutoff: cfg.leadCutoff || 3000 });
+    }
+    // drums
+    if (cfg.drums) {
+      if (i16 % 8 === 0 || (cfg.drums === 'busy' && i16 === 10)) kick(t);
+      if (i16 % 8 === 4) noise(t, 0.14, 0.35, 1500);
+      if (i16 % 2 === 0) noise(t, 0.04, cfg.drums === 'soft' ? 0.06 : 0.12, 7000);
+    }
+  }
+
+  function scheduler() {
+    if (!ctx || !playing) return;
+    while (nextT < ctx.currentTime + 0.15) {
+      playStep(step, nextT);
+      nextT += sixteenth * (cfg.swing && step % 2 === 0 ? 1 + cfg.swing : cfg.swing ? 1 - cfg.swing : 1);
+      step++;
+    }
+  }
+
+  function startMusic() {
+    if (!ctx || playing || !musicOn) return;
+    playing = true;
+    musicBus.gain.cancelScheduledValues(ctx.currentTime);
+    musicBus.gain.setValueAtTime(0.0001, ctx.currentTime);
+    musicBus.gain.linearRampToValueAtTime(cfg.volume || 0.16, ctx.currentTime + 1.2);
+    nextT = ctx.currentTime + 0.05;
+    timer = setInterval(scheduler, 40);
+  }
+  function stopMusic() {
+    playing = false;
+    if (timer) clearInterval(timer);
+    timer = null;
+  }
+
+  // mute button
+  const btn = document.createElement('button');
+  btn.setAttribute('aria-label', 'Toggle music');
+  btn.style.cssText = 'position:fixed;z-index:50;right:max(14px,env(safe-area-inset-right));bottom:max(14px,env(safe-area-inset-bottom));' +
+    'width:42px;height:42px;border-radius:50%;border:none;cursor:pointer;font-size:20px;line-height:42px;padding:0;' +
+    'background:' + (cfg.btnBg || 'rgba(0,0,0,.35)') + ';color:' + (cfg.btnColor || '#fff') + ';backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);';
+  const paint = () => { btn.textContent = musicOn ? '♪' : '✕'; btn.style.opacity = musicOn ? '1' : '.6'; };
+  paint();
+  const toggle = e => {
+    e.stopPropagation(); e.preventDefault();
+    musicOn = !musicOn;
+    try { localStorage.setItem('music_off', musicOn ? '0' : '1'); } catch (err) {}
+    init();
+    if (ctx && ctx.state === 'suspended') ctx.resume();
+    if (musicOn) startMusic(); else stopMusic();
+    paint();
+  };
+  btn.addEventListener('pointerdown', e => e.stopPropagation());
+  btn.addEventListener('pointerup', e => e.stopPropagation());
+  btn.addEventListener('click', toggle);
+  document.addEventListener('DOMContentLoaded', () => document.body.appendChild(btn));
+  if (document.body) document.body.appendChild(btn);
+
+  document.addEventListener('visibilitychange', () => {
+    if (!ctx) return;
+    if (document.hidden) ctx.suspend(); else ctx.resume();
+  });
+
+  return {
+    // call from a user gesture (start button) — browsers only allow audio after one
+    start() {
+      init();
+      if (!ctx) return;
+      if (ctx.state === 'suspended') ctx.resume();
+      startMusic();
+    },
+    sfx(freq, dur, type = 'sine', vol = 0.07, to = 0) {
+      init();
+      if (!ctx) return;
+      try {
+        const t = ctx.currentTime;
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.type = type; o.frequency.setValueAtTime(freq, t);
+        if (to) o.frequency.exponentialRampToValueAtTime(Math.max(30, to), t + dur);
+        g.gain.setValueAtTime(vol, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+        o.connect(g); g.connect(sfxBus);
+        o.start(t); o.stop(t + dur + 0.02);
+      } catch (e) {}
+    }
+  };
+};
+/*AUDIO-ENGINE-END*/
+/*SPRITES-START*/
+// ---------- sprites: detailed SVG artwork rasterised once into canvases ----------
+// Each piece is authored as an SVG (gradients, highlights, shadows, glow) and
+// drawn into an offscreen canvas at load time, so the game loop just blits images.
+const loadSprites = (defs, px = 160) => Promise.all(Object.entries(defs).map(([name, svg]) => new Promise(done => {
+  const img = new Image();
+  const finish = ok => {
+    const c = document.createElement('canvas');
+    const w = Array.isArray(px) ? px[0] : px, h = Array.isArray(px) ? px[1] : px;
+    c.width = w; c.height = h;
+    if (ok) c.getContext('2d').drawImage(img, 0, 0, w, h);
+    done([name, c]);
+  };
+  img.onload = () => finish(true);
+  img.onerror = () => finish(false);
+  img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+}))).then(entries => Object.fromEntries(entries));
+
+// small helpers for writing SVG
+const svgDoc = (body, vb = '0 0 100 100') => '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + vb + '">' + body + '</svg>';
+const shade = (hex, amt) => {
+  const n = parseInt(hex.slice(1), 16);
+  const f = v => Math.max(0, Math.min(255, Math.round(amt < 0 ? v * (1 + amt) : v + (255 - v) * amt)));
+  return '#' + [n >> 16, (n >> 8) & 255, n & 255].map(f).map(v => v.toString(16).padStart(2, '0')).join('');
+};
+/*SPRITES-END*/
+(() => {
+  const audio = GameAudio({
+    bpm: 104, scale: 'pentaMajor', root: 62, prog: [0, 2, 3, 1], seed: 508,
+    waves: { lead: 'triangle', bass: 'triangle', arp: 'sine', pad: 'sine' },
+    pad: true, arp: true, arpEvery: 1, arpOct: 1, leadOct: 1, leadDensity: 0.3, drums: 'soft', swing: 0.1, bassPattern: [0, 6, 10], volume: 0.16,
+    btnBg: 'rgba(255,255,255,.15)'
+  });
+  const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+  const $ = id => document.getElementById(id);
+  const KEY = 'hexa_stack_best';
+  let best = 0; try { best = +localStorage.getItem(KEY) || 0; } catch (e) {}
+  $('best').textContent = best;
+
+  // ---------- hex slab artwork (flat-top hexagon seen from 3/4 above) ----------
+  const COL = ['#ff4a6a', '#ffb02a', '#ffe04a', '#3ad08a', '#3aa0ff', '#9a5aff', '#ff7ad0', '#5ae0e0'];
+  const SQ = 0.62;      // vertical squash of the board
+  const hexPts = (cx, cy, r, sq) => Array.from({ length: 6 }, (_, i) => [cx + Math.cos(i * Math.PI / 3) * r, cy + Math.sin(i * Math.PI / 3) * r * sq]);
+  const slabSVG = c => {
+    const top = hexPts(50, 40, 46, SQ), th = 12;
+    const side = (a, b, fill) => '<polygon points="' + [a, b, [b[0], b[1] + th], [a[0], a[1] + th]].map(p => p.join(',')).join(' ') + '" fill="' + fill + '"/>';
+    return svgDoc('<defs><linearGradient id="t" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="' + shade(c, 0.35) + '"/><stop offset="1" stop-color="' + shade(c, -0.05) + '"/></linearGradient></defs>' +
+      side(top[0], top[1], shade(c, -0.35)) + side(top[1], top[2], shade(c, -0.25)) + side(top[2], top[3], shade(c, -0.45)) +
+      '<polygon points="' + top.map(p => p.join(',')).join(' ') + '" fill="url(#t)"/>' +
+      '<polygon points="' + hexPts(50, 40, 34, SQ).map(p => p.join(',')).join(' ') + '" fill="none" stroke="#fff" stroke-opacity=".35" stroke-width="2"/>' +
+      '<ellipse cx="34" cy="30" rx="10" ry="4" fill="#fff" opacity=".4"/>', '0 0 100 70');
+  };
+  const cellSVG = svgDoc('<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#4a4480"/><stop offset="1" stop-color="#36306a"/></linearGradient></defs>' +
+    '<polygon points="' + hexPts(50, 40, 46, SQ).map(p => p.join(',')).join(' ') + '" fill="url(#g)" stroke="#5a54a0" stroke-width="2"/>' +
+    '<polygon points="' + hexPts(50, 40, 40, SQ).map(p => p.join(',')).join(' ') + '" fill="none" stroke="#2a2650" stroke-width="1.5" opacity=".6"/>', '0 0 100 70');
+
+  let SPR = null;
+  const defs = { cell: cellSVG }; COL.forEach((c, i) => defs['h' + i] = slabSVG(c));
+  loadSprites(defs, [160, 112]).then(s => { SPR = s; logo(); });
+
+  const RAD = 3, MAXH = 10;
+  const cells = []; for (let q = -RAD; q <= RAD; q++) for (let r = -RAD; r <= RAD; r++) if (Math.abs(q + r) <= RAD) cells.push({ q, r });
+  const keyOf = (q, r) => q + ',' + r;
+  const index = new Map(cells.map((c, i) => [keyOf(c.q, c.r), i]));
+  const NB = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, -1], [-1, 1]];
+  const neighbors = i => NB.map(([dq, dr]) => index.get(keyOf(cells[i].q + dq, cells[i].r + dr))).filter(j => j !== undefined);
+
+  let W, H, DPR, size, cx0, cy0, th, trayY, stacks, tray, drag = null, score, state = 'menu', t = 0, actions = [], busy = 0, pops = [], colorsInPlay;
+  function resize() {
+    DPR = Math.min(devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight; canvas.width = W * DPR; canvas.height = H * DPR; ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    size = Math.min((W - 30) / (RAD * 3 + 2), (H - 300) / ((RAD * 2 + 1) * Math.sqrt(3) * SQ + 2.2));
+    th = size * 0.26; cx0 = W / 2; cy0 = 90 + size * Math.sqrt(3) * SQ * RAD + size;
+    // the tray sits low, within thumb reach, but never on top of the board
+    const boardBottom = cy0 + size * Math.sqrt(3) * SQ * (RAD + 0.5);
+    trayY = Math.min(H - size * 2.2, Math.max(boardBottom + size * 2.6, H - size * 3.4));
+  }
+  addEventListener('resize', resize); resize();
+  const pos = i => ({ x: cx0 + size * 1.5 * cells[i].q, y: cy0 + size * Math.sqrt(3) * (cells[i].r + cells[i].q / 2) * SQ });
+  const trayPos = k => ({ x: W / 2 + (k - 1) * Math.min(W * 0.3, size * 4), y: trayY });
+
+  function newStack() {
+    const n = 2 + Math.floor(Math.random() * 4), out = [];
+    let c = Math.floor(Math.random() * colorsInPlay);
+    for (let i = 0; i < n; i++) { if (Math.random() < 0.4) c = Math.floor(Math.random() * colorsInPlay); out.push(c); }
+    return out;
+  }
+  function start() {
+    if (!SPR) return;
+    stacks = cells.map(() => []); score = 0; colorsInPlay = 4; actions = []; pops = [];
+    tray = [newStack(), newStack(), newStack()];
+    state = 'play'; audio.start();
+    $('menu').classList.add('hidden'); $('over').classList.add('hidden'); hud();
+  }
+  $('startBtn').onclick = start; $('againBtn').onclick = start;
+  function hud() { $('score').textContent = score; $('best').textContent = best; $('goal').style.width = ((score % 500) / 5) + '%'; }
+
+  const top = s => s[s.length - 1];
+  const run = s => { let n = 0; for (let i = s.length - 1; i >= 0 && s[i] === top(s); i--) n++; return n; };
+  // resolve merges one step at a time so every slide is visible
+  function settle(start) {
+    const queue = [start], seen = new Set();
+    let guard = 0;
+    while (queue.length && guard++ < 200) {
+      const i = queue.shift(); const s = stacks[i]; if (!s.length) continue;
+      for (const j of neighbors(i)) {
+        const o = stacks[j];
+        if (!o.length || top(o) !== top(s)) continue;
+        // pour into whichever stack ends up with the longer single-colour top
+        const [from, to] = run(o) > run(s) ? [i, j] : [j, i];
+        const n = run(stacks[from]);
+        actions.push({ type: 'move', from, to, n, color: top(stacks[from]) });
+        for (let k = 0; k < n; k++) stacks[to].push(stacks[from].pop());
+        queue.push(to, from); for (const x of neighbors(from)) queue.push(x); for (const x of neighbors(to)) queue.push(x);
+        break;
+      }
+      if (run(s) >= MAXH && s.length) {
+        const n = run(s), c = top(s);
+        actions.push({ type: 'clear', at: i, n, color: c });
+        s.length -= n; queue.push(i); for (const x of neighbors(i)) queue.push(x);
+      }
+    }
+  }
+  // the board is visually replayed from a snapshot while actions animate
+  let shown = null;
+  function place(k, i) {
+    shown = stacks.map(s => s.slice());
+    stacks[i] = tray[k].slice(); shown[i] = tray[k].slice();
+    tray[k] = null;
+    audio.sfx(300, 0.1, 'triangle', 0.06, 200);
+    settle(i);
+    if (!actions.length) { shown = null; checkOver(); }
+    if (tray.every(x => !x)) tray = [newStack(), newStack(), newStack()];
+    if (score > 300 * (colorsInPlay - 3) && colorsInPlay < COL.length) colorsInPlay++;
+  }
+  function checkOver() {
+    if (stacks.every(s => s.length)) {
+      state = 'over';
+      if (score > best) { best = score; try { localStorage.setItem(KEY, best); } catch (e) {} }
+      $('finalScore').textContent = score; $('bestOver').textContent = best; hud();
+      audio.sfx(300, 0.7, 'sine', 0.07, 120);
+      setTimeout(() => $('over').classList.remove('hidden'), 500);
+    }
+  }
+
+  canvas.addEventListener('pointerdown', e => {
+    if (state !== 'play' || actions.length) return;
+    for (let k = 0; k < 3; k++) { if (!tray[k]) continue; const p = trayPos(k); if (Math.hypot(e.clientX - p.x, e.clientY - (p.y - tray[k].length * th / 2)) < size * 1.6) { drag = { k, x: e.clientX, y: e.clientY }; audio.sfx(500, 0.05, 'sine', 0.04); return; } }
+  });
+  addEventListener('pointermove', e => { if (drag) { drag.x = e.clientX; drag.y = e.clientY; } });
+  addEventListener('pointerup', () => {
+    if (!drag) return;
+    const tgt = hoverCell(); if (tgt >= 0) place(drag.k, tgt);
+    drag = null;
+  });
+  function hoverCell() {
+    if (!drag) return -1;
+    let bestI = -1, bd = size * 1.1;
+    const y = drag.y - size * 0.6;
+    cells.forEach((_, i) => { const p = pos(i), d = Math.hypot(drag.x - p.x, (y - p.y) / SQ); if (d < bd && !stacks[i].length) { bd = d; bestI = i; } });
+    return bestI;
+  }
+  addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && state !== 'play') { e.preventDefault(); start(); } });
+
+  let cur = null;
+  function update(dt) {
+    t += dt;
+    if (!cur && actions.length) { cur = actions.shift(); cur.t = 0; if (cur.type === 'move') audio.sfx(440 + cur.n * 40, 0.12, 'sine', 0.05, 660 + cur.n * 40); }
+    if (cur) {
+      cur.t += dt * (cur.type === 'move' ? 3.2 : 2.2);
+      if (cur.t >= 1) {
+        if (cur.type === 'move') for (let k = 0; k < cur.n; k++) shown[cur.to].push(shown[cur.from].pop());
+        else {
+          shown[cur.at].length -= cur.n; score += cur.n * 10; hud();
+          const p = pos(cur.at); for (let k = 0; k < 24; k++) pops.push({ x: p.x, y: p.y - 6 * th, vx: (Math.random() - .5) * 320, vy: -Math.random() * 300, life: 0.9, c: COL[cur.color] });
+          audio.sfx(880, 0.35, 'triangle', 0.08, 1760);
+        }
+        cur = null;
+        if (!actions.length) { shown = null; checkOver(); }
+      }
+    }
+    for (const p of pops) { p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 600 * dt; p.life -= dt; }
+    pops = pops.filter(p => p.life > 0);
+  }
+
+  function drawStack(s, x, y, alpha = 1, upTo = s.length) {
+    const w = size * 2, h = w * 0.7;
+    ctx.globalAlpha = alpha;
+    for (let k = 0; k < upTo; k++) ctx.drawImage(SPR['h' + s[k]], x - w / 2, y - h * 0.57 - k * th, w, h);
+    ctx.globalAlpha = 1;
+  }
+  function render() {
+    const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#3a3470'); g.addColorStop(1, '#1a1636');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    for (let i = 0; i < 30; i++) { ctx.fillStyle = 'rgba(255,255,255,' + (0.05 + (i % 3) * 0.03) + ')'; const x = (i * 97.3) % W, y = (i * 61.7 + t * 6 * (1 + i % 3)) % H; ctx.beginPath(); ctx.arc(x, y, 1 + i % 3, 0, Math.PI * 2); ctx.fill(); }
+    if (!SPR || !stacks) return;
+    const view = shown || stacks, hc = hoverCell();
+    // board cells, back to front
+    const order = cells.map((_, i) => i).sort((a, b) => pos(a).y - pos(b).y);
+    for (const i of order) { const p = pos(i), w = size * 2, h = w * 0.7; ctx.drawImage(SPR.cell, p.x - w / 2, p.y - h * 0.57, w, h); if (i === hc) { ctx.globalAlpha = 0.35 + Math.sin(t * 8) * 0.15; ctx.drawImage(SPR['h' + top(tray[drag.k])], p.x - w / 2, p.y - h * 0.57, w, h); ctx.globalAlpha = 1; } }
+    for (const i of order) {
+      const s = view[i]; if (!s.length) continue;
+      const p = pos(i);
+      let upTo = s.length;
+      if (cur && cur.type === 'move' && cur.from === i) upTo = s.length - cur.n;
+      if (cur && cur.type === 'clear' && cur.at === i) { const k = cur.t; drawStack(s.slice(0, s.length - cur.n), p.x, p.y); drawStack(s.slice(s.length - cur.n).map(() => s[s.length - 1]), p.x, p.y - (s.length - cur.n) * th - k * 20, 1 - k); continue; }
+      drawStack(s, p.x, p.y, 1, upTo);
+      if (run(s) >= 5) { ctx.fillStyle = '#fff'; ctx.font = 'bold ' + Math.round(size * 0.5) + 'px Futura, sans-serif'; ctx.textAlign = 'center'; ctx.fillText(run(s), p.x, p.y - s.length * th - size * 0.5); }
+    }
+    if (cur && cur.type === 'move') {
+      // tiles hop one by one from the source stack to the destination
+      const a = pos(cur.from), b = pos(cur.to), sFrom = view[cur.from], base = sFrom.length - cur.n;
+      for (let m = 0; m < cur.n; m++) {
+        const k = Math.max(0, Math.min(1, cur.t * 1.6 - m * 0.12));
+        const ya = a.y - (sFrom.length - 1 - m) * th, yb = b.y - (view[cur.to].length + m) * th;
+        const x = a.x + (b.x - a.x) * k, y = ya + (yb - ya) * k - Math.sin(k * Math.PI) * size * 1.2;
+        drawStack([cur.color], x, y);
+      }
+    }
+    // tray
+    for (let k = 0; k < 3; k++) {
+      const p = trayPos(k);
+      ctx.fillStyle = 'rgba(255,255,255,.08)'; ctx.beginPath(); ctx.ellipse(p.x, p.y + size * 0.2, size * 1.3, size * 0.6, 0, 0, Math.PI * 2); ctx.fill();
+      if (tray[k] && !(drag && drag.k === k)) drawStack(tray[k], p.x, p.y);
+    }
+    if (drag) drawStack(tray[drag.k], drag.x, drag.y - size * 0.6, 0.95);
+    for (const p of pops) { ctx.globalAlpha = Math.max(0, p.life); ctx.fillStyle = p.c; ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(t * 5 + p.vx); ctx.fillRect(-4, -4, 8, 8); ctx.restore(); }
+    ctx.globalAlpha = 1;
+  }
+  function logo() {
+    const lc = $('logo').getContext('2d'), demo = [[0, 0, 1, 1, 1], [3, 3, 3], [4, 2, 2, 2, 2, 2], [5, 5, 0]];
+    demo.forEach((s, i) => s.forEach((c, k) => lc.drawImage(SPR['h' + c], 30 + i * 105, 250 - k * 26 - (i % 2) * 30, 140, 98)));
+  }
+
+  let last = performance.now();
+  (function loop(now) {
+    const dt = Math.max(0, Math.min(0.033, (now - last) / 1000)); last = now;
+    update(dt); render(); requestAnimationFrame(loop);
+  })(last);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#9fd8f5">
+<title>Bird Sort</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #9fd8f5;
+    font-family: "Chalkboard SE", "Comic Sans MS", "Segoe UI", sans-serif; color: #3a2a1a;
+    touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+  canvas { display: block; width: 100%; height: 100%; }
+  .hud { position: fixed; top: max(12px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); background: #fffaf0; border-radius: 22px; padding: 4px 20px; font-size: 20px; font-weight: bold; box-shadow: 0 4px 0 #6b8a3a; pointer-events: none; white-space: nowrap; }
+  .tools { position: fixed; bottom: max(16px, env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); display: flex; gap: 12px; }
+  .tools button { width: 58px; height: 58px; border-radius: 50%; border: none; background: #fffaf0; color: #3a2a1a; font-size: 24px; cursor: pointer; box-shadow: 0 4px 0 #6b8a3a; position: relative; }
+  .tools button:active { transform: translateY(3px); box-shadow: 0 1px 0 #6b8a3a; }
+  .tools button:disabled { opacity: .45; }
+  .tools button small { position: absolute; right: -4px; top: -4px; background: #ff7a59; color: #fff; border-radius: 10px; font-size: 11px; padding: 1px 6px; }
+  .overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; padding: 20px; background: #3a5a2a88; transition: opacity .3s; }
+  .overlay.hidden { opacity: 0; pointer-events: none; }
+  .card { width: min(350px, 100%); background: #fffaf0; border-radius: 28px; padding: 24px 20px; text-align: center; display: flex; flex-direction: column; gap: 12px; border: 5px solid #8fc25a; box-shadow: 0 14px 40px #0005; }
+  .card canvas { width: 100%; height: auto; }
+  h1 { font-size: clamp(38px, 11vw, 54px); color: #4c8a1c; line-height: 1; }
+  p { font-size: 15px; line-height: 1.5; }
+  .stat b { color: #e0731c; }
+  .btn { border: none; background: #ffb43a; color: #3a2a1a; font: inherit; font-weight: bold; font-size: 21px; padding: 13px; border-radius: 18px; cursor: pointer; box-shadow: 0 5px 0 #c07a1c; }
+  .btn:active { transform: translateY(3px); box-shadow: 0 2px 0 #c07a1c; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud" id="level">Level 1</div>
+<div class="tools"><button id="undo">↶</button><button id="restart">⟳</button><button id="addTube">＋<small>1</small></button></div>
+
+<div class="overlay" id="menu"><div class="card">
+  <canvas id="logo" width="640" height="150"></canvas>
+  <h1>Bird Sort</h1>
+  <p><b>Tap</b> a branch, then another branch: the birds at the tip hop over if it's free or the same kind is waiting there. Four of a kind on one branch fly away together. Clear the whole tree!</p>
+  <div class="stat" id="bestMenu"></div>
+  <button class="btn" id="startBtn">Tweet tweet!</button>
+</div></div>
+<div class="overlay hidden" id="win"><div class="card">
+  <h1>All flew home!</h1>
+  <div class="stat">Moves <b id="winMoves">0</b></div>
+  <button class="btn" id="nextBtn">Next tree</button>
+</div></div>
+
+<script>
+/*AUDIO-ENGINE-START*/
+// ---------- audio: procedural background music + sound effects ----------
+// Every note is synthesized with the Web Audio API at runtime, so the music
+// needs no files, works offline and carries no copyright.
+const GameAudio = (cfg) => {
+  let ctx = null, master = null, musicBus = null, sfxBus = null;
+  let timer = null, step = 0, nextT = 0, playing = false;
+  let musicOn = true;
+  try { musicOn = localStorage.getItem('music_off') !== '1'; } catch (e) {}
+
+  const SCALES = {
+    major: [0, 2, 4, 5, 7, 9, 11], minor: [0, 2, 3, 5, 7, 8, 10],
+    dorian: [0, 2, 3, 5, 7, 9, 10], lydian: [0, 2, 4, 6, 7, 9, 11],
+    pentaMajor: [0, 2, 4, 7, 9], pentaMinor: [0, 3, 5, 7, 10],
+    japanese: [0, 1, 5, 7, 8], phrygian: [0, 1, 3, 5, 7, 8, 10]
+  };
+  const scale = SCALES[cfg.scale] || SCALES.major;
+  const root = cfg.root || 57;
+  const bpm = cfg.bpm || 110;
+  const prog = cfg.prog || [0, 5, 3, 4];
+  const sixteenth = 60 / bpm / 4;
+
+  // deterministic random so each game always plays "its" tune
+  let seed = cfg.seed || 1;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
+
+  const deg = (d, oct = 0) => {
+    const n = scale.length;
+    const o = Math.floor(d / n);
+    return root + scale[((d % n) + n) % n] + 12 * (o + oct);
+  };
+  const hz = m => 440 * Math.pow(2, (m - 69) / 12);
+
+  // melody: two 2-bar phrases (A, B) arranged A A B A
+  function phrase() {
+    const notes = [];
+    let d = 2 + Math.floor(rnd() * 3);
+    for (let i = 0; i < 32; i++) {
+      const strong = i % 4 === 0;
+      if (rnd() < (strong ? 0.85 : (cfg.leadDensity || 0.35))) {
+        d += Math.round((rnd() - 0.5) * 4);
+        d = Math.max(0, Math.min(scale.length * 2, d));
+        const len = strong && rnd() < 0.5 ? 2 : 1;
+        notes.push({ i, d, len });
+      }
+    }
+    return notes;
+  }
+  const A = phrase(), B = phrase();
+  const song = [A, A, B, A];
+
+  function init() {
+    if (ctx) return;
+    try {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      master = ctx.createGain(); master.gain.value = 0.9; master.connect(ctx.destination);
+      musicBus = ctx.createGain(); musicBus.gain.value = cfg.volume || 0.16; musicBus.connect(master);
+      sfxBus = ctx.createGain(); sfxBus.gain.value = 1; sfxBus.connect(master);
+    } catch (e) { ctx = null; }
+  }
+
+  function voice(t, freq, dur, type, vol, opts = {}) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, t);
+    if (opts.detune) o.detune.value = opts.detune;
+    let node = o;
+    if (opts.cutoff) {
+      const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = opts.cutoff; f.Q.value = opts.q || 1;
+      o.connect(f); node = f;
+    }
+    const a = opts.attack || 0.008;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(vol, t + a);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    node.connect(g); g.connect(opts.bus || musicBus);
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+
+  let noiseBuf = null;
+  function noise(t, dur, vol, hp) {
+    if (!noiseBuf) {
+      noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 0.5, ctx.sampleRate);
+      const d = noiseBuf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    }
+    const s = ctx.createBufferSource(); s.buffer = noiseBuf;
+    const f = ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = hp;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.connect(f); f.connect(g); g.connect(musicBus);
+    s.start(t); s.stop(t + dur + 0.02);
+  }
+
+  function kick(t) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.setValueAtTime(140, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+    g.gain.setValueAtTime(0.9, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+    o.connect(g); g.connect(musicBus); o.start(t); o.stop(t + 0.25);
+  }
+
+  function playStep(s, t) {
+    const bar = Math.floor(s / 16);
+    const i16 = s % 16;
+    const chordDeg = prog[bar % prog.length];
+    const w = cfg.waves || {};
+    // bass
+    const bassPat = cfg.bassPattern || [0, 8];
+    if (bassPat.includes(i16)) voice(t, hz(deg(chordDeg, -2)), sixteenth * 3.5, w.bass || 'triangle', 0.5, { cutoff: 600 });
+    // pad (chord) at bar start
+    if (cfg.pad && i16 === 0) {
+      for (const k of [0, 2, 4]) voice(t, hz(deg(chordDeg + k, -1)), sixteenth * 15, w.pad || 'sine', 0.12, { attack: 0.3, cutoff: 1400, detune: k * 3 });
+    }
+    // arpeggio
+    if (cfg.arp && i16 % (cfg.arpEvery || 2) === 0) {
+      const k = [0, 2, 4, 2][(i16 / (cfg.arpEvery || 2)) % 4];
+      voice(t, hz(deg(chordDeg + k, cfg.arpOct || 0)), sixteenth * 1.6, w.arp || 'square', 0.1, { cutoff: cfg.arpCutoff || 2200 });
+    }
+    // lead melody
+    const ph = song[Math.floor(bar / 2) % song.length];
+    const pi = (bar % 2) * 16 + i16;
+    for (const n of ph) if (n.i === pi) {
+      voice(t, hz(deg(n.d, cfg.leadOct || 0)), sixteenth * (n.len * 2 + 0.5), w.lead || 'triangle', 0.22, { cutoff: cfg.leadCutoff || 3000 });
+    }
+    // drums
+    if (cfg.drums) {
+      if (i16 % 8 === 0 || (cfg.drums === 'busy' && i16 === 10)) kick(t);
+      if (i16 % 8 === 4) noise(t, 0.14, 0.35, 1500);
+      if (i16 % 2 === 0) noise(t, 0.04, cfg.drums === 'soft' ? 0.06 : 0.12, 7000);
+    }
+  }
+
+  function scheduler() {
+    if (!ctx || !playing) return;
+    while (nextT < ctx.currentTime + 0.15) {
+      playStep(step, nextT);
+      nextT += sixteenth * (cfg.swing && step % 2 === 0 ? 1 + cfg.swing : cfg.swing ? 1 - cfg.swing : 1);
+      step++;
+    }
+  }
+
+  function startMusic() {
+    if (!ctx || playing || !musicOn) return;
+    playing = true;
+    musicBus.gain.cancelScheduledValues(ctx.currentTime);
+    musicBus.gain.setValueAtTime(0.0001, ctx.currentTime);
+    musicBus.gain.linearRampToValueAtTime(cfg.volume || 0.16, ctx.currentTime + 1.2);
+    nextT = ctx.currentTime + 0.05;
+    timer = setInterval(scheduler, 40);
+  }
+  function stopMusic() {
+    playing = false;
+    if (timer) clearInterval(timer);
+    timer = null;
+  }
+
+  // mute button
+  const btn = document.createElement('button');
+  btn.setAttribute('aria-label', 'Toggle music');
+  btn.style.cssText = 'position:fixed;z-index:50;right:max(14px,env(safe-area-inset-right));bottom:max(14px,env(safe-area-inset-bottom));' +
+    'width:42px;height:42px;border-radius:50%;border:none;cursor:pointer;font-size:20px;line-height:42px;padding:0;' +
+    'background:' + (cfg.btnBg || 'rgba(0,0,0,.35)') + ';color:' + (cfg.btnColor || '#fff') + ';backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);';
+  const paint = () => { btn.textContent = musicOn ? '♪' : '✕'; btn.style.opacity = musicOn ? '1' : '.6'; };
+  paint();
+  const toggle = e => {
+    e.stopPropagation(); e.preventDefault();
+    musicOn = !musicOn;
+    try { localStorage.setItem('music_off', musicOn ? '0' : '1'); } catch (err) {}
+    init();
+    if (ctx && ctx.state === 'suspended') ctx.resume();
+    if (musicOn) startMusic(); else stopMusic();
+    paint();
+  };
+  btn.addEventListener('pointerdown', e => e.stopPropagation());
+  btn.addEventListener('pointerup', e => e.stopPropagation());
+  btn.addEventListener('click', toggle);
+  document.addEventListener('DOMContentLoaded', () => document.body.appendChild(btn));
+  if (document.body) document.body.appendChild(btn);
+
+  document.addEventListener('visibilitychange', () => {
+    if (!ctx) return;
+    if (document.hidden) ctx.suspend(); else ctx.resume();
+  });
+
+  return {
+    // call from a user gesture (start button) — browsers only allow audio after one
+    start() {
+      init();
+      if (!ctx) return;
+      if (ctx.state === 'suspended') ctx.resume();
+      startMusic();
+    },
+    sfx(freq, dur, type = 'sine', vol = 0.07, to = 0) {
+      init();
+      if (!ctx) return;
+      try {
+        const t = ctx.currentTime;
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.type = type; o.frequency.setValueAtTime(freq, t);
+        if (to) o.frequency.exponentialRampToValueAtTime(Math.max(30, to), t + dur);
+        g.gain.setValueAtTime(vol, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+        o.connect(g); g.connect(sfxBus);
+        o.start(t); o.stop(t + dur + 0.02);
+      } catch (e) {}
+    }
+  };
+};
+/*AUDIO-ENGINE-END*/
+/*SPRITES-START*/
+// ---------- sprites: detailed SVG artwork rasterised once into canvases ----------
+// Each piece is authored as an SVG (gradients, highlights, shadows, glow) and
+// drawn into an offscreen canvas at load time, so the game loop just blits images.
+const loadSprites = (defs, px = 160) => Promise.all(Object.entries(defs).map(([name, svg]) => new Promise(done => {
+  const img = new Image();
+  const finish = ok => {
+    const c = document.createElement('canvas');
+    const w = Array.isArray(px) ? px[0] : px, h = Array.isArray(px) ? px[1] : px;
+    c.width = w; c.height = h;
+    if (ok) c.getContext('2d').drawImage(img, 0, 0, w, h);
+    done([name, c]);
+  };
+  img.onload = () => finish(true);
+  img.onerror = () => finish(false);
+  img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+}))).then(entries => Object.fromEntries(entries));
+
+// small helpers for writing SVG
+const svgDoc = (body, vb = '0 0 100 100') => '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + vb + '">' + body + '</svg>';
+const shade = (hex, amt) => {
+  const n = parseInt(hex.slice(1), 16);
+  const f = v => Math.max(0, Math.min(255, Math.round(amt < 0 ? v * (1 + amt) : v + (255 - v) * amt)));
+  return '#' + [n >> 16, (n >> 8) & 255, n & 255].map(f).map(v => v.toString(16).padStart(2, '0')).join('');
+};
+/*SPRITES-END*/
+/*SORT-ENGINE-START*/
+// ---------- sort engine: containers holding stacks of colours ----------
+// tubes[i] is an array bottom → top. A move takes the top run of one colour
+// and drops as much of it as fits onto a tube that is empty or has the same colour on top.
+const SortPuzzle = (opts) => {
+  const cap = opts.cap, single = !!opts.single;
+  let tubes = [], history = [];
+  const top = t => t[t.length - 1];
+  const topRun = t => { let n = 0; for (let i = t.length - 1; i >= 0 && t[i] === top(t); i--) n++; return n; };
+
+  function generate(colors, empty, extraTubes = 0) {
+    // shuffle a full set of pieces until no tube starts finished
+    for (let tries = 0; tries < 200; tries++) {
+      const all = [];
+      for (let c = 0; c < colors; c++) for (let k = 0; k < cap; k++) all.push(c);
+      for (let i = all.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [all[i], all[j]] = [all[j], all[i]]; }
+      tubes = [];
+      for (let c = 0; c < colors; c++) tubes.push(all.slice(c * cap, c * cap + cap));
+      for (let e = 0; e < empty + extraTubes; e++) tubes.push([]);
+      if (!tubes.some(t => t.length === cap && t.every(v => v === t[0]))) break;
+    }
+    history = [];
+    return api;
+  }
+
+  const api = {
+    get tubes() { return tubes; },
+    get cap() { return cap; },
+    generate,
+    load(t) { tubes = t.map(x => x.slice()); history = []; return api; },
+    topRun,
+    canMove(from, to) {
+      if (from === to) return false;
+      const a = tubes[from], b = tubes[to];
+      if (!a || !b || !a.length || b.length >= cap) return false;
+      return !b.length || top(b) === top(a);
+    },
+    // returns how many pieces moved
+    move(from, to) {
+      if (!api.canMove(from, to)) return 0;
+      const a = tubes[from], b = tubes[to];
+      const n = single ? 1 : Math.min(topRun(a), cap - b.length);
+      for (let i = 0; i < n; i++) b.push(a.pop());
+      history.push([from, to, n]);
+      return n;
+    },
+    undo() {
+      const h = history.pop(); if (!h) return null;
+      const [from, to, n] = h;
+      for (let i = 0; i < n; i++) tubes[from].push(tubes[to].pop());
+      return h;
+    },
+    get moves() { return history.length; },
+    complete(i) { const t = tubes[i]; return t.length === cap && t.every(v => v === t[0]); },
+    solved() { return tubes.every(t => !t.length || (t.length === cap && t.every(v => v === t[0]))); },
+    addTube() { tubes.push([]); },
+    stuck() {
+      for (let i = 0; i < tubes.length; i++) for (let j = 0; j < tubes.length; j++) {
+        if (!api.canMove(i, j)) continue;
+        // moving a whole uniform tube into an empty one changes nothing
+        if (!tubes[j].length && topRun(tubes[i]) === tubes[i].length) continue;
+        return false;
+      }
+      return true;
+    }
+  };
+  return api;
+};
+/*SORT-ENGINE-END*/
+(() => {
+  const audio = GameAudio({
+    bpm: 108, scale: 'pentaMajor', root: 67, prog: [0, 3, 1, 4], seed: 504,
+    waves: { lead: 'sine', bass: 'triangle', arp: 'sine' },
+    arp: true, arpEvery: 2, arpOct: 1, leadOct: 1, leadDensity: 0.35, drums: 'soft', swing: 0.12, bassPattern: [0, 6, 10], volume: 0.17,
+    btnBg: 'rgba(58,90,42,.5)'
+  });
+  const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+  const $ = id => document.getElementById(id);
+  const KEY = 'bird_sort_level';
+  let level = 1; try { level = +localStorage.getItem(KEY) || 1; } catch (e) {}
+  $('bestMenu').innerHTML = level > 1 ? 'Continue from tree <b>' + level + '</b>' : '';
+
+  // ---------- birds: round body, wing, tail, beak, eye, belly ----------
+  const BIRDS = [
+    { body: '#e02a2a', belly: '#ff9a8a', wing: '#a01414', beak: '#ffb020', crest: true },      // cardinal
+    { body: '#2a7ae0', belly: '#ffb48a', wing: '#1a4aa0', beak: '#3a2a1a' },                    // bluebird
+    { body: '#ffd52a', belly: '#fff3a0', wing: '#e0a010', beak: '#ff8a20' },                    // canary
+    { body: '#3cc04a', belly: '#c8f08a', wing: '#1c8a2a', beak: '#ff5a2a', crest: true },      // parakeet
+    { body: '#ff7ab8', belly: '#ffd0e6', wing: '#d04a8a', beak: '#3a2a1a' },                    // pink finch
+    { body: '#8a5ad0', belly: '#d0b8ff', wing: '#5a2aa0', beak: '#ffb020' },                    // violet
+    { body: '#ff8a2a', belly: '#ffe0b0', wing: '#c05a10', beak: '#3a2a1a' },                    // robin
+    { body: '#8a9aa8', belly: '#e8eef2', wing: '#5a6a78', beak: '#ff9a20', crest: true },      // titmouse
+    { body: '#2ac0b0', belly: '#b8f4ec', wing: '#14806a', beak: '#3a2a1a' },                    // teal
+    { body: '#4a3a2a', belly: '#c8a878', wing: '#2a1a0a', beak: '#ffb020' }                     // sparrow
+  ];
+  const birdSVG = b => svgDoc('<defs><radialGradient id="g" cx="40%" cy="30%" r="75%"><stop offset="0" stop-color="' + shade(b.body, 0.35) + '"/><stop offset=".6" stop-color="' + b.body + '"/><stop offset="1" stop-color="' + shade(b.body, -0.3) + '"/></radialGradient>' +
+    '<filter id="s" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="3" stdDeviation="2" flood-color="#2a3a10" flood-opacity=".35"/></filter></defs>' +
+    '<g filter="url(#s)">' +
+    '<path d="M22 58 L 4 50 L 8 62 L 2 70 L 24 66 Z" fill="' + b.wing + '"/>' +                                       // tail
+    '<path d="M44 84 L 42 94 M56 84 L 58 94 M38 94 L 46 94 M54 94 L 62 94" stroke="#e08a2a" stroke-width="3" stroke-linecap="round"/>' +   // feet
+    '<ellipse cx="52" cy="56" rx="32" ry="30" fill="url(#g)"/>' +
+    '<ellipse cx="60" cy="68" rx="18" ry="15" fill="' + b.belly + '"/>' +
+    (b.crest ? '<path d="M52 28 C 48 14, 58 10, 62 18 C 64 10, 74 14, 66 28 Z" fill="' + b.body + '"/>' : '') +
+    '<path d="M30 52 C 34 40, 56 42, 58 56 C 56 70, 36 74, 30 52 Z" fill="' + b.wing + '"/><path d="M36 56 C 42 52, 50 54, 54 60" stroke="#fff" stroke-opacity=".3" stroke-width="2" fill="none"/>' +
+    '<path d="M82 44 L 98 50 L 82 56 Z" fill="' + b.beak + '"/><path d="M82 50 L 98 50" stroke="#0004" stroke-width="1"/>' +
+    '<circle cx="72" cy="42" r="7" fill="#fff"/><circle cx="74" cy="42" r="4.5" fill="#1a1a1a"/><circle cx="75.5" cy="40" r="1.6" fill="#fff"/>' +
+    '<ellipse cx="74" cy="54" rx="5" ry="3" fill="#ff6a8a" opacity=".45"/></g>' +
+    '<ellipse cx="42" cy="36" rx="10" ry="6" fill="#fff" opacity=".35" transform="rotate(-25 42 36)"/>');
+
+  let SPR = null;
+  const defs = {}; BIRDS.forEach((b, i) => defs['b' + i] = birdSVG(b));
+  loadSprites(defs, 128).then(s => { SPR = s; const lc = $('logo').getContext('2d'); lc.fillStyle = '#7a4a24'; lc.fillRect(0, 118, 640, 12); BIRDS.slice(0, 6).forEach((b, i) => lc.drawImage(SPR['b' + i], 20 + i * 100, 30, 96, 96)); });
+
+  const CAP = 4;
+  let W, H, DPR, layout = [], bs, blen, pz = null, init = null, undoFloor = 0, held = null, flights = [], t = 0, extraUsed = false, state = 'menu', leaving = [], feathers = [];
+  function resize() { DPR = Math.min(devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight; canvas.width = W * DPR; canvas.height = H * DPR; ctx.setTransform(DPR, 0, 0, DPR, 0, 0); doLayout(); }
+  function doLayout() {
+    if (!pz) return;
+    const n = pz.tubes.length, perSide = Math.ceil(n / 2);
+    const top = 90, bottom = H - 110, rowH = (bottom - top) / perSide;
+    // left and right branches are staggered by half a row, so they can reach past the middle
+    bs = Math.min(64, rowH * 0.46, (W * 0.74 - 30) / (CAP + 0.6));
+    blen = bs * (CAP + 0.5);
+    layout = [];
+    for (let i = 0; i < n; i++) {
+      const side = i % 2 ? 1 : -1, r = Math.floor(i / 2);
+      layout.push({ side, y: top + (r + (side < 0 ? 0.45 : 0.95)) * rowH, x0: side < 0 ? 18 : W - 18 });
+    }
+  }
+  addEventListener('resize', resize); resize();
+
+  // bird k on branch i: position counted from the trunk; the top of the stack sits at the tip
+  const birdPos = (i, k) => { const L = layout[i]; return { x: L.x0 - L.side * (bs * 0.75 + k * bs * 1.02), y: L.y - bs * 0.42 }; };
+  function load() {
+    const colors = Math.min(BIRDS.length, 3 + Math.floor((level - 1) / 2));
+    pz = SortPuzzle({ cap: CAP }).generate(colors, 2);
+    init = pz.tubes.map(x => x.slice()); undoFloor = 0;
+    held = null; flights = []; leaving = []; extraUsed = false; $('addTube').disabled = false; $('addTube').querySelector('small').textContent = '1';
+    doLayout(); hud();
+  }
+  function hud() { $('level').textContent = 'Tree ' + level + ' · ' + pz.moves + ' moves'; $('undo').disabled = pz.moves <= undoFloor; }
+  function start() { if (!SPR) return; load(); state = 'play'; audio.start(); $('menu').classList.add('hidden'); $('win').classList.add('hidden'); }
+  $('startBtn').onclick = start;
+  $('nextBtn').onclick = () => { level++; try { localStorage.setItem(KEY, level); } catch (e) {} start(); };
+  // moves before a flock flew away can't be undone (those birds are gone)
+  $('undo').onclick = () => { if (state === 'play' && !flights.length && pz.moves > undoFloor && pz.undo()) { held = null; hud(); } };
+  $('restart').onclick = () => { if (state === 'play' && !flights.length) { pz.load(init); for (let k = pz.tubes.length; k < layout.length; k++) pz.addTube(); undoFloor = 0; held = null; leaving = []; hud(); } };
+  $('addTube').onclick = () => { if (state !== 'play' || extraUsed) return; extraUsed = true; pz.addTube(); doLayout(); $('addTube').disabled = true; $('addTube').querySelector('small').textContent = '0'; };
+
+  function branchAt(x, y) {
+    let best = -1, bd = 1e9;
+    layout.forEach((L, i) => { const tipX = L.x0 - L.side * blen; const inX = L.side < 0 ? x <= tipX + 20 : x >= tipX - 20; const d = Math.abs(y - (L.y - bs * 0.3)); if (inX && d < bs * 1.1 && d < bd) { bd = d; best = i; } });
+    return best;
+  }
+  canvas.addEventListener('pointerdown', e => {
+    if (state !== 'play' || flights.length) return;
+    const i = branchAt(e.clientX, e.clientY); if (i < 0) { held = null; return; }
+    if (held === null) { if (pz.tubes[i].length) { held = i; audio.sfx(1200, 0.06, 'sine', 0.05, 1600); } return; }
+    if (i === held) { held = null; return; }
+    if (pz.canMove(held, i)) {
+      const color = pz.tubes[held][pz.tubes[held].length - 1], srcLen = pz.tubes[held].length, dstLen = pz.tubes[i].length;
+      const n = pz.move(held, i);
+      for (let m = 0; m < n; m++) {
+        const a = birdPos(held, srcLen - 1 - m), b = birdPos(i, dstLen + m);
+        flights.push({ color, a, b, t: -m * 0.1, to: i, k: dstLen + m, flip: layout[i].side });
+      }
+      [1400, 1700, 1500].forEach((f, k) => setTimeout(() => audio.sfx(f, 0.06, 'sine', 0.05, f * 1.3), k * 70));
+      held = null; hud();
+    } else { layout[i].shake = 0.3; audio.sfx(200, 0.1, 'square', 0.04); }
+  });
+  addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && state === 'menu') { e.preventDefault(); start(); } });
+
+  function update(dt) {
+    t += dt;
+    for (const f of flights) f.t += dt * 1.8;
+    if (flights.length && flights.every(f => f.t >= 1)) {
+      const to = flights[0].to; flights = [];
+      if (pz.complete(to)) {
+        // a full branch of one kind takes off together
+        const c = pz.tubes[to][0];
+        pz.tubes[to].forEach((_, k) => { const p = birdPos(to, k); leaving.push({ c, x: p.x, y: p.y, vx: (Math.random() - .3) * 120 * -layout[to].side, vy: -160 - Math.random() * 80, t: 0, flip: -layout[to].side }); });
+        pz.tubes[to].length = 0;
+        undoFloor = pz.moves; hud();
+        for (let k = 0; k < 10; k++) feathers.push({ x: birdPos(to, 1).x, y: layout[to].y, vx: (Math.random() - .5) * 120, vy: -Math.random() * 60, life: 1.6, c: BIRDS[c].body, r: Math.random() * 6 });
+        [1318, 1568, 1760, 2093].forEach((f, k) => setTimeout(() => audio.sfx(f, 0.08, 'sine', 0.05), k * 60));
+        if (pz.solved()) { state = 'won'; $('winMoves').textContent = pz.moves; setTimeout(() => $('win').classList.remove('hidden'), 900); }
+      }
+    }
+    for (const L of layout) if (L.shake) L.shake = Math.max(0, L.shake - dt);
+    for (const b of leaving) { b.t += dt; b.x += b.vx * dt; b.y += b.vy * dt; b.vy -= 40 * dt; }
+    leaving = leaving.filter(b => b.y > -100);
+    for (const f of feathers) { f.x += f.vx * dt + Math.sin(t * 4 + f.r) * 0.6; f.y += f.vy * dt; f.vy = Math.min(40, f.vy + 60 * dt); f.life -= dt; }
+    feathers = feathers.filter(f => f.life > 0);
+  }
+
+  function drawBird(c, x, y, flip, hop = 0, flap = 0) {
+    ctx.save(); ctx.translate(x, y - hop); ctx.scale(flip, 1);
+    if (flap) ctx.rotate(Math.sin(flap) * 0.15);
+    ctx.drawImage(SPR['b' + c], -bs / 2, -bs / 2, bs, bs); ctx.restore();
+  }
+
+  function render() {
+    const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#7cc8f0'); g.addColorStop(1, '#e8f8ff');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#fff6c0'; ctx.beginPath(); ctx.arc(W * 0.5, H * 0.16, Math.min(W, H) * 0.08, 0, Math.PI * 2); ctx.fill();
+    for (let i = 0; i < 4; i++) { const x = ((i * 230 + t * 10) % (W + 200)) - 100, y = 80 + i * 60; ctx.fillStyle = 'rgba(255,255,255,.85)'; for (let k = 0; k < 3; k++) { ctx.beginPath(); ctx.arc(x + k * 26, y - (k % 2) * 10, 22, 0, Math.PI * 2); ctx.fill(); } }
+    // trunks at both edges with leafy canopy
+    for (const side of [-1, 1]) {
+      const x = side < 0 ? 0 : W - 30;
+      const tg = ctx.createLinearGradient(x, 0, x + 30, 0); tg.addColorStop(0, '#5a3418'); tg.addColorStop(0.5, '#8a5a30'); tg.addColorStop(1, '#5a3418');
+      ctx.fillStyle = tg; ctx.fillRect(x, 0, 30, H);
+      for (let k = 0; k < 6; k++) { ctx.fillStyle = k % 2 ? '#4caa3a' : '#5cc04a'; ctx.beginPath(); ctx.arc(side < 0 ? 20 : W - 20, k * H / 5, 40 + (k % 3) * 10, 0, Math.PI * 2); ctx.fill(); }
+    }
+    if (!pz || !SPR) return;
+    layout.forEach((L, i) => {
+      const sh = L.shake ? Math.sin(L.shake * 60) * 3 : 0;
+      const tipX = L.x0 - L.side * blen;
+      // branch: tapered, with bark lines and a few leaves
+      ctx.fillStyle = held === i ? '#a0703c' : '#7a4a24';
+      ctx.beginPath(); ctx.moveTo(L.x0, L.y - 8 + sh); ctx.lineTo(tipX, L.y - 3 + sh); ctx.lineTo(tipX, L.y + 3 + sh); ctx.lineTo(L.x0, L.y + 9 + sh); ctx.fill();
+      ctx.strokeStyle = 'rgba(40,20,8,.35)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(L.x0, L.y + sh); ctx.lineTo(tipX, L.y + sh); ctx.stroke();
+      ctx.fillStyle = '#5cc04a'; for (const f of [0.5, 0.95]) { const lx = L.x0 + (tipX - L.x0) * f; ctx.beginPath(); ctx.ellipse(lx, L.y + 10 + sh, 9, 4.5, 0.6 * L.side, 0, Math.PI * 2); ctx.fill(); }
+      const tube = pz.tubes[i], run = held === i ? pz.topRun(tube) : 0;
+      tube.forEach((c, k) => {
+        if (flights.some(f => f.to === i && f.k === k)) return;
+        const p = birdPos(i, k), sel = held === i && k >= tube.length - run;
+        drawBird(c, p.x, p.y + sh, -L.side, sel ? Math.abs(Math.sin(t * 10 + k)) * 8 : Math.sin(t * 2 + k + i) > 0.97 ? 3 : 0);
+      });
+    });
+    for (const f of flights) {
+      const p = Math.max(0, Math.min(1, f.t)), x = f.a.x + (f.b.x - f.a.x) * p, y = f.a.y + (f.b.y - f.a.y) * p - Math.sin(p * Math.PI) * bs * 1.6;
+      drawBird(f.color, x, y, f.b.x > f.a.x ? 1 : -1, 0, t * 30);
+    }
+    for (const b of leaving) drawBird(b.c, b.x, b.y, b.flip, 0, t * 30);
+    for (const f of feathers) { ctx.globalAlpha = Math.max(0, f.life); ctx.fillStyle = f.c; ctx.save(); ctx.translate(f.x, f.y); ctx.rotate(f.r + t * 2); ctx.beginPath(); ctx.ellipse(0, 0, 6, 2.5, 0, 0, Math.PI * 2); ctx.fill(); ctx.restore(); }
+    ctx.globalAlpha = 1;
+  }
+
+  let last = performance.now();
+  (function loop(now) {
+    const dt = Math.max(0, Math.min(0.033, (now - last) / 1000)); last = now;
+    update(dt); render(); requestAnimationFrame(loop);
+  })(last);
+})();
+</script>
+</body>
+</html>

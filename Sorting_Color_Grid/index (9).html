@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#f6d8c8">
+<title>Shelf Sort</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #f6d8c8;
+    font-family: "Arial Rounded MT Bold", "Nunito", "Segoe UI", sans-serif; color: #4a2a2a;
+    touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+  canvas { display: block; width: 100%; height: 100%; }
+  .hud { position: fixed; top: max(10px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); display: flex; gap: 10px; pointer-events: none; white-space: nowrap; }
+  .hud div { background: #fff8f0; border-radius: 14px; padding: 4px 14px; text-align: center; box-shadow: 0 3px 0 #c88a7a; }
+  .hud small { display: block; font-size: 10px; letter-spacing: 2px; color: #b07a6a; } .hud b { font-size: 20px; }
+  .overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; padding: 20px; background: #4a2a2a77; transition: opacity .3s; }
+  .overlay.hidden { opacity: 0; pointer-events: none; }
+  .card { width: min(350px, 100%); background: #fff8f0; border-radius: 24px; padding: 24px 20px; text-align: center; display: flex; flex-direction: column; gap: 12px; border: 4px solid #e0605a; box-shadow: 0 14px 40px #0004; }
+  .card canvas { width: 100%; height: auto; }
+  h1 { font-size: clamp(38px, 11vw, 52px); color: #e0605a; line-height: 1; }
+  p { font-size: 15px; line-height: 1.5; }
+  .stat b { color: #e0605a; }
+  .btn { border: none; background: #e0605a; color: #fff; font: inherit; font-size: 20px; padding: 13px; border-radius: 16px; cursor: pointer; box-shadow: 0 5px 0 #a03a34; }
+  .btn:active { transform: translateY(3px); box-shadow: 0 2px 0 #a03a34; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud"><div><small>LEVEL</small><b id="level">1</b></div><div><small>ITEMS LEFT</small><b id="left">0</b></div><div><small>TIME</small><b id="time">0:00</b></div></div>
+
+<div class="overlay" id="menu"><div class="card">
+  <canvas id="logo" width="600" height="150"></canvas>
+  <h1>Shelf Sort</h1>
+  <p><b>Drag</b> goods between shelves. Put <b>three identical items</b> side by side on one shelf and they're packed away — the row behind slides forward. Clear the whole store!</p>
+  <div class="stat" id="bestMenu"></div>
+  <button class="btn" id="startBtn">Open the shop</button>
+</div></div>
+<div class="overlay hidden" id="end"><div class="card">
+  <h1 id="endTitle">Shop tidy!</h1>
+  <div class="stat" id="endText"></div>
+  <button class="btn" id="endBtn">Next level</button>
+</div></div>
+
+<script>
+/*AUDIO-ENGINE-START*/
+// ---------- audio: procedural background music + sound effects ----------
+// Every note is synthesized with the Web Audio API at runtime, so the music
+// needs no files, works offline and carries no copyright.
+const GameAudio = (cfg) => {
+  let ctx = null, master = null, musicBus = null, sfxBus = null;
+  let timer = null, step = 0, nextT = 0, playing = false;
+  let musicOn = true;
+  try { musicOn = localStorage.getItem('music_off') !== '1'; } catch (e) {}
+
+  const SCALES = {
+    major: [0, 2, 4, 5, 7, 9, 11], minor: [0, 2, 3, 5, 7, 8, 10],
+    dorian: [0, 2, 3, 5, 7, 9, 10], lydian: [0, 2, 4, 6, 7, 9, 11],
+    pentaMajor: [0, 2, 4, 7, 9], pentaMinor: [0, 3, 5, 7, 10],
+    japanese: [0, 1, 5, 7, 8], phrygian: [0, 1, 3, 5, 7, 8, 10]
+  };
+  const scale = SCALES[cfg.scale] || SCALES.major;
+  const root = cfg.root || 57;
+  const bpm = cfg.bpm || 110;
+  const prog = cfg.prog || [0, 5, 3, 4];
+  const sixteenth = 60 / bpm / 4;
+
+  // deterministic random so each game always plays "its" tune
+  let seed = cfg.seed || 1;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
+
+  const deg = (d, oct = 0) => {
+    const n = scale.length;
+    const o = Math.floor(d / n);
+    return root + scale[((d % n) + n) % n] + 12 * (o + oct);
+  };
+  const hz = m => 440 * Math.pow(2, (m - 69) / 12);
+
+  // melody: two 2-bar phrases (A, B) arranged A A B A
+  function phrase() {
+    const notes = [];
+    let d = 2 + Math.floor(rnd() * 3);
+    for (let i = 0; i < 32; i++) {
+      const strong = i % 4 === 0;
+      if (rnd() < (strong ? 0.85 : (cfg.leadDensity || 0.35))) {
+        d += Math.round((rnd() - 0.5) * 4);
+        d = Math.max(0, Math.min(scale.length * 2, d));
+        const len = strong && rnd() < 0.5 ? 2 : 1;
+        notes.push({ i, d, len });
+      }
+    }
+    return notes;
+  }
+  const A = phrase(), B = phrase();
+  const song = [A, A, B, A];
+
+  function init() {
+    if (ctx) return;
+    try {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      master = ctx.createGain(); master.gain.value = 0.9; master.connect(ctx.destination);
+      musicBus = ctx.createGain(); musicBus.gain.value = cfg.volume || 0.16; musicBus.connect(master);
+      sfxBus = ctx.createGain(); sfxBus.gain.value = 1; sfxBus.connect(master);
+    } catch (e) { ctx = null; }
+  }
+
+  function voice(t, freq, dur, type, vol, opts = {}) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, t);
+    if (opts.detune) o.detune.value = opts.detune;
+    let node = o;
+    if (opts.cutoff) {
+      const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = opts.cutoff; f.Q.value = opts.q || 1;
+      o.connect(f); node = f;
+    }
+    const a = opts.attack || 0.008;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(vol, t + a);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    node.connect(g); g.connect(opts.bus || musicBus);
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+
+  let noiseBuf = null;
+  function noise(t, dur, vol, hp) {
+    if (!noiseBuf) {
+      noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 0.5, ctx.sampleRate);
+      const d = noiseBuf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    }
+    const s = ctx.createBufferSource(); s.buffer = noiseBuf;
+    const f = ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = hp;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.connect(f); f.connect(g); g.connect(musicBus);
+    s.start(t); s.stop(t + dur + 0.02);
+  }
+
+  function kick(t) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.setValueAtTime(140, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+    g.gain.setValueAtTime(0.9, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+    o.connect(g); g.connect(musicBus); o.start(t); o.stop(t + 0.25);
+  }
+
+  function playStep(s, t) {
+    const bar = Math.floor(s / 16);
+    const i16 = s % 16;
+    const chordDeg = prog[bar % prog.length];
+    const w = cfg.waves || {};
+    // bass
+    const bassPat = cfg.bassPattern || [0, 8];
+    if (bassPat.includes(i16)) voice(t, hz(deg(chordDeg, -2)), sixteenth * 3.5, w.bass || 'triangle', 0.5, { cutoff: 600 });
+    // pad (chord) at bar start
+    if (cfg.pad && i16 === 0) {
+      for (const k of [0, 2, 4]) voice(t, hz(deg(chordDeg + k, -1)), sixteenth * 15, w.pad || 'sine', 0.12, { attack: 0.3, cutoff: 1400, detune: k * 3 });
+    }
+    // arpeggio
+    if (cfg.arp && i16 % (cfg.arpEvery || 2) === 0) {
+      const k = [0, 2, 4, 2][(i16 / (cfg.arpEvery || 2)) % 4];
+      voice(t, hz(deg(chordDeg + k, cfg.arpOct || 0)), sixteenth * 1.6, w.arp || 'square', 0.1, { cutoff: cfg.arpCutoff || 2200 });
+    }
+    // lead melody
+    const ph = song[Math.floor(bar / 2) % song.length];
+    const pi = (bar % 2) * 16 + i16;
+    for (const n of ph) if (n.i === pi) {
+      voice(t, hz(deg(n.d, cfg.leadOct || 0)), sixteenth * (n.len * 2 + 0.5), w.lead || 'triangle', 0.22, { cutoff: cfg.leadCutoff || 3000 });
+    }
+    // drums
+    if (cfg.drums) {
+      if (i16 % 8 === 0 || (cfg.drums === 'busy' && i16 === 10)) kick(t);
+      if (i16 % 8 === 4) noise(t, 0.14, 0.35, 1500);
+      if (i16 % 2 === 0) noise(t, 0.04, cfg.drums === 'soft' ? 0.06 : 0.12, 7000);
+    }
+  }
+
+  function scheduler() {
+    if (!ctx || !playing) return;
+    while (nextT < ctx.currentTime + 0.15) {
+      playStep(step, nextT);
+      nextT += sixteenth * (cfg.swing && step % 2 === 0 ? 1 + cfg.swing : cfg.swing ? 1 - cfg.swing : 1);
+      step++;
+    }
+  }
+
+  function startMusic() {
+    if (!ctx || playing || !musicOn) return;
+    playing = true;
+    musicBus.gain.cancelScheduledValues(ctx.currentTime);
+    musicBus.gain.setValueAtTime(0.0001, ctx.currentTime);
+    musicBus.gain.linearRampToValueAtTime(cfg.volume || 0.16, ctx.currentTime + 1.2);
+    nextT = ctx.currentTime + 0.05;
+    timer = setInterval(scheduler, 40);
+  }
+  function stopMusic() {
+    playing = false;
+    if (timer) clearInterval(timer);
+    timer = null;
+  }
+
+  // mute button
+  const btn = document.createElement('button');
+  btn.setAttribute('aria-label', 'Toggle music');
+  btn.style.cssText = 'position:fixed;z-index:50;right:max(14px,env(safe-area-inset-right));bottom:max(14px,env(safe-area-inset-bottom));' +
+    'width:42px;height:42px;border-radius:50%;border:none;cursor:pointer;font-size:20px;line-height:42px;padding:0;' +
+    'background:' + (cfg.btnBg || 'rgba(0,0,0,.35)') + ';color:' + (cfg.btnColor || '#fff') + ';backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);';
+  const paint = () => { btn.textContent = musicOn ? '♪' : '✕'; btn.style.opacity = musicOn ? '1' : '.6'; };
+  paint();
+  const toggle = e => {
+    e.stopPropagation(); e.preventDefault();
+    musicOn = !musicOn;
+    try { localStorage.setItem('music_off', musicOn ? '0' : '1'); } catch (err) {}
+    init();
+    if (ctx && ctx.state === 'suspended') ctx.resume();
+    if (musicOn) startMusic(); else stopMusic();
+    paint();
+  };
+  btn.addEventListener('pointerdown', e => e.stopPropagation());
+  btn.addEventListener('pointerup', e => e.stopPropagation());
+  btn.addEventListener('click', toggle);
+  document.addEventListener('DOMContentLoaded', () => document.body.appendChild(btn));
+  if (document.body) document.body.appendChild(btn);
+
+  document.addEventListener('visibilitychange', () => {
+    if (!ctx) return;
+    if (document.hidden) ctx.suspend(); else ctx.resume();
+  });
+
+  return {
+    // call from a user gesture (start button) — browsers only allow audio after one
+    start() {
+      init();
+      if (!ctx) return;
+      if (ctx.state === 'suspended') ctx.resume();
+      startMusic();
+    },
+    sfx(freq, dur, type = 'sine', vol = 0.07, to = 0) {
+      init();
+      if (!ctx) return;
+      try {
+        const t = ctx.currentTime;
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.type = type; o.frequency.setValueAtTime(freq, t);
+        if (to) o.frequency.exponentialRampToValueAtTime(Math.max(30, to), t + dur);
+        g.gain.setValueAtTime(vol, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+        o.connect(g); g.connect(sfxBus);
+        o.start(t); o.stop(t + dur + 0.02);
+      } catch (e) {}
+    }
+  };
+};
+/*AUDIO-ENGINE-END*/
+/*SPRITES-START*/
+// ---------- sprites: detailed SVG artwork rasterised once into canvases ----------
+// Each piece is authored as an SVG (gradients, highlights, shadows, glow) and
+// drawn into an offscreen canvas at load time, so the game loop just blits images.
+const loadSprites = (defs, px = 160) => Promise.all(Object.entries(defs).map(([name, svg]) => new Promise(done => {
+  const img = new Image();
+  const finish = ok => {
+    const c = document.createElement('canvas');
+    const w = Array.isArray(px) ? px[0] : px, h = Array.isArray(px) ? px[1] : px;
+    c.width = w; c.height = h;
+    if (ok) c.getContext('2d').drawImage(img, 0, 0, w, h);
+    done([name, c]);
+  };
+  img.onload = () => finish(true);
+  img.onerror = () => finish(false);
+  img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+}))).then(entries => Object.fromEntries(entries));
+
+// small helpers for writing SVG
+const svgDoc = (body, vb = '0 0 100 100') => '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + vb + '">' + body + '</svg>';
+const shade = (hex, amt) => {
+  const n = parseInt(hex.slice(1), 16);
+  const f = v => Math.max(0, Math.min(255, Math.round(amt < 0 ? v * (1 + amt) : v + (255 - v) * amt)));
+  return '#' + [n >> 16, (n >> 8) & 255, n & 255].map(f).map(v => v.toString(16).padStart(2, '0')).join('');
+};
+/*SPRITES-END*/
+(() => {
+  const audio = GameAudio({
+    bpm: 118, scale: 'major', root: 65, prog: [0, 5, 3, 4], seed: 510,
+    waves: { lead: 'triangle', bass: 'triangle', arp: 'sine' },
+    arp: true, arpEvery: 1, arpOct: 1, leadOct: 1, leadDensity: 0.38, drums: 'soft', swing: 0.12, bassPattern: [0, 4, 8, 12], volume: 0.15,
+    btnBg: 'rgba(160,58,52,.5)'
+  });
+  const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+  const $ = id => document.getElementById(id);
+  const KEY = 'shelf_sort_level';
+  let level = 1; try { level = +localStorage.getItem(KEY) || 1; } catch (e) {}
+  $('bestMenu').innerHTML = level > 1 ? 'Continue from level <b>' + level + '</b>' : '';
+
+  // ---------- shop goods ----------
+  const SH = '<filter id="s" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="3" stdDeviation="2" flood-color="#4a2a2a" flood-opacity=".4"/></filter>';
+  const lg = (id, a, b, h) => '<linearGradient id="' + id + '" x1="0" y1="0" x2="' + (h ? 1 : 0) + '" y2="' + (h ? 0 : 1) + '"><stop offset="0" stop-color="' + a + '"/><stop offset="1" stop-color="' + b + '"/></linearGradient>';
+  const ITEMS = [
+    svgDoc('<defs>' + SH + lg('c', '#a01a1a', '#ff5a4a', 1) + lg('m', '#9aa2aa', '#f0f4f8', 1) + '</defs><g filter="url(#s)"><rect x="28" y="16" width="44" height="74" rx="8" fill="url(#c)"/><rect x="30" y="12" width="40" height="8" rx="3" fill="url(#m)"/><rect x="30" y="86" width="40" height="6" rx="3" fill="url(#m)"/>' +
+      '<path d="M30 46 C 44 40, 56 58, 70 50" stroke="#fff" stroke-width="5" fill="none"/><circle cx="50" cy="66" r="7" fill="#fff" opacity=".9"/><rect x="34" y="22" width="5" height="62" rx="2" fill="#fff" opacity=".35"/></g>'),
+    svgDoc('<defs>' + SH + lg('a', '#ffffff', '#d8e4f0', 1) + '</defs><g filter="url(#s)"><path d="M28 34 L 50 14 L 72 34 L 72 92 L 28 92 Z" fill="url(#a)"/><path d="M50 14 L 72 34 L 50 34 Z" fill="#c8d4e0"/><rect x="44" y="6" width="12" height="10" fill="#3a7ad0"/>' +
+      '<rect x="28" y="52" width="44" height="26" fill="#3a7ad0"/><path d="M38 60 C 42 54, 50 54, 50 62 C 50 54, 58 54, 62 60 C 58 70, 50 74, 50 74 C 50 74, 42 70, 38 60 Z" fill="#fff"/></g>'),
+    svgDoc('<defs>' + SH + '<radialGradient id="d" cx="40%" cy="35%" r="70%"><stop offset="0" stop-color="#f8d8a0"/><stop offset="1" stop-color="#c88a40"/></radialGradient></defs><g filter="url(#s)"><circle cx="50" cy="54" r="36" fill="url(#d)"/>' +
+      '<path d="M18 50 C 20 24, 80 24, 82 50 C 84 60, 76 56, 72 62 C 66 54, 60 66, 52 60 C 44 66, 38 56, 30 62 C 24 56, 16 60, 18 50 Z" fill="#ff7ab0"/>' +
+      '<circle cx="50" cy="54" r="11" fill="#f6d8c8"/>' + [[30, 40, '#ffe04a'], [44, 32, '#5ad0ff'], [64, 36, '#fff'], [70, 46, '#5ad06a'], [36, 50, '#fff']].map(([x, y, c]) => '<rect x="' + x + '" y="' + y + '" width="7" height="2.6" rx="1.3" fill="' + c + '" transform="rotate(' + (x * 3) + ' ' + x + ' ' + y + ')"/>').join('') + '</g>'),
+    svgDoc('<defs>' + SH + lg('w', '#ff9ac8', '#e05a9a') + '</defs><g filter="url(#s)"><path d="M26 54 L 74 54 L 66 92 L 34 92 Z" fill="url(#w)"/>' + [34, 42, 50, 58, 66].map(x => '<path d="M' + x + ' 56 L ' + (x - 2 + (x - 50) * 0.1) + ' 90" stroke="#c03a7a" stroke-width="2"/>').join('') +
+      '<path d="M22 56 C 18 40, 30 30, 40 32 C 42 18, 60 16, 64 28 C 76 26, 84 40, 78 56 Z" fill="#fff4e8"/><path d="M30 44 C 40 40, 54 44, 70 40" stroke="#f0d8c0" stroke-width="3" fill="none"/>' +
+      '<circle cx="54" cy="18" r="7" fill="#e0202a"/><path d="M54 11 C 56 5, 60 4, 62 3" stroke="#3a7a1c" stroke-width="2" fill="none"/></g>'),
+    svgDoc('<defs>' + SH + '<radialGradient id="y" cx="40%" cy="30%" r="75%"><stop offset="0" stop-color="#fff6a0"/><stop offset="1" stop-color="#ffc81a"/></radialGradient></defs><g filter="url(#s)">' +
+      '<path d="M16 64 C 16 48, 34 44, 44 50 C 50 52, 80 50, 84 66 C 86 84, 66 90, 46 90 C 26 90, 16 80, 16 64 Z" fill="url(#y)"/><circle cx="40" cy="36" r="20" fill="url(#y)"/>' +
+      '<path d="M54 36 L 70 40 L 54 46 Z" fill="#ff8a1a"/><circle cx="44" cy="32" r="3.6" fill="#222"/><circle cx="45" cy="31" r="1.2" fill="#fff"/><path d="M40 66 C 52 60, 64 64, 68 72" stroke="#e8a810" stroke-width="3" fill="none"/></g>'),
+    svgDoc('<defs>' + SH + '<radialGradient id="b" cx="40%" cy="30%" r="75%"><stop offset="0" stop-color="#d8a070"/><stop offset="1" stop-color="#8a5428"/></radialGradient></defs><g filter="url(#s)">' +
+      '<circle cx="30" cy="22" r="10" fill="url(#b)"/><circle cx="70" cy="22" r="10" fill="url(#b)"/><circle cx="30" cy="22" r="5" fill="#f0c8a0"/><circle cx="70" cy="22" r="5" fill="#f0c8a0"/>' +
+      '<ellipse cx="50" cy="72" rx="26" ry="22" fill="url(#b)"/><circle cx="50" cy="38" r="24" fill="url(#b)"/><ellipse cx="50" cy="46" rx="11" ry="8" fill="#f0c8a0"/>' +
+      '<circle cx="41" cy="34" r="3" fill="#222"/><circle cx="59" cy="34" r="3" fill="#222"/><ellipse cx="50" cy="43" rx="4" ry="3" fill="#3a2010"/>' +
+      '<ellipse cx="50" cy="74" rx="13" ry="11" fill="#f0c8a0"/><path d="M42 62 L 50 58 L 58 62 L 50 66 Z" fill="#e0202a"/></g>'),
+    svgDoc('<defs>' + SH + lg('g', '#5ab0ff', '#2a6ad0') + '</defs><g filter="url(#s)"><rect x="18" y="38" width="64" height="52" rx="4" fill="url(#g)"/><rect x="14" y="30" width="72" height="14" rx="3" fill="#4a90e8"/>' +
+      '<rect x="44" y="30" width="12" height="60" fill="#ffd23f"/><path d="M50 30 C 36 14, 24 22, 34 30 Z M50 30 C 64 14, 76 22, 66 30 Z" fill="#ffd23f" stroke="#e0a810" stroke-width="2"/></g>'),
+    svgDoc('<defs>' + SH + '</defs><g filter="url(#s)"><rect x="47" y="50" width="6" height="44" rx="3" fill="#fff4e8"/><circle cx="50" cy="36" r="28" fill="#ff5a8a"/>' +
+      '<path d="M50 36 m-22 0 a 22 22 0 1 1 44 0 a 16 16 0 1 1 -32 0 a 10 10 0 1 1 20 0 a 4 4 0 1 1 -8 0" stroke="#fff" stroke-width="5" fill="none"/><ellipse cx="38" cy="22" rx="8" ry="4" fill="#fff" opacity=".6" transform="rotate(-30 38 22)"/></g>'),
+    svgDoc('<defs>' + SH + lg('j', '#ffb03a', '#ff7a1a', 1) + '</defs><g filter="url(#s)"><path d="M36 16 L 64 16 L 64 26 C 76 32, 76 40, 76 48 L 76 88 C 76 92, 24 92, 24 88 L 24 48 C 24 40, 24 32, 36 26 Z" fill="url(#j)"/>' +
+      '<rect x="38" y="6" width="24" height="12" rx="3" fill="#3aa04a"/><rect x="24" y="54" width="52" height="24" fill="#fff8f0"/><circle cx="50" cy="66" r="9" fill="#ff9a2a"/><path d="M50 57 C 52 54, 56 54, 56 56" stroke="#3aa04a" stroke-width="2.5" fill="none"/>' +
+      '<rect x="30" y="30" width="5" height="54" rx="2" fill="#fff" opacity=".35"/></g>')
+  ];
+
+  let SPR = null;
+  const defs = {}; ITEMS.forEach((s, i) => defs['i' + i] = s);
+  loadSprites(defs, 128).then(s => { SPR = s; const lc = $('logo').getContext('2d'); lc.fillStyle = '#c88a5a'; lc.fillRect(0, 128, 600, 14); ITEMS.forEach((_, i) => i < 6 && lc.drawImage(SPR['i' + i], 6 + i * 98, 30, 100, 100)); });
+
+  // shelves[s] = { layers: [[a,b,c], [a,b,c], ...] }  layer 0 is the front row
+  let W, H, DPR, cols, shelfW, shelfH, slot, sx0, sy0, shelves, state = 'menu', t = 0, drag = null, elapsed = 0, pops = [], combo = 0;
+  function resize() {
+    DPR = Math.min(devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight; canvas.width = W * DPR; canvas.height = H * DPR; ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    if (!shelves) return;
+    cols = W < 600 ? 2 : 4;
+    const rows = Math.ceil(shelves.length / cols);
+    shelfW = Math.min(240, (W - 24) / cols); slot = shelfW / 3.2;
+    shelfH = Math.min(slot * 1.75, (H - 110) / rows);
+    slot = Math.min(slot, shelfH / 1.6);
+    sx0 = (W - shelfW * cols) / 2; sy0 = 80 + (H - 90 - shelfH * rows) / 2;
+  }
+  addEventListener('resize', resize);
+  const shelfPos = s => ({ x: sx0 + (s % cols) * shelfW, y: sy0 + Math.floor(s / cols) * shelfH });
+  const slotPos = (s, k) => { const p = shelfPos(s); return { x: p.x + shelfW / 2 + (k - 1) * slot * 0.98, y: p.y + shelfH - slot * 0.62 }; };
+
+  function load() {
+    const types = Math.min(ITEMS.length, 3 + level), nShelves = types + (level > 4 ? 1 : 0), layers = level < 3 ? 2 : 3;
+    const items = []; for (let k = 0; k < types; k++) for (let m = 0; m < 3 * (level > 6 ? 2 : 1); m++) items.push(k);
+    const total = nShelves * 3 * layers;
+    while (items.length > total - 4) items.splice(items.length - 3, 3);
+    for (let tries = 0; tries < 300; tries++) {
+      const slots = items.slice(); while (slots.length < total) slots.push(null);
+      for (let i = slots.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [slots[i], slots[j]] = [slots[j], slots[i]]; }
+      shelves = [];
+      for (let s = 0; s < nShelves; s++) { const L = []; for (let l = 0; l < layers; l++) L.push(slots.slice((s * layers + l) * 3, (s * layers + l) * 3 + 3)); shelves.push({ layers: L }); }
+      const fronts = shelves.map(sh => sh.layers[0]);
+      const empties = fronts.flat().filter(v => v === null).length;
+      if (empties >= 2 && !fronts.some(f => f[0] !== null && f.every(v => v === f[0]))) break;
+    }
+    shelves.forEach(advance);
+    elapsed = 0; pops = []; combo = 0; resize(); hud();
+  }
+  function advance(sh) { while (sh.layers.length > 1 && sh.layers[0].every(v => v === null)) sh.layers.shift(); }
+  const remaining = () => shelves.reduce((n, sh) => n + sh.layers.flat().filter(v => v !== null).length, 0);
+  function hud() { $('level').textContent = level; $('left').textContent = remaining(); const s = Math.floor(elapsed); $('time').textContent = Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
+  function start() { if (!SPR) return; load(); state = 'play'; audio.start(); $('menu').classList.add('hidden'); $('end').classList.add('hidden'); }
+  $('startBtn').onclick = start;
+  $('endBtn').onclick = () => { if ($('endBtn').dataset.next === '1') { level++; try { localStorage.setItem(KEY, level); } catch (e) {} } start(); };
+
+  function hit(x, y) {
+    for (let s = 0; s < shelves.length; s++) for (let k = 0; k < 3; k++) { const p = slotPos(s, k); if (Math.abs(x - p.x) < slot * 0.5 && Math.abs(y - p.y) < slot * 0.62) return [s, k]; }
+    return null;
+  }
+  function shelfAt(x, y) { for (let s = 0; s < shelves.length; s++) { const p = shelfPos(s); if (x >= p.x && x <= p.x + shelfW && y >= p.y && y <= p.y + shelfH) return s; } return -1; }
+  canvas.addEventListener('pointerdown', e => {
+    if (state !== 'play') return;
+    const h = hit(e.clientX, e.clientY); if (!h) return;
+    const [s, k] = h, v = shelves[s].layers[0][k]; if (v === null) return;
+    drag = { s, k, v, x: e.clientX, y: e.clientY };
+    shelves[s].layers[0][k] = null;
+    audio.sfx(600, 0.05, 'sine', 0.04);
+  });
+  addEventListener('pointermove', e => { if (drag) { drag.x = e.clientX; drag.y = e.clientY; } });
+  addEventListener('pointerup', e => {
+    if (!drag) return;
+    const d = drag; drag = null;
+    let target = null;
+    const h = hit(e.clientX, e.clientY);
+    if (h && shelves[h[0]].layers[0][h[1]] === null) target = h;
+    else { const s = shelfAt(e.clientX, e.clientY); if (s >= 0) { const k = shelves[s].layers[0].indexOf(null); if (k >= 0) target = [s, k]; } }
+    if (!target) { shelves[d.s].layers[0][d.k] = d.v; return; }
+    shelves[target[0]].layers[0][target[1]] = d.v;
+    audio.sfx(420, 0.06, 'triangle', 0.05);
+    resolve(target[0]); if (target[0] !== d.s) advance(shelves[d.s]);
+    hud(); checkEnd();
+  });
+  function resolve(s) {
+    const f = shelves[s].layers[0];
+    if (f[0] !== null && f.every(v => v === f[0])) {
+      for (let k = 0; k < 3; k++) { const p = slotPos(s, k); pops.push({ v: f[k], x: p.x, y: p.y, t: 0 }); }
+      shelves[s].layers[0] = [null, null, null]; combo++;
+      audio.sfx(660 + Math.min(8, combo) * 60, 0.25, 'triangle', 0.07, 1320 + combo * 80);
+      advance(shelves[s]);
+    } else combo = 0;
+  }
+  function checkEnd() {
+    if (!remaining()) {
+      state = 'end'; const s = Math.floor(elapsed);
+      $('endTitle').textContent = 'Shop tidy!'; $('endText').innerHTML = 'Cleared in <b>' + Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0') + '</b>';
+      $('endBtn').textContent = 'Next level'; $('endBtn').dataset.next = '1';
+      [523, 659, 784, 1046].forEach((f, k) => setTimeout(() => audio.sfx(f, 0.3, 'triangle', 0.08), k * 110));
+      setTimeout(() => $('end').classList.remove('hidden'), 700);
+      return;
+    }
+    const empty = shelves.some(sh => sh.layers[0].includes(null));
+    if (!empty) {
+      state = 'end'; $('endTitle').textContent = 'Shelves jammed'; $('endText').innerHTML = '<b>' + remaining() + '</b> items still on the shelves';
+      $('endBtn').textContent = 'Try again'; $('endBtn').dataset.next = '0';
+      audio.sfx(300, 0.6, 'sine', 0.07, 150);
+      setTimeout(() => $('end').classList.remove('hidden'), 500);
+    }
+  }
+  addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && state === 'menu') { e.preventDefault(); start(); } });
+
+  function update(dt) { t += dt; if (state === 'play') { elapsed += dt; if (Math.floor(elapsed) !== Math.floor(elapsed - dt)) hud(); } for (const p of pops) p.t += dt * 2.2; pops = pops.filter(p => p.t < 1); }
+  function render() {
+    // shop wall: striped wallpaper + bunting
+    ctx.fillStyle = '#f6d8c8'; ctx.fillRect(0, 0, W, H);
+    for (let x = 0; x < W; x += 40) { ctx.fillStyle = 'rgba(255,255,255,.35)'; ctx.fillRect(x, 0, 20, H); }
+    for (let x = 0; x < W; x += 30) { ctx.fillStyle = ['#e0605a', '#ffd23f', '#5ab0ff', '#5ad08a'][(x / 30) % 4]; ctx.beginPath(); ctx.moveTo(x, 58); ctx.lineTo(x + 30, 58); ctx.lineTo(x + 15, 76); ctx.fill(); }
+    if (!shelves || !SPR) return;
+    shelves.forEach((sh, s) => {
+      const p = shelfPos(s), x = p.x + 4, w = shelfW - 8;
+      // wooden cubby
+      ctx.fillStyle = '#c88a5a'; ctx.fillRect(x, p.y + 4, w, shelfH - 4);
+      ctx.fillStyle = '#e8c8a8'; ctx.fillRect(x + 6, p.y + 10, w - 12, shelfH - 22);
+      const sg = ctx.createLinearGradient(0, p.y + 10, 0, p.y + shelfH); sg.addColorStop(0, 'rgba(120,70,40,.35)'); sg.addColorStop(1, 'rgba(120,70,40,0)'); ctx.fillStyle = sg; ctx.fillRect(x + 6, p.y + 10, w - 12, shelfH - 22);
+      // back row peeks out above the front row
+      if (sh.layers[1]) sh.layers[1].forEach((v, k) => { if (v === null) return; const q = slotPos(s, k); ctx.globalAlpha = 0.55; ctx.drawImage(SPR['i' + v], q.x - slot * 0.36, q.y - slot * 0.92, slot * 0.72, slot * 0.72); ctx.globalAlpha = 1; });
+      ctx.fillStyle = 'rgba(70,40,20,.35)'; if (sh.layers[1]) ctx.fillRect(x + 6, p.y + 10, w - 12, shelfH * 0.5 - 6);
+      sh.layers[0].forEach((v, k) => { if (v === null) return; const q = slotPos(s, k); ctx.drawImage(SPR['i' + v], q.x - slot / 2, q.y - slot / 2 + Math.sin(t * 2 + s + k) * 1, slot, slot); });
+      ctx.fillStyle = '#a06a3a'; ctx.fillRect(x, p.y + shelfH - 12, w, 12); ctx.fillStyle = '#d8a070'; ctx.fillRect(x, p.y + shelfH - 12, w, 3);
+      if (sh.layers.length > 1) { ctx.fillStyle = '#fff8f0'; ctx.font = 'bold ' + Math.round(slot * 0.22) + 'px sans-serif'; ctx.textAlign = 'right'; ctx.fillText('+' + (sh.layers.length - 1), x + w - 8, p.y + shelfH - 16); }
+    });
+    if (drag) {
+      const s = shelfAt(drag.x, drag.y); if (s >= 0 && shelves[s].layers[0].includes(null)) { const p = shelfPos(s); ctx.strokeStyle = '#5ad08a'; ctx.lineWidth = 4; ctx.strokeRect(p.x + 4, p.y + 4, shelfW - 8, shelfH - 4); }
+      ctx.drawImage(SPR['i' + drag.v], drag.x - slot * 0.6, drag.y - slot * 0.8, slot * 1.2, slot * 1.2);
+    }
+    for (const p of pops) { const s = 1 + p.t * 0.6; ctx.globalAlpha = 1 - p.t; ctx.drawImage(SPR['i' + p.v], p.x - slot * s / 2, p.y - slot * s / 2 - p.t * 40, slot * s, slot * s); ctx.globalAlpha = 1; for (let k = 0; k < 6; k++) { const a = k / 6 * Math.PI * 2 + p.t * 3; ctx.fillStyle = 'rgba(255,210,63,' + (1 - p.t) + ')'; ctx.beginPath(); ctx.arc(p.x + Math.cos(a) * p.t * slot, p.y + Math.sin(a) * p.t * slot, 3, 0, Math.PI * 2); ctx.fill(); } }
+  }
+
+  let last = performance.now();
+  (function loop(now) {
+    const dt = Math.max(0, Math.min(0.033, (now - last) / 1000)); last = now;
+    update(dt); render(); requestAnimationFrame(loop);
+  })(last);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#7a4a2a">
+<title>Marble Sort</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #7a4a2a;
+    font-family: "Georgia", "Palatino", serif; color: #fff4e0;
+    touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+  canvas { display: block; width: 100%; height: 100%; }
+  .hud { position: fixed; top: max(12px, env(safe-area-inset-top)); left: 0; right: 0; text-align: center; pointer-events: none; text-shadow: 0 2px 4px #0008; }
+  .hud b { font-size: 28px; } .hud div { font-size: 13px; opacity: .8; letter-spacing: 2px; }
+  .tools { position: fixed; bottom: max(16px, env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); display: flex; gap: 12px; }
+  .tools button { width: 58px; height: 58px; border-radius: 50%; border: 3px solid #3a2414; background: radial-gradient(circle at 35% 30%, #fff4e0, #e0c090); color: #3a2414; font-size: 24px; cursor: pointer; box-shadow: 0 4px 0 #3a2414; position: relative; }
+  .tools button:active { transform: translateY(3px); box-shadow: 0 1px 0 #3a2414; }
+  .tools button:disabled { opacity: .4; }
+  .tools button small { position: absolute; right: -6px; top: -6px; background: #c0392b; color: #fff; border-radius: 10px; font-size: 11px; padding: 1px 6px; font-family: sans-serif; }
+  .overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; padding: 20px; background: #2a1408bb; transition: opacity .3s; }
+  .overlay.hidden { opacity: 0; pointer-events: none; }
+  .card { width: min(350px, 100%); background: #fff4e0; color: #3a2414; border-radius: 22px; padding: 24px 20px; text-align: center; display: flex; flex-direction: column; gap: 12px; border: 4px solid #3a2414; box-shadow: 0 10px 0 #3a2414; }
+  .card canvas { width: 100%; height: auto; }
+  h1 { font-size: clamp(38px, 11vw, 52px); color: #8a2a1a; line-height: 1; }
+  p { font-size: 15px; line-height: 1.5; }
+  .stat b { color: #8a2a1a; }
+  .btn { border: 3px solid #3a2414; background: #2e86c1; color: #fff; font: inherit; font-size: 20px; padding: 12px; border-radius: 16px; cursor: pointer; box-shadow: 0 5px 0 #3a2414; }
+  .btn:active { transform: translateY(4px); box-shadow: 0 1px 0 #3a2414; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud"><b id="level">Level 1</b><div id="moves">0 moves</div></div>
+<div class="tools"><button id="undo">↶</button><button id="restart">⟳</button><button id="addTube">＋<small>1</small></button></div>
+
+<div class="overlay" id="menu"><div class="card">
+  <canvas id="logo" width="600" height="140"></canvas>
+  <h1>Marble Sort</h1>
+  <p><b>Tap</b> a tube to pick up its top marble, then tap another tube to drop it. A marble can only land on the same colour or in an empty tube. Fill every tube with one colour!</p>
+  <div class="stat" id="bestMenu"></div>
+  <button class="btn" id="startBtn">Play</button>
+</div></div>
+<div class="overlay hidden" id="win"><div class="card">
+  <h1>All sorted!</h1>
+  <div class="stat">Moves <b id="winMoves">0</b></div>
+  <button class="btn" id="nextBtn">Next level</button>
+</div></div>
+
+<script>
+/*AUDIO-ENGINE-START*/
+// ---------- audio: procedural background music + sound effects ----------
+// Every note is synthesized with the Web Audio API at runtime, so the music
+// needs no files, works offline and carries no copyright.
+const GameAudio = (cfg) => {
+  let ctx = null, master = null, musicBus = null, sfxBus = null;
+  let timer = null, step = 0, nextT = 0, playing = false;
+  let musicOn = true;
+  try { musicOn = localStorage.getItem('music_off') !== '1'; } catch (e) {}
+
+  const SCALES = {
+    major: [0, 2, 4, 5, 7, 9, 11], minor: [0, 2, 3, 5, 7, 8, 10],
+    dorian: [0, 2, 3, 5, 7, 9, 10], lydian: [0, 2, 4, 6, 7, 9, 11],
+    pentaMajor: [0, 2, 4, 7, 9], pentaMinor: [0, 3, 5, 7, 10],
+    japanese: [0, 1, 5, 7, 8], phrygian: [0, 1, 3, 5, 7, 8, 10]
+  };
+  const scale = SCALES[cfg.scale] || SCALES.major;
+  const root = cfg.root || 57;
+  const bpm = cfg.bpm || 110;
+  const prog = cfg.prog || [0, 5, 3, 4];
+  const sixteenth = 60 / bpm / 4;
+
+  // deterministic random so each game always plays "its" tune
+  let seed = cfg.seed || 1;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
+
+  const deg = (d, oct = 0) => {
+    const n = scale.length;
+    const o = Math.floor(d / n);
+    return root + scale[((d % n) + n) % n] + 12 * (o + oct);
+  };
+  const hz = m => 440 * Math.pow(2, (m - 69) / 12);
+
+  // melody: two 2-bar phrases (A, B) arranged A A B A
+  function phrase() {
+    const notes = [];
+    let d = 2 + Math.floor(rnd() * 3);
+    for (let i = 0; i < 32; i++) {
+      const strong = i % 4 === 0;
+      if (rnd() < (strong ? 0.85 : (cfg.leadDensity || 0.35))) {
+        d += Math.round((rnd() - 0.5) * 4);
+        d = Math.max(0, Math.min(scale.length * 2, d));
+        const len = strong && rnd() < 0.5 ? 2 : 1;
+        notes.push({ i, d, len });
+      }
+    }
+    return notes;
+  }
+  const A = phrase(), B = phrase();
+  const song = [A, A, B, A];
+
+  function init() {
+    if (ctx) return;
+    try {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      master = ctx.createGain(); master.gain.value = 0.9; master.connect(ctx.destination);
+      musicBus = ctx.createGain(); musicBus.gain.value = cfg.volume || 0.16; musicBus.connect(master);
+      sfxBus = ctx.createGain(); sfxBus.gain.value = 1; sfxBus.connect(master);
+    } catch (e) { ctx = null; }
+  }
+
+  function voice(t, freq, dur, type, vol, opts = {}) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, t);
+    if (opts.detune) o.detune.value = opts.detune;
+    let node = o;
+    if (opts.cutoff) {
+      const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = opts.cutoff; f.Q.value = opts.q || 1;
+      o.connect(f); node = f;
+    }
+    const a = opts.attack || 0.008;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(vol, t + a);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    node.connect(g); g.connect(opts.bus || musicBus);
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+
+  let noiseBuf = null;
+  function noise(t, dur, vol, hp) {
+    if (!noiseBuf) {
+      noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 0.5, ctx.sampleRate);
+      const d = noiseBuf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    }
+    const s = ctx.createBufferSource(); s.buffer = noiseBuf;
+    const f = ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = hp;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.connect(f); f.connect(g); g.connect(musicBus);
+    s.start(t); s.stop(t + dur + 0.02);
+  }
+
+  function kick(t) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.setValueAtTime(140, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+    g.gain.setValueAtTime(0.9, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+    o.connect(g); g.connect(musicBus); o.start(t); o.stop(t + 0.25);
+  }
+
+  function playStep(s, t) {
+    const bar = Math.floor(s / 16);
+    const i16 = s % 16;
+    const chordDeg = prog[bar % prog.length];
+    const w = cfg.waves || {};
+    // bass
+    const bassPat = cfg.bassPattern || [0, 8];
+    if (bassPat.includes(i16)) voice(t, hz(deg(chordDeg, -2)), sixteenth * 3.5, w.bass || 'triangle', 0.5, { cutoff: 600 });
+    // pad (chord) at bar start
+    if (cfg.pad && i16 === 0) {
+      for (const k of [0, 2, 4]) voice(t, hz(deg(chordDeg + k, -1)), sixteenth * 15, w.pad || 'sine', 0.12, { attack: 0.3, cutoff: 1400, detune: k * 3 });
+    }
+    // arpeggio
+    if (cfg.arp && i16 % (cfg.arpEvery || 2) === 0) {
+      const k = [0, 2, 4, 2][(i16 / (cfg.arpEvery || 2)) % 4];
+      voice(t, hz(deg(chordDeg + k, cfg.arpOct || 0)), sixteenth * 1.6, w.arp || 'square', 0.1, { cutoff: cfg.arpCutoff || 2200 });
+    }
+    // lead melody
+    const ph = song[Math.floor(bar / 2) % song.length];
+    const pi = (bar % 2) * 16 + i16;
+    for (const n of ph) if (n.i === pi) {
+      voice(t, hz(deg(n.d, cfg.leadOct || 0)), sixteenth * (n.len * 2 + 0.5), w.lead || 'triangle', 0.22, { cutoff: cfg.leadCutoff || 3000 });
+    }
+    // drums
+    if (cfg.drums) {
+      if (i16 % 8 === 0 || (cfg.drums === 'busy' && i16 === 10)) kick(t);
+      if (i16 % 8 === 4) noise(t, 0.14, 0.35, 1500);
+      if (i16 % 2 === 0) noise(t, 0.04, cfg.drums === 'soft' ? 0.06 : 0.12, 7000);
+    }
+  }
+
+  function scheduler() {
+    if (!ctx || !playing) return;
+    while (nextT < ctx.currentTime + 0.15) {
+      playStep(step, nextT);
+      nextT += sixteenth * (cfg.swing && step % 2 === 0 ? 1 + cfg.swing : cfg.swing ? 1 - cfg.swing : 1);
+      step++;
+    }
+  }
+
+  function startMusic() {
+    if (!ctx || playing || !musicOn) return;
+    playing = true;
+    musicBus.gain.cancelScheduledValues(ctx.currentTime);
+    musicBus.gain.setValueAtTime(0.0001, ctx.currentTime);
+    musicBus.gain.linearRampToValueAtTime(cfg.volume || 0.16, ctx.currentTime + 1.2);
+    nextT = ctx.currentTime + 0.05;
+    timer = setInterval(scheduler, 40);
+  }
+  function stopMusic() {
+    playing = false;
+    if (timer) clearInterval(timer);
+    timer = null;
+  }
+
+  // mute button
+  const btn = document.createElement('button');
+  btn.setAttribute('aria-label', 'Toggle music');
+  btn.style.cssText = 'position:fixed;z-index:50;right:max(14px,env(safe-area-inset-right));bottom:max(14px,env(safe-area-inset-bottom));' +
+    'width:42px;height:42px;border-radius:50%;border:none;cursor:pointer;font-size:20px;line-height:42px;padding:0;' +
+    'background:' + (cfg.btnBg || 'rgba(0,0,0,.35)') + ';color:' + (cfg.btnColor || '#fff') + ';backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);';
+  const paint = () => { btn.textContent = musicOn ? '♪' : '✕'; btn.style.opacity = musicOn ? '1' : '.6'; };
+  paint();
+  const toggle = e => {
+    e.stopPropagation(); e.preventDefault();
+    musicOn = !musicOn;
+    try { localStorage.setItem('music_off', musicOn ? '0' : '1'); } catch (err) {}
+    init();
+    if (ctx && ctx.state === 'suspended') ctx.resume();
+    if (musicOn) startMusic(); else stopMusic();
+    paint();
+  };
+  btn.addEventListener('pointerdown', e => e.stopPropagation());
+  btn.addEventListener('pointerup', e => e.stopPropagation());
+  btn.addEventListener('click', toggle);
+  document.addEventListener('DOMContentLoaded', () => document.body.appendChild(btn));
+  if (document.body) document.body.appendChild(btn);
+
+  document.addEventListener('visibilitychange', () => {
+    if (!ctx) return;
+    if (document.hidden) ctx.suspend(); else ctx.resume();
+  });
+
+  return {
+    // call from a user gesture (start button) — browsers only allow audio after one
+    start() {
+      init();
+      if (!ctx) return;
+      if (ctx.state === 'suspended') ctx.resume();
+      startMusic();
+    },
+    sfx(freq, dur, type = 'sine', vol = 0.07, to = 0) {
+      init();
+      if (!ctx) return;
+      try {
+        const t = ctx.currentTime;
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.type = type; o.frequency.setValueAtTime(freq, t);
+        if (to) o.frequency.exponentialRampToValueAtTime(Math.max(30, to), t + dur);
+        g.gain.setValueAtTime(vol, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+        o.connect(g); g.connect(sfxBus);
+        o.start(t); o.stop(t + dur + 0.02);
+      } catch (e) {}
+    }
+  };
+};
+/*AUDIO-ENGINE-END*/
+/*SPRITES-START*/
+// ---------- sprites: detailed SVG artwork rasterised once into canvases ----------
+// Each piece is authored as an SVG (gradients, highlights, shadows, glow) and
+// drawn into an offscreen canvas at load time, so the game loop just blits images.
+const loadSprites = (defs, px = 160) => Promise.all(Object.entries(defs).map(([name, svg]) => new Promise(done => {
+  const img = new Image();
+  const finish = ok => {
+    const c = document.createElement('canvas');
+    const w = Array.isArray(px) ? px[0] : px, h = Array.isArray(px) ? px[1] : px;
+    c.width = w; c.height = h;
+    if (ok) c.getContext('2d').drawImage(img, 0, 0, w, h);
+    done([name, c]);
+  };
+  img.onload = () => finish(true);
+  img.onerror = () => finish(false);
+  img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+}))).then(entries => Object.fromEntries(entries));
+
+// small helpers for writing SVG
+const svgDoc = (body, vb = '0 0 100 100') => '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + vb + '">' + body + '</svg>';
+const shade = (hex, amt) => {
+  const n = parseInt(hex.slice(1), 16);
+  const f = v => Math.max(0, Math.min(255, Math.round(amt < 0 ? v * (1 + amt) : v + (255 - v) * amt)));
+  return '#' + [n >> 16, (n >> 8) & 255, n & 255].map(f).map(v => v.toString(16).padStart(2, '0')).join('');
+};
+/*SPRITES-END*/
+/*SORT-ENGINE-START*/
+// ---------- sort engine: containers holding stacks of colours ----------
+// tubes[i] is an array bottom → top. A move takes the top run of one colour
+// and drops as much of it as fits onto a tube that is empty or has the same colour on top.
+const SortPuzzle = (opts) => {
+  const cap = opts.cap, single = !!opts.single;
+  let tubes = [], history = [];
+  const top = t => t[t.length - 1];
+  const topRun = t => { let n = 0; for (let i = t.length - 1; i >= 0 && t[i] === top(t); i--) n++; return n; };
+
+  function generate(colors, empty, extraTubes = 0) {
+    // shuffle a full set of pieces until no tube starts finished
+    for (let tries = 0; tries < 200; tries++) {
+      const all = [];
+      for (let c = 0; c < colors; c++) for (let k = 0; k < cap; k++) all.push(c);
+      for (let i = all.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [all[i], all[j]] = [all[j], all[i]]; }
+      tubes = [];
+      for (let c = 0; c < colors; c++) tubes.push(all.slice(c * cap, c * cap + cap));
+      for (let e = 0; e < empty + extraTubes; e++) tubes.push([]);
+      if (!tubes.some(t => t.length === cap && t.every(v => v === t[0]))) break;
+    }
+    history = [];
+    return api;
+  }
+
+  const api = {
+    get tubes() { return tubes; },
+    get cap() { return cap; },
+    generate,
+    load(t) { tubes = t.map(x => x.slice()); history = []; return api; },
+    topRun,
+    canMove(from, to) {
+      if (from === to) return false;
+      const a = tubes[from], b = tubes[to];
+      if (!a || !b || !a.length || b.length >= cap) return false;
+      return !b.length || top(b) === top(a);
+    },
+    // returns how many pieces moved
+    move(from, to) {
+      if (!api.canMove(from, to)) return 0;
+      const a = tubes[from], b = tubes[to];
+      const n = single ? 1 : Math.min(topRun(a), cap - b.length);
+      for (let i = 0; i < n; i++) b.push(a.pop());
+      history.push([from, to, n]);
+      return n;
+    },
+    undo() {
+      const h = history.pop(); if (!h) return null;
+      const [from, to, n] = h;
+      for (let i = 0; i < n; i++) tubes[from].push(tubes[to].pop());
+      return h;
+    },
+    get moves() { return history.length; },
+    complete(i) { const t = tubes[i]; return t.length === cap && t.every(v => v === t[0]); },
+    solved() { return tubes.every(t => !t.length || (t.length === cap && t.every(v => v === t[0]))); },
+    addTube() { tubes.push([]); },
+    stuck() {
+      for (let i = 0; i < tubes.length; i++) for (let j = 0; j < tubes.length; j++) {
+        if (!api.canMove(i, j)) continue;
+        // moving a whole uniform tube into an empty one changes nothing
+        if (!tubes[j].length && topRun(tubes[i]) === tubes[i].length) continue;
+        return false;
+      }
+      return true;
+    }
+  };
+  return api;
+};
+/*SORT-ENGINE-END*/
+(() => {
+  const audio = GameAudio({
+    bpm: 100, scale: 'major', root: 62, prog: [0, 5, 3, 4], seed: 502,
+    waves: { lead: 'triangle', bass: 'triangle', arp: 'sine' },
+    arp: true, arpEvery: 2, arpOct: 1, leadOct: 1, leadDensity: 0.3, drums: 'soft', swing: 0.15, bassPattern: [0, 6, 10], volume: 0.17,
+    btnBg: 'rgba(58,36,20,.6)', btnColor: '#fff4e0'
+  });
+  const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+  const $ = id => document.getElementById(id);
+  const KEY = 'marble_sort_level';
+  let level = 1; try { level = +localStorage.getItem(KEY) || 1; } catch (e) {}
+  $('bestMenu').innerHTML = level > 1 ? 'Continue from level <b>' + level + '</b>' : '';
+
+  // ---------- glass marbles: translucent body, coloured swirl, caustic, specular ----------
+  const MCOL = ['#e8202a', '#ff8a10', '#ffd21a', '#2cc040', '#14b8d8', '#2050e0', '#8a30d0', '#ff4aa0', '#f4f4f4', '#202428', '#8a5a2a', '#9ae020'];
+  const marbleSVG = (c, i) => svgDoc('<defs>' +
+    '<radialGradient id="b" cx="40%" cy="35%" r="65%"><stop offset="0" stop-color="' + shade(c, 0.6) + '" stop-opacity=".9"/><stop offset=".6" stop-color="' + c + '" stop-opacity=".75"/><stop offset="1" stop-color="' + shade(c, -0.5) + '"/></radialGradient>' +
+    '<radialGradient id="ca" cx="60%" cy="75%" r="35%"><stop offset="0" stop-color="#fff" stop-opacity=".8"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></radialGradient>' +
+    '<clipPath id="cl"><circle cx="50" cy="50" r="44"/></clipPath>' +
+    '<filter id="s" x="-20%" y="-20%" width="140%" height="150%"><feDropShadow dx="0" dy="4" stdDeviation="3" flood-color="#2a1408" flood-opacity=".55"/></filter></defs>' +
+    '<g filter="url(#s)"><circle cx="50" cy="50" r="44" fill="url(#b)"/></g>' +
+    '<g clip-path="url(#cl)" transform="rotate(' + (i * 47) + ' 50 50)">' +
+      '<path d="M10 56 C 30 30, 50 74, 70 44 S 96 40, 96 40" stroke="' + shade(c, -0.35) + '" stroke-width="9" fill="none" opacity=".8"/>' +
+      '<path d="M8 66 C 30 44, 52 86, 74 58" stroke="#fff" stroke-width="4" fill="none" opacity=".55"/>' +
+      '<path d="M20 30 C 36 44, 56 18, 80 30" stroke="' + shade(c, 0.4) + '" stroke-width="5" fill="none" opacity=".7"/></g>' +
+    '<circle cx="50" cy="50" r="44" fill="url(#ca)"/>' +
+    '<ellipse cx="34" cy="28" rx="15" ry="9" fill="#fff" opacity=".85" transform="rotate(-30 34 28)"/><circle cx="66" cy="70" r="4" fill="#fff" opacity=".5"/>' +
+    '<circle cx="50" cy="50" r="44" fill="none" stroke="' + shade(c, -0.6) + '" stroke-width="1.5" opacity=".5"/>');
+
+  let SPR = null;
+  const defs = {}; MCOL.forEach((c, i) => defs['m' + i] = marbleSVG(c, i));
+  loadSprites(defs, 128).then(s => { SPR = s; const lc = $('logo').getContext('2d'); MCOL.slice(0, 8).forEach((c, i) => lc.drawImage(SPR['m' + i], i * 72 + 10, 30 + (i % 2) * 20, 80, 80)); });
+
+  const CAP = 4;
+  let W, H, DPR, layout = [], tw, ball;
+  function resize() { DPR = Math.min(devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight; canvas.width = W * DPR; canvas.height = H * DPR; ctx.setTransform(DPR, 0, 0, DPR, 0, 0); doLayout(); }
+  function doLayout() {
+    if (!pz) return;
+    const n = pz.tubes.length, rows = n > 7 ? 2 : 1, perRow = Math.ceil(n / rows);
+    ball = Math.min(50, (W - 30) / perRow * 0.68, (H - 260) / rows / (CAP + 1.6));
+    tw = ball * 1.18;
+    const gap = Math.min(ball * 0.7, (W - perRow * tw) / (perRow + 1)), th = ball * CAP + ball * 0.5, rowH = th + ball * 2;
+    layout = [];
+    for (let i = 0; i < n; i++) {
+      const r = Math.floor(i / perRow), inRow = Math.min(perRow, n - r * perRow), k = i - r * perRow, total = inRow * tw + (inRow - 1) * gap;
+      layout.push({ x: (W - total) / 2 + k * (tw + gap), y: (H - rows * rowH) / 2 + r * rowH + ball * 1.6, h: th });
+    }
+  }
+  let pz = null, held = null, flight = null, t = 0, extraUsed = false, state = 'menu', sparks = [];
+  addEventListener('resize', resize); resize();
+
+  function load() {
+    const colors = Math.min(MCOL.length, 3 + Math.floor((level - 1) / 2));
+    pz = SortPuzzle({ cap: CAP, single: true }).generate(colors, 2);
+    held = null; flight = null; extraUsed = false; $('addTube').disabled = false; $('addTube').querySelector('small').textContent = '1';
+    doLayout(); hud();
+  }
+  function hud() { $('level').textContent = 'Level ' + level; $('moves').textContent = pz.moves + ' moves'; $('undo').disabled = !pz.moves; }
+  function start() { if (!SPR) return; load(); state = 'play'; audio.start(); $('menu').classList.add('hidden'); $('win').classList.add('hidden'); }
+  $('startBtn').onclick = start;
+  $('nextBtn').onclick = () => { level++; try { localStorage.setItem(KEY, level); } catch (e) {} start(); };
+  $('undo').onclick = () => { if (state === 'play' && !flight && pz.undo()) { held = null; audio.sfx(300, 0.08, 'triangle', 0.05); hud(); } };
+  $('restart').onclick = () => { if (state === 'play' && !flight) { while (pz.undo()); held = null; hud(); } };
+  $('addTube').onclick = () => { if (state !== 'play' || extraUsed) return; extraUsed = true; pz.addTube(); doLayout(); $('addTube').disabled = true; $('addTube').querySelector('small').textContent = '0'; };
+
+  const slotY = (i, k) => layout[i].y + layout[i].h - ball * 0.15 - (k + 0.5) * ball;
+  const liftY = i => layout[i].y - ball * 0.9;
+  function tubeAt(x, y) { for (let i = 0; i < layout.length; i++) { const L = layout[i]; if (x >= L.x - 10 && x <= L.x + tw + 10 && y >= L.y - ball * 1.5 && y <= L.y + L.h + 10) return i; } return -1; }
+  canvas.addEventListener('pointerdown', e => {
+    if (state !== 'play' || flight) return;
+    const i = tubeAt(e.clientX, e.clientY); if (i < 0) return;
+    if (held === null) { if (pz.tubes[i].length && !pz.complete(i)) { held = i; audio.sfx(660, 0.06, 'sine', 0.05); } return; }
+    if (i === held) { held = null; audio.sfx(440, 0.05, 'sine', 0.04); return; }
+    if (pz.canMove(held, i)) {
+      const color = pz.tubes[held][pz.tubes[held].length - 1];
+      pz.move(held, i);
+      flight = { from: held, to: i, color, t: 0, landK: pz.tubes[i].length - 1 };
+      held = null; hud();
+    } else { layout[i].shake = 0.3; audio.sfx(150, 0.1, 'square', 0.04); }
+  });
+  addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && state === 'menu') { e.preventDefault(); start(); } });
+
+  function update(dt) {
+    t += dt;
+    if (flight) {
+      flight.t += dt * 2.6;
+      if (flight.t >= 1) {
+        const to = flight.to; flight = null;
+        audio.sfx(880, 0.06, 'square', 0.05); setTimeout(() => audio.sfx(1200, 0.04, 'square', 0.03), 60);
+        if (pz.complete(to)) {
+          const L = layout[to]; for (let k = 0; k < 20; k++) sparks.push({ x: L.x + tw / 2, y: L.y, vx: (Math.random() - .5) * 240, vy: -Math.random() * 240, life: 0.9 });
+          audio.sfx(784, 0.35, 'triangle', 0.07, 1568);
+        }
+        if (pz.solved()) { state = 'won'; $('winMoves').textContent = pz.moves; [523, 659, 784, 1046].forEach((f, k) => setTimeout(() => audio.sfx(f, 0.3, 'triangle', 0.08), k * 110)); setTimeout(() => $('win').classList.remove('hidden'), 600); }
+      }
+    }
+    for (const L of layout) if (L.shake) L.shake = Math.max(0, L.shake - dt);
+    for (const s of sparks) { s.x += s.vx * dt; s.y += s.vy * dt; s.vy += 400 * dt; s.life -= dt; }
+    sparks = sparks.filter(s => s.life > 0);
+  }
+
+  function drawTube(i, front) {
+    const L = layout[i], x = L.x + (L.shake ? Math.sin(L.shake * 60) * 4 : 0), y = L.y, h = L.h, r = tw / 2;
+    ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y + h - r); ctx.arc(x + r, y + h - r, r, Math.PI, 0, true); ctx.lineTo(x + tw, y);
+    if (!front) {
+      ctx.fillStyle = 'rgba(255,255,255,.14)'; ctx.fill();
+    } else {
+      ctx.strokeStyle = pz.complete(i) ? 'rgba(255,220,120,.95)' : 'rgba(255,255,255,.6)'; ctx.lineWidth = 2.5; ctx.stroke();
+      ctx.fillStyle = 'rgba(255,255,255,.28)'; ctx.fillRect(x + tw * 0.14, y + 6, tw * 0.08, h - tw * 0.7);
+      ctx.fillStyle = '#c0392b'; ctx.fillRect(x - 3, y - 6, tw + 6, 8); ctx.fillStyle = '#e74c3c'; ctx.fillRect(x - 3, y - 6, tw + 6, 3);
+    }
+  }
+
+  function render() {
+    // wooden table with planks and grain
+    ctx.fillStyle = '#7a4a2a'; ctx.fillRect(0, 0, W, H);
+    for (let y = 0; y < H; y += 70) {
+      ctx.fillStyle = (y / 70) % 2 ? '#80502e' : '#744626'; ctx.fillRect(0, y, W, 68);
+      ctx.strokeStyle = 'rgba(40,20,8,.25)'; ctx.lineWidth = 1.5;
+      for (let k = 0; k < 4; k++) { ctx.beginPath(); ctx.moveTo(0, y + 12 + k * 14); for (let x = 0; x <= W; x += 40) ctx.lineTo(x, y + 12 + k * 14 + Math.sin(x * 0.01 + y + k) * 4); ctx.stroke(); }
+      ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.fillRect(0, y + 68, W, 2);
+    }
+    const vg = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.2, W / 2, H / 2, Math.max(W, H) * 0.75);
+    vg.addColorStop(0, 'rgba(255,220,160,.15)'); vg.addColorStop(1, 'rgba(0,0,0,.5)'); ctx.fillStyle = vg; ctx.fillRect(0, 0, W, H);
+    if (!pz || !SPR) return;
+    pz.tubes.forEach((tube, i) => {
+      drawTube(i, false);
+      const L = layout[i];
+      tube.forEach((c, k) => {
+        if (flight && i === flight.to && k === flight.landK) return;
+        let y = slotY(i, k), x = L.x + tw / 2 + (L.shake ? Math.sin(L.shake * 60) * 4 : 0);
+        if (held === i && k === tube.length - 1) y = liftY(i) + Math.sin(t * 6) * 3;
+        ctx.drawImage(SPR['m' + c], x - ball / 2, y - ball / 2, ball, ball);
+      });
+      drawTube(i, true);
+    });
+    if (flight) {
+      const a = layout[flight.from], b = layout[flight.to], p = flight.t;
+      const x0 = a.x + tw / 2, y0 = liftY(flight.from), x1 = b.x + tw / 2, y1 = slotY(flight.to, flight.landK);
+      let x, y;
+      if (p < 0.6) { const k = p / 0.6; x = x0 + (x1 - x0) * k; y = y0 - Math.sin(k * Math.PI) * ball * 1.2 + (liftY(flight.to) - y0) * k; }
+      else { const k = (p - 0.6) / 0.4; x = x1; y = liftY(flight.to) + (y1 - liftY(flight.to)) * k * k; }
+      ctx.drawImage(SPR['m' + flight.color], x - ball / 2, y - ball / 2, ball, ball);
+    }
+    for (const s of sparks) { ctx.globalAlpha = Math.max(0, s.life); ctx.fillStyle = '#ffe08a'; ctx.beginPath(); ctx.arc(s.x, s.y, 3, 0, Math.PI * 2); ctx.fill(); }
+    ctx.globalAlpha = 1;
+  }
+
+  let last = performance.now();
+  (function loop(now) {
+    const dt = Math.max(0, Math.min(0.033, (now - last) / 1000)); last = now;
+    update(dt); render(); requestAnimationFrame(loop);
+  })(last);
+})();
+</script>
+</body>
+</html>

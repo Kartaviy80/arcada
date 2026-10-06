@@ -1,0 +1,707 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#eef4fa">
+<title>Snow Rush</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden;
+    background: #eef4fa;
+    font-family: "Futura", "Century Gothic", "Segoe UI", sans-serif;
+    color: #1f3a5a;
+    touch-action: none;
+    user-select: none; -webkit-user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  canvas { display: block; width: 100%; height: 100%; }
+  .hud {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    display: flex; justify-content: center; gap: 28px; align-items: flex-end;
+    padding: 0 16px max(18px, env(safe-area-inset-bottom));
+    pointer-events: none;
+  }
+  .hud div { text-align: center; }
+  .hud small { display: block; font-size: 10px; letter-spacing: 3px; opacity: .55; }
+  .hud b { font-size: 26px; }
+  #combo { color: #e8505b; transition: transform .15s; }
+  .overlay {
+    position: fixed; inset: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 18px; padding: 24px; text-align: center;
+    background: #eef4faee;
+    transition: opacity .35s;
+  }
+  .overlay.hidden { opacity: 0; pointer-events: none; }
+  .overlay h1 {
+    font-size: clamp(44px, 13vw, 84px); line-height: .9; letter-spacing: 6px; font-weight: 900;
+    color: #1f3a5a;
+  }
+  .overlay h1 em { font-style: normal; color: #e8505b; display: block; }
+  .line { width: 60px; height: 4px; background: #e8505b; border-radius: 2px; }
+  .overlay p { max-width: 320px; line-height: 1.6; font-size: 15px; opacity: .75; }
+  .grid { display: flex; gap: 30px; }
+  .grid small { display: block; font-size: 10px; letter-spacing: 3px; opacity: .55; }
+  .grid b { font-size: 32px; }
+  .btn {
+    border: 3px solid #1f3a5a; cursor: pointer;
+    background: transparent; color: #1f3a5a;
+    padding: 14px 46px; border-radius: 40px;
+    font-family: inherit; font-weight: 900; font-size: 18px; letter-spacing: 4px;
+    transition: background .15s, color .15s;
+  }
+  .btn:hover, .btn:active { background: #1f3a5a; color: #fff; }
+  .hint { font-size: 12px; opacity: .5; letter-spacing: 1px; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div class="hud" id="hud">
+  <div><small>SCORE</small><b id="score">0</b></div>
+  <div><small>COMBO</small><b id="combo">x1</b></div>
+</div>
+
+<div class="overlay" id="menu">
+  <h1>SNOW<em>RUSH</em></h1>
+  <div class="line"></div>
+  <p><b>Drag</b> left and right to carve down the mountain.<br>Pass <b>between the flags</b> to build a combo, <b>tap</b> to hop over rocks. Trees don't move.</p>
+  <div class="grid" id="bestMenuWrap"><div><small>BEST</small><b id="bestMenu">0</b></div></div>
+  <button class="btn" id="startBtn">START</button>
+  <div class="hint">Keyboard: ← → steer · Space jump</div>
+</div>
+
+<div class="overlay hidden" id="over">
+  <h1>WIPE<em>OUT</em></h1>
+  <div class="line"></div>
+  <div class="grid">
+    <div><small>SCORE</small><b id="finalScore">0</b></div>
+    <div><small>GATES</small><b id="finalGates">0</b></div>
+    <div><small>BEST</small><b id="bestOver">0</b></div>
+  </div>
+  <button class="btn" id="againBtn">RETRY</button>
+</div>
+
+<script>
+/*AUDIO-ENGINE-START*/
+// ---------- audio: procedural background music + sound effects ----------
+// Every note is synthesized with the Web Audio API at runtime, so the music
+// needs no files, works offline and carries no copyright.
+const GameAudio = (cfg) => {
+  let ctx = null, master = null, musicBus = null, sfxBus = null;
+  let timer = null, step = 0, nextT = 0, playing = false;
+  let musicOn = true;
+  try { musicOn = localStorage.getItem('music_off') !== '1'; } catch (e) {}
+
+  const SCALES = {
+    major: [0, 2, 4, 5, 7, 9, 11], minor: [0, 2, 3, 5, 7, 8, 10],
+    dorian: [0, 2, 3, 5, 7, 9, 10], lydian: [0, 2, 4, 6, 7, 9, 11],
+    pentaMajor: [0, 2, 4, 7, 9], pentaMinor: [0, 3, 5, 7, 10],
+    japanese: [0, 1, 5, 7, 8], phrygian: [0, 1, 3, 5, 7, 8, 10]
+  };
+  const scale = SCALES[cfg.scale] || SCALES.major;
+  const root = cfg.root || 57;
+  const bpm = cfg.bpm || 110;
+  const prog = cfg.prog || [0, 5, 3, 4];
+  const sixteenth = 60 / bpm / 4;
+
+  // deterministic random so each game always plays "its" tune
+  let seed = cfg.seed || 1;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
+
+  const deg = (d, oct = 0) => {
+    const n = scale.length;
+    const o = Math.floor(d / n);
+    return root + scale[((d % n) + n) % n] + 12 * (o + oct);
+  };
+  const hz = m => 440 * Math.pow(2, (m - 69) / 12);
+
+  // melody: two 2-bar phrases (A, B) arranged A A B A
+  function phrase() {
+    const notes = [];
+    let d = 2 + Math.floor(rnd() * 3);
+    for (let i = 0; i < 32; i++) {
+      const strong = i % 4 === 0;
+      if (rnd() < (strong ? 0.85 : (cfg.leadDensity || 0.35))) {
+        d += Math.round((rnd() - 0.5) * 4);
+        d = Math.max(0, Math.min(scale.length * 2, d));
+        const len = strong && rnd() < 0.5 ? 2 : 1;
+        notes.push({ i, d, len });
+      }
+    }
+    return notes;
+  }
+  const A = phrase(), B = phrase();
+  const song = [A, A, B, A];
+
+  function init() {
+    if (ctx) return;
+    try {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      master = ctx.createGain(); master.gain.value = 0.9; master.connect(ctx.destination);
+      musicBus = ctx.createGain(); musicBus.gain.value = cfg.volume || 0.16; musicBus.connect(master);
+      sfxBus = ctx.createGain(); sfxBus.gain.value = 1; sfxBus.connect(master);
+    } catch (e) { ctx = null; }
+  }
+
+  function voice(t, freq, dur, type, vol, opts = {}) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, t);
+    if (opts.detune) o.detune.value = opts.detune;
+    let node = o;
+    if (opts.cutoff) {
+      const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = opts.cutoff; f.Q.value = opts.q || 1;
+      o.connect(f); node = f;
+    }
+    const a = opts.attack || 0.008;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(vol, t + a);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    node.connect(g); g.connect(opts.bus || musicBus);
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+
+  let noiseBuf = null;
+  function noise(t, dur, vol, hp) {
+    if (!noiseBuf) {
+      noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 0.5, ctx.sampleRate);
+      const d = noiseBuf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    }
+    const s = ctx.createBufferSource(); s.buffer = noiseBuf;
+    const f = ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = hp;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.connect(f); f.connect(g); g.connect(musicBus);
+    s.start(t); s.stop(t + dur + 0.02);
+  }
+
+  function kick(t) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.setValueAtTime(140, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+    g.gain.setValueAtTime(0.9, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+    o.connect(g); g.connect(musicBus); o.start(t); o.stop(t + 0.25);
+  }
+
+  function playStep(s, t) {
+    const bar = Math.floor(s / 16);
+    const i16 = s % 16;
+    const chordDeg = prog[bar % prog.length];
+    const w = cfg.waves || {};
+    // bass
+    const bassPat = cfg.bassPattern || [0, 8];
+    if (bassPat.includes(i16)) voice(t, hz(deg(chordDeg, -2)), sixteenth * 3.5, w.bass || 'triangle', 0.5, { cutoff: 600 });
+    // pad (chord) at bar start
+    if (cfg.pad && i16 === 0) {
+      for (const k of [0, 2, 4]) voice(t, hz(deg(chordDeg + k, -1)), sixteenth * 15, w.pad || 'sine', 0.12, { attack: 0.3, cutoff: 1400, detune: k * 3 });
+    }
+    // arpeggio
+    if (cfg.arp && i16 % (cfg.arpEvery || 2) === 0) {
+      const k = [0, 2, 4, 2][(i16 / (cfg.arpEvery || 2)) % 4];
+      voice(t, hz(deg(chordDeg + k, cfg.arpOct || 0)), sixteenth * 1.6, w.arp || 'square', 0.1, { cutoff: cfg.arpCutoff || 2200 });
+    }
+    // lead melody
+    const ph = song[Math.floor(bar / 2) % song.length];
+    const pi = (bar % 2) * 16 + i16;
+    for (const n of ph) if (n.i === pi) {
+      voice(t, hz(deg(n.d, cfg.leadOct || 0)), sixteenth * (n.len * 2 + 0.5), w.lead || 'triangle', 0.22, { cutoff: cfg.leadCutoff || 3000 });
+    }
+    // drums
+    if (cfg.drums) {
+      if (i16 % 8 === 0 || (cfg.drums === 'busy' && i16 === 10)) kick(t);
+      if (i16 % 8 === 4) noise(t, 0.14, 0.35, 1500);
+      if (i16 % 2 === 0) noise(t, 0.04, cfg.drums === 'soft' ? 0.06 : 0.12, 7000);
+    }
+  }
+
+  function scheduler() {
+    if (!ctx || !playing) return;
+    while (nextT < ctx.currentTime + 0.15) {
+      playStep(step, nextT);
+      nextT += sixteenth * (cfg.swing && step % 2 === 0 ? 1 + cfg.swing : cfg.swing ? 1 - cfg.swing : 1);
+      step++;
+    }
+  }
+
+  function startMusic() {
+    if (!ctx || playing || !musicOn) return;
+    playing = true;
+    musicBus.gain.cancelScheduledValues(ctx.currentTime);
+    musicBus.gain.setValueAtTime(0.0001, ctx.currentTime);
+    musicBus.gain.linearRampToValueAtTime(cfg.volume || 0.16, ctx.currentTime + 1.2);
+    nextT = ctx.currentTime + 0.05;
+    timer = setInterval(scheduler, 40);
+  }
+  function stopMusic() {
+    playing = false;
+    if (timer) clearInterval(timer);
+    timer = null;
+  }
+
+  // mute button
+  const btn = document.createElement('button');
+  btn.setAttribute('aria-label', 'Toggle music');
+  btn.style.cssText = 'position:fixed;z-index:50;right:max(14px,env(safe-area-inset-right));bottom:max(14px,env(safe-area-inset-bottom));' +
+    'width:42px;height:42px;border-radius:50%;border:none;cursor:pointer;font-size:20px;line-height:42px;padding:0;' +
+    'background:' + (cfg.btnBg || 'rgba(0,0,0,.35)') + ';color:' + (cfg.btnColor || '#fff') + ';backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);';
+  const paint = () => { btn.textContent = musicOn ? '♪' : '✕'; btn.style.opacity = musicOn ? '1' : '.6'; };
+  paint();
+  const toggle = e => {
+    e.stopPropagation(); e.preventDefault();
+    musicOn = !musicOn;
+    try { localStorage.setItem('music_off', musicOn ? '0' : '1'); } catch (err) {}
+    init();
+    if (ctx && ctx.state === 'suspended') ctx.resume();
+    if (musicOn) startMusic(); else stopMusic();
+    paint();
+  };
+  btn.addEventListener('pointerdown', e => e.stopPropagation());
+  btn.addEventListener('pointerup', e => e.stopPropagation());
+  btn.addEventListener('click', toggle);
+  document.addEventListener('DOMContentLoaded', () => document.body.appendChild(btn));
+  if (document.body) document.body.appendChild(btn);
+
+  document.addEventListener('visibilitychange', () => {
+    if (!ctx) return;
+    if (document.hidden) ctx.suspend(); else ctx.resume();
+  });
+
+  return {
+    // call from a user gesture (start button) — browsers only allow audio after one
+    start() {
+      init();
+      if (!ctx) return;
+      if (ctx.state === 'suspended') ctx.resume();
+      startMusic();
+    },
+    sfx(freq, dur, type = 'sine', vol = 0.07, to = 0) {
+      init();
+      if (!ctx) return;
+      try {
+        const t = ctx.currentTime;
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.type = type; o.frequency.setValueAtTime(freq, t);
+        if (to) o.frequency.exponentialRampToValueAtTime(Math.max(30, to), t + dur);
+        g.gain.setValueAtTime(vol, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+        o.connect(g); g.connect(sfxBus);
+        o.start(t); o.stop(t + dur + 0.02);
+      } catch (e) {}
+    }
+  };
+};
+/*AUDIO-ENGINE-END*/
+(() => {
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const $ = id => document.getElementById(id);
+
+  const BEST_KEY = 'snow_rush_best';
+  const loadBest = () => { try { return +localStorage.getItem(BEST_KEY) || 0; } catch (e) { return 0; } };
+  const saveBest = v => { try { localStorage.setItem(BEST_KEY, v); } catch (e) {} };
+  let best = loadBest();
+  $('bestMenu').textContent = best;
+
+  // ---------- audio: procedural music + sound effects ----------
+  const audio = GameAudio({
+    bpm: 120, scale: 'major', root: 64, prog: [0, 4, 5, 3], seed: 37,
+    waves: { lead: 'sine', bass: 'triangle', arp: 'sine', pad: 'sine' },
+    pad: true, arp: true, arpEvery: 1, arpOct: 1, leadOct: 1, leadDensity: 0.3, drums: 'soft', volume: 0.17,
+    btnBg: 'rgba(31,58,90,.55)'
+  });
+  function tone(freq, dur, type = 'sine', vol = 0.06, to = 0) { audio.sfx(freq, dur, type, vol, to); }
+
+  // ---------- view ----------
+  let W, H, DPR, S, LW, LH;
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth; H = window.innerHeight;
+    canvas.width = W * DPR; canvas.height = H * DPR;
+    S = Math.min(W / 400, H / 560);
+    LW = W / S; LH = H / S;
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  const hash = n => { const x = Math.sin(n * 91.7 + 13.1) * 43758.5453; return x - Math.floor(x); };
+
+  // ---------- state ----------
+  let state = 'menu';
+  let sk, dist, speed, objs, nextSpawn, trail, flakes, score, combo, gates, t, shake, deadT, popups;
+
+  function reset() {
+    dist = 0; speed = 230; score = 0; combo = 1; gates = 0; t = 0; shake = 0; deadT = 0;
+    objs = []; trail = []; popups = [];
+    nextSpawn = LH + 80;
+    sk = { x: LW / 2, tx: LW / 2, vx: 0, z: 0, vz: 0, dead: false };
+    flakes = [];
+    for (let i = 0; i < 70; i++) flakes.push({ x: Math.random() * LW, y: Math.random() * LH, r: 1 + Math.random() * 2.2, s: 20 + Math.random() * 40 });
+  }
+  reset();
+
+  const SK_Y = () => LH * 0.3;
+  const margin = 30;
+
+  // world y: objects use absolute world coordinate wy; screen y = wy - dist
+  function spawnRow(wy) {
+    const diff = Math.min(1, dist / 12000);
+    const r = Math.random();
+    if (r < 0.32) {
+      // gate
+      const gw = 92 - diff * 26;
+      const gx = margin + gw / 2 + Math.random() * (LW - 2 * margin - gw);
+      objs.push({ type: 'gate', x: gx, wy, w: gw, color: Math.random() < 0.5 ? '#e8505b' : '#2f6fd1', done: false });
+      if (Math.random() < 0.5) objs.push({ type: 'flake', x: gx, wy: wy - 40 });
+    } else {
+      const n = 1 + Math.floor(Math.random() * (2 + diff * 3));
+      for (let i = 0; i < n; i++) {
+        const x = margin + Math.random() * (LW - 2 * margin);
+        const k = Math.random();
+        if (k < 0.62) objs.push({ type: 'tree', x, wy: wy + Math.random() * 40, s: 0.85 + Math.random() * 0.45 });
+        else objs.push({ type: 'rock', x, wy: wy + Math.random() * 40, s: 0.8 + Math.random() * 0.5 });
+      }
+      if (Math.random() < 0.55) {
+        const x = margin + Math.random() * (LW - 2 * margin);
+        for (let i = 0; i < 3; i++) objs.push({ type: 'flake', x, wy: wy + 70 + i * 34 });
+      }
+    }
+  }
+
+  function start() {
+    reset();
+    state = 'play';
+    $('menu').classList.add('hidden');
+    $('over').classList.add('hidden');
+    audio.start();
+    tone(660, 0.18, 'triangle', 0.07, 990);
+  }
+
+  function crash() {
+    if (sk.dead) return;
+    sk.dead = true; deadT = 1; shake = 10;
+    tone(180, 0.5, 'sawtooth', 0.08, 60);
+    if (navigator.vibrate) try { navigator.vibrate(140); } catch (e) {}
+  }
+
+  function gameOver() {
+    state = 'over';
+    const s = Math.floor(score);
+    if (s > best) { best = s; saveBest(best); }
+    $('finalScore').textContent = s;
+    $('finalGates').textContent = gates;
+    $('bestOver').textContent = best;
+    $('bestMenu').textContent = best;
+    $('over').classList.remove('hidden');
+  }
+
+  function jump() {
+    if (state !== 'play' || sk.dead || sk.z > 0) return;
+    sk.vz = 330;
+    tone(500, 0.14, 'triangle', 0.06, 800);
+  }
+
+  function popup(x, y, text, col) { popups.push({ x, y, text, col, life: 1 }); }
+
+  // ---------- input: drag to steer, tap to jump ----------
+  let dragging = false, dStartX = 0, dStartY = 0, skStartX = 0, dTime = 0, moved = false;
+  canvas.addEventListener('pointerdown', e => {
+    dragging = true; moved = false;
+    dStartX = e.clientX; dStartY = e.clientY; skStartX = sk.tx; dTime = performance.now();
+  });
+  window.addEventListener('pointermove', e => {
+    if (!dragging) return;
+    const dx = (e.clientX - dStartX) / S;
+    if (Math.abs(e.clientX - dStartX) > 8 || Math.abs(e.clientY - dStartY) > 8) moved = true;
+    sk.tx = Math.max(16, Math.min(LW - 16, skStartX + dx * 1.35));
+  });
+  window.addEventListener('pointerup', e => {
+    if (dragging && !moved && performance.now() - dTime < 300) jump();
+    else if (dragging && e.clientY - dStartY < -40 && Math.abs(e.clientY - dStartY) > Math.abs(e.clientX - dStartX)) jump();
+    dragging = false;
+  });
+  const keys = {};
+  window.addEventListener('keydown', e => {
+    if (state !== 'play' && (e.key === 'Enter' || e.key === ' ')) { start(); e.preventDefault(); return; }
+    keys[e.key] = true;
+    if (e.key === ' ' || e.key === 'ArrowUp') { jump(); e.preventDefault(); }
+    if (e.key.startsWith('Arrow')) e.preventDefault();
+  });
+  window.addEventListener('keyup', e => { keys[e.key] = false; });
+  $('startBtn').addEventListener('click', start);
+  $('againBtn').addEventListener('click', start);
+
+  // ---------- update ----------
+  function update(dt) {
+    t += dt;
+    const y0 = SK_Y();
+
+    if (state === 'menu') {
+      // gentle auto-carving demo
+      dist += 150 * dt;
+      sk.tx = LW / 2 + Math.sin(t * 1.2) * LW * 0.25;
+    }
+
+    if (state === 'play' && !sk.dead) {
+      speed = Math.min(560, 230 + dist / 40);
+      // keyboard steering
+      const kdir = (keys.ArrowRight || keys.d || keys.D ? 1 : 0) - (keys.ArrowLeft || keys.a || keys.A ? 1 : 0);
+      if (kdir) sk.tx = Math.max(16, Math.min(LW - 16, sk.tx + kdir * 420 * dt));
+      // carving costs a little speed — looks and feels like real skiing
+      const carve = Math.min(1, Math.abs(sk.tx - sk.x) / 120);
+      const fwd = speed * (1 - carve * 0.25);
+      dist += fwd * dt;
+      score += fwd * dt / 10;
+
+      // jump
+      if (sk.z > 0 || sk.vz > 0) {
+        sk.vz -= 1100 * dt; sk.z += sk.vz * dt;
+        if (sk.z <= 0) { sk.z = 0; sk.vz = 0; tone(140, 0.08, 'triangle', 0.05); }
+      }
+
+      // spawn
+      while (nextSpawn < dist + LH + 120) {
+        spawnRow(nextSpawn);
+        nextSpawn += Math.max(95, 170 - dist / 120) + Math.random() * 60;
+      }
+
+      // collisions
+      const wyS = dist + y0;
+      for (const o of objs) {
+        const dy = o.wy - wyS;
+        if (o.type === 'tree') {
+          if (Math.abs(dy) < 12 * o.s && Math.abs(o.x - sk.x) < 13 * o.s + 6) crash();
+        } else if (o.type === 'rock') {
+          if (sk.z < 14 && Math.abs(dy) < 9 * o.s && Math.abs(o.x - sk.x) < 13 * o.s + 5) crash();
+        } else if (o.type === 'flake') {
+          if (!o.taken && Math.abs(dy) < 18 && Math.abs(o.x - sk.x) < 20) {
+            o.taken = true; score += 5 * combo;
+            tone(1200, 0.07, 'sine', 0.05);
+            popup(o.x, y0 - 10, '+' + 5 * combo, '#2f6fd1');
+          }
+        } else if (o.type === 'gate' && !o.done && dy < 0) {
+          o.done = true;
+          if (Math.abs(sk.x - o.x) < o.w / 2 - 4) {
+            gates++;
+            score += 25 * combo;
+            popup(o.x, y0 - 20, 'GATE +' + 25 * combo, o.color);
+            combo = Math.min(9, combo + 1);
+            tone(700 + combo * 70, 0.12, 'triangle', 0.07, 1100 + combo * 80);
+          } else {
+            if (combo > 1) popup(sk.x, y0 - 20, 'COMBO LOST', '#7a8ca0');
+            combo = 1;
+            tone(220, 0.12, 'sine', 0.05);
+          }
+          // poles themselves are solid
+        }
+        if (o.type === 'gate' && Math.abs(dy) < 6) {
+          for (const px of [o.x - o.w / 2, o.x + o.w / 2]) if (Math.abs(px - sk.x) < 8 && sk.z < 20) crash();
+        }
+      }
+      objs = objs.filter(o => o.wy - dist > -80 && !o.taken);
+    }
+
+    // skier lateral motion
+    if (!sk.dead) {
+      const prevX = sk.x;
+      const maxV = 520;
+      const d = sk.tx - sk.x;
+      sk.x += Math.max(-maxV * dt, Math.min(maxV * dt, d * Math.min(1, dt * 9)));
+      sk.vx = (sk.x - prevX) / Math.max(dt, 0.001);
+      if (sk.z <= 0) trail.push({ x: sk.x, wy: dist + y0 });
+      else trail.push(null);
+      if (trail.length > 260) trail.shift();
+      if (state === 'menu') objs = objs.filter(o => o.wy - dist > -80);
+    } else {
+      deadT -= dt;
+      if (deadT <= 0 && state === 'play') gameOver();
+    }
+
+    for (const f of flakes) {
+      f.y -= (f.s + (state === 'play' && !sk.dead ? speed * 0.25 : 30)) * dt;
+      f.x += Math.sin(t + f.r * 5) * 12 * dt;
+      if (f.y < -5) { f.y = LH + 5; f.x = Math.random() * LW; }
+    }
+    for (const p of popups) { p.y -= 40 * dt; p.life -= dt; }
+    popups = popups.filter(p => p.life > 0);
+    if (shake > 0) shake = Math.max(0, shake - dt * 25);
+  }
+
+  // ---------- render ----------
+  function drawTree(x, y, s) {
+    ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
+    ctx.fillStyle = 'rgba(80,110,150,.18)';
+    ctx.beginPath(); ctx.ellipse(8, 4, 20, 8, 0.3, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#6b4a34';
+    ctx.fillRect(-3, -6, 6, 10);
+    const tiers = [[-6, 22], [-22, 17], [-36, 12]];
+    for (const [ty, w] of tiers) {
+      ctx.fillStyle = '#1f5a4a';
+      ctx.beginPath(); ctx.moveTo(-w, ty); ctx.lineTo(0, ty - 26); ctx.lineTo(w, ty); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath(); ctx.moveTo(-w * 0.45, ty - 14); ctx.lineTo(0, ty - 26); ctx.lineTo(w * 0.45, ty - 14);
+      ctx.lineTo(w * 0.2, ty - 11); ctx.lineTo(0, ty - 15); ctx.lineTo(-w * 0.2, ty - 11); ctx.closePath(); ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function drawRock(x, y, s) {
+    ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
+    ctx.fillStyle = 'rgba(80,110,150,.18)';
+    ctx.beginPath(); ctx.ellipse(4, 3, 16, 6, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#7c8796';
+    ctx.beginPath(); ctx.moveTo(-14, 2); ctx.lineTo(-10, -10); ctx.lineTo(0, -14); ctx.lineTo(11, -8); ctx.lineTo(14, 2); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.moveTo(-10, -10); ctx.lineTo(0, -14); ctx.lineTo(11, -8); ctx.lineTo(4, -7); ctx.lineTo(-4, -9); ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+
+  function drawGate(o, y) {
+    for (const side of [-1, 1]) {
+      const px = o.x + side * o.w / 2;
+      ctx.fillStyle = 'rgba(80,110,150,.2)';
+      ctx.beginPath(); ctx.ellipse(px + 3, y + 2, 5, 2, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#33475e';
+      ctx.fillRect(px - 1.5, y - 34, 3, 34);
+      ctx.fillStyle = o.done ? '#c7d3df' : o.color;
+      const wave = Math.sin(t * 8 + side) * 2;
+      ctx.beginPath(); ctx.moveTo(px, y - 34); ctx.lineTo(px - side * 18, y - 28 + wave); ctx.lineTo(px, y - 20); ctx.closePath(); ctx.fill();
+    }
+  }
+
+  function drawFlake(x, y) {
+    ctx.save(); ctx.translate(x, y); ctx.rotate(t * 1.2);
+    ctx.strokeStyle = '#2f6fd1'; ctx.lineWidth = 2.2; ctx.lineCap = 'round';
+    for (let i = 0; i < 6; i++) {
+      ctx.rotate(Math.PI / 3);
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, -10);
+      ctx.moveTo(0, -6); ctx.lineTo(-3, -9); ctx.moveTo(0, -6); ctx.lineTo(3, -9);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawSkier(x, y) {
+    const lean = Math.max(-1, Math.min(1, sk.vx / 400));
+    const lift = sk.z * 0.35;
+    // shadow
+    ctx.fillStyle = 'rgba(60,90,130,.22)';
+    ctx.beginPath(); ctx.ellipse(x + 4, y + 4, 14 - sk.z * 0.02, 5, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.save();
+    ctx.translate(x, y - lift);
+    const sc = 1 + sk.z / 400;
+    ctx.scale(sc, sc);
+    if (sk.dead) ctx.rotate((1 - deadT) * 8);
+    ctx.rotate(-lean * 0.5);
+    // skis
+    ctx.fillStyle = '#1f3a5a';
+    ctx.fillRect(-9, -2, 4, 30); ctx.fillRect(5, -2, 4, 30);
+    ctx.fillStyle = '#e8505b';
+    ctx.fillRect(-9, 24, 4, 4); ctx.fillRect(5, 24, 4, 4);
+    // poles
+    ctx.strokeStyle = '#33475e'; ctx.lineWidth = 1.6;
+    ctx.beginPath(); ctx.moveTo(-12, 2); ctx.lineTo(-16, -14); ctx.moveTo(12, 2); ctx.lineTo(16, -14); ctx.stroke();
+    // body (top-down)
+    ctx.fillStyle = '#e8505b';
+    ctx.beginPath(); ctx.ellipse(0, 4, 11, 13, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#c63a46';
+    ctx.fillRect(-11, 2, 22, 3);
+    // head + hat
+    ctx.fillStyle = '#f2c9a0';
+    ctx.beginPath(); ctx.arc(0, 15, 6.5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#2f6fd1';
+    ctx.beginPath(); ctx.arc(0, 13, 6.5, Math.PI, 0); ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(0, 7, 3, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+
+  function render() {
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.fillStyle = '#f4f8fc';
+    ctx.fillRect(0, 0, W, H);
+    ctx.save();
+    ctx.scale(S, S);
+    if (shake > 0) ctx.translate((Math.random() - .5) * shake, (Math.random() - .5) * shake);
+
+    // snow texture (moguls) scrolling with the world
+    const tile = 140;
+    const first = Math.floor(dist / tile) - 1;
+    for (let r = first; r < first + LH / tile + 3; r++) {
+      for (let c = 0; c < LW / 60 + 1; c++) {
+        const h = hash(r * 31 + c * 7);
+        const x = c * 60 + h * 40, y = r * tile + hash(r + c * 13) * tile - dist;
+        ctx.fillStyle = 'rgba(160,190,220,.16)';
+        ctx.beginPath(); ctx.ellipse(x, y, 18 + h * 16, 5 + h * 3, 0, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+
+    // ski trail
+    ctx.strokeStyle = 'rgba(150,180,215,.6)';
+    ctx.lineWidth = 2;
+    for (const off of [-7, 7]) {
+      ctx.beginPath();
+      let pen = false;
+      for (const p of trail) {
+        if (!p) { pen = false; continue; }
+        const y = p.wy - dist;
+        if (!pen) { ctx.moveTo(p.x + off, y); pen = true; } else ctx.lineTo(p.x + off, y);
+      }
+      ctx.stroke();
+    }
+
+    // objects sorted by y (painter's order)
+    const y0 = SK_Y();
+    const list = objs.slice().sort((a, b) => a.wy - b.wy);
+    let skierDrawn = false;
+    for (const o of list) {
+      const y = o.wy - dist;
+      if (y > LH + 60) continue;
+      if (!skierDrawn && y > y0) { drawSkier(sk.x, y0); skierDrawn = true; }
+      if (o.type === 'tree') drawTree(o.x, y, o.s);
+      else if (o.type === 'rock') drawRock(o.x, y, o.s);
+      else if (o.type === 'gate') drawGate(o, y);
+      else if (o.type === 'flake') drawFlake(o.x, y);
+    }
+    if (!skierDrawn) drawSkier(sk.x, y0);
+
+    // falling snow
+    ctx.fillStyle = '#ffffff';
+    for (const f of flakes) { ctx.beginPath(); ctx.arc(f.x, f.y, f.r, 0, Math.PI * 2); ctx.fill(); }
+    ctx.fillStyle = 'rgba(180,200,225,.5)';
+    for (const f of flakes) if (f.r > 2.4) { ctx.beginPath(); ctx.arc(f.x, f.y, f.r * 0.5, 0, Math.PI * 2); ctx.fill(); }
+
+    // popups
+    ctx.textAlign = 'center';
+    ctx.font = '900 16px Futura, "Century Gothic", sans-serif';
+    for (const p of popups) {
+      ctx.globalAlpha = Math.max(0, p.life);
+      ctx.fillStyle = p.col;
+      ctx.fillText(p.text, p.x, p.y);
+    }
+    ctx.globalAlpha = 1;
+
+    // speed vignette at the top
+    const g = ctx.createLinearGradient(0, 0, 0, 70);
+    g.addColorStop(0, 'rgba(220,232,245,.9)'); g.addColorStop(1, 'rgba(220,232,245,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, LW, 70);
+    ctx.restore();
+
+    $('score').textContent = Math.floor(score);
+    $('combo').textContent = 'x' + combo;
+  }
+
+  let last = performance.now();
+  function loop(now) {
+    const dt = Math.max(0, Math.min(0.033, (now - last) / 1000));
+    last = now;
+    update(dt);
+    render();
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>

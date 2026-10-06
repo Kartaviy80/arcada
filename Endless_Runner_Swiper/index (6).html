@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#2f6b3a">
+<title>Hedge Turn</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #2f6b3a;
+    font-family: "Trebuchet MS", "Gill Sans", "Segoe UI", sans-serif; color: #fffbea;
+    touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+  canvas { display: block; width: 100%; height: 100%; }
+  .hud { position: fixed; top: max(12px, env(safe-area-inset-top)); left: 16px; right: 16px; display: flex; justify-content: space-between; align-items: center; pointer-events: none; }
+  .hud .sc { font-size: 30px; font-weight: bold; text-shadow: 0 2px 0 #1d4425; }
+  .hud .be { background: #fffbea; color: #c2304a; border-radius: 14px; padding: 3px 12px; font-weight: bold; font-size: 18px; }
+  .overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; padding: 20px; background: #1d4425c4; transition: opacity .3s; }
+  .overlay.hidden { opacity: 0; pointer-events: none; }
+  .card { width: min(360px, 100%); background: #fffbea; color: #2f4a2a; border-radius: 26px; padding: 26px 22px; text-align: center;
+    display: flex; flex-direction: column; gap: 12px; border: 6px solid #8fc96b; box-shadow: 0 12px 30px #0005; }
+  .card .ico { font-size: 52px; line-height: 1; }
+  h1 { font-size: clamp(36px, 11vw, 52px); color: #3e8a4a; line-height: 1; }
+  h1 span { color: #c2304a; }
+  p { font-size: 15px; line-height: 1.55; color: #5a6b50; }
+  .stats { display: flex; gap: 8px; justify-content: center; }
+  .stats div { background: #eef6dc; border-radius: 14px; padding: 6px 12px; } .stats small { display: block; font-size: 11px; color: #7a8f6a; } .stats b { font-size: 22px; color: #c2304a; }
+  .btn { border: none; border-radius: 16px; background: #3e8a4a; color: #fffbea; font: inherit; font-weight: bold; font-size: 22px; padding: 14px; cursor: pointer; box-shadow: 0 5px 0 #24592e; }
+  .btn:active { transform: translateY(3px); box-shadow: 0 2px 0 #24592e; }
+  small.k { color: #8a9a7c; font-size: 12px; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud"><div class="sc" id="score">0</div><div class="be" id="berries">● 0</div></div>
+
+<div class="overlay" id="menu"><div class="card">
+  <div class="ico">🦔</div>
+  <h1>Hedge <span>Turn</span></h1>
+  <p>The hedgehog runs through the garden maze on its own.<br><b>Swipe left / right</b> right at the corners to turn. <b>Tap</b> to hop over flower pots.</p>
+  <div class="stats"><div><small>BEST</small><b id="bestMenu">0</b></div></div>
+  <button class="btn" id="startBtn">Let's go!</button>
+  <small class="k">Keyboard: ← → turn · Space hop</small>
+</div></div>
+<div class="overlay hidden" id="over"><div class="card">
+  <div class="ico">🌿</div>
+  <h1>Bonk!</h1>
+  <div class="stats">
+    <div><small>SCORE</small><b id="finalScore">0</b></div>
+    <div><small>BERRIES</small><b id="finalBerries">0</b></div>
+    <div><small>BEST</small><b id="bestOver">0</b></div>
+  </div>
+  <button class="btn" id="againBtn">Try again</button>
+</div></div>
+
+<script>
+/*AUDIO-ENGINE-START*/
+// ---------- audio: procedural background music + sound effects ----------
+// Every note is synthesized with the Web Audio API at runtime, so the music
+// needs no files, works offline and carries no copyright.
+const GameAudio = (cfg) => {
+  let ctx = null, master = null, musicBus = null, sfxBus = null;
+  let timer = null, step = 0, nextT = 0, playing = false;
+  let musicOn = true;
+  try { musicOn = localStorage.getItem('music_off') !== '1'; } catch (e) {}
+
+  const SCALES = {
+    major: [0, 2, 4, 5, 7, 9, 11], minor: [0, 2, 3, 5, 7, 8, 10],
+    dorian: [0, 2, 3, 5, 7, 9, 10], lydian: [0, 2, 4, 6, 7, 9, 11],
+    pentaMajor: [0, 2, 4, 7, 9], pentaMinor: [0, 3, 5, 7, 10],
+    japanese: [0, 1, 5, 7, 8], phrygian: [0, 1, 3, 5, 7, 8, 10]
+  };
+  const scale = SCALES[cfg.scale] || SCALES.major;
+  const root = cfg.root || 57;
+  const bpm = cfg.bpm || 110;
+  const prog = cfg.prog || [0, 5, 3, 4];
+  const sixteenth = 60 / bpm / 4;
+
+  // deterministic random so each game always plays "its" tune
+  let seed = cfg.seed || 1;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
+
+  const deg = (d, oct = 0) => {
+    const n = scale.length;
+    const o = Math.floor(d / n);
+    return root + scale[((d % n) + n) % n] + 12 * (o + oct);
+  };
+  const hz = m => 440 * Math.pow(2, (m - 69) / 12);
+
+  // melody: two 2-bar phrases (A, B) arranged A A B A
+  function phrase() {
+    const notes = [];
+    let d = 2 + Math.floor(rnd() * 3);
+    for (let i = 0; i < 32; i++) {
+      const strong = i % 4 === 0;
+      if (rnd() < (strong ? 0.85 : (cfg.leadDensity || 0.35))) {
+        d += Math.round((rnd() - 0.5) * 4);
+        d = Math.max(0, Math.min(scale.length * 2, d));
+        const len = strong && rnd() < 0.5 ? 2 : 1;
+        notes.push({ i, d, len });
+      }
+    }
+    return notes;
+  }
+  const A = phrase(), B = phrase();
+  const song = [A, A, B, A];
+
+  function init() {
+    if (ctx) return;
+    try {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      master = ctx.createGain(); master.gain.value = 0.9; master.connect(ctx.destination);
+      musicBus = ctx.createGain(); musicBus.gain.value = cfg.volume || 0.16; musicBus.connect(master);
+      sfxBus = ctx.createGain(); sfxBus.gain.value = 1; sfxBus.connect(master);
+    } catch (e) { ctx = null; }
+  }
+
+  function voice(t, freq, dur, type, vol, opts = {}) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, t);
+    if (opts.detune) o.detune.value = opts.detune;
+    let node = o;
+    if (opts.cutoff) {
+      const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = opts.cutoff; f.Q.value = opts.q || 1;
+      o.connect(f); node = f;
+    }
+    const a = opts.attack || 0.008;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(vol, t + a);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    node.connect(g); g.connect(opts.bus || musicBus);
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+
+  let noiseBuf = null;
+  function noise(t, dur, vol, hp) {
+    if (!noiseBuf) {
+      noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 0.5, ctx.sampleRate);
+      const d = noiseBuf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    }
+    const s = ctx.createBufferSource(); s.buffer = noiseBuf;
+    const f = ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = hp;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.connect(f); f.connect(g); g.connect(musicBus);
+    s.start(t); s.stop(t + dur + 0.02);
+  }
+
+  function kick(t) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.setValueAtTime(140, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+    g.gain.setValueAtTime(0.9, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+    o.connect(g); g.connect(musicBus); o.start(t); o.stop(t + 0.25);
+  }
+
+  function playStep(s, t) {
+    const bar = Math.floor(s / 16);
+    const i16 = s % 16;
+    const chordDeg = prog[bar % prog.length];
+    const w = cfg.waves || {};
+    // bass
+    const bassPat = cfg.bassPattern || [0, 8];
+    if (bassPat.includes(i16)) voice(t, hz(deg(chordDeg, -2)), sixteenth * 3.5, w.bass || 'triangle', 0.5, { cutoff: 600 });
+    // pad (chord) at bar start
+    if (cfg.pad && i16 === 0) {
+      for (const k of [0, 2, 4]) voice(t, hz(deg(chordDeg + k, -1)), sixteenth * 15, w.pad || 'sine', 0.12, { attack: 0.3, cutoff: 1400, detune: k * 3 });
+    }
+    // arpeggio
+    if (cfg.arp && i16 % (cfg.arpEvery || 2) === 0) {
+      const k = [0, 2, 4, 2][(i16 / (cfg.arpEvery || 2)) % 4];
+      voice(t, hz(deg(chordDeg + k, cfg.arpOct || 0)), sixteenth * 1.6, w.arp || 'square', 0.1, { cutoff: cfg.arpCutoff || 2200 });
+    }
+    // lead melody
+    const ph = song[Math.floor(bar / 2) % song.length];
+    const pi = (bar % 2) * 16 + i16;
+    for (const n of ph) if (n.i === pi) {
+      voice(t, hz(deg(n.d, cfg.leadOct || 0)), sixteenth * (n.len * 2 + 0.5), w.lead || 'triangle', 0.22, { cutoff: cfg.leadCutoff || 3000 });
+    }
+    // drums
+    if (cfg.drums) {
+      if (i16 % 8 === 0 || (cfg.drums === 'busy' && i16 === 10)) kick(t);
+      if (i16 % 8 === 4) noise(t, 0.14, 0.35, 1500);
+      if (i16 % 2 === 0) noise(t, 0.04, cfg.drums === 'soft' ? 0.06 : 0.12, 7000);
+    }
+  }
+
+  function scheduler() {
+    if (!ctx || !playing) return;
+    while (nextT < ctx.currentTime + 0.15) {
+      playStep(step, nextT);
+      nextT += sixteenth * (cfg.swing && step % 2 === 0 ? 1 + cfg.swing : cfg.swing ? 1 - cfg.swing : 1);
+      step++;
+    }
+  }
+
+  function startMusic() {
+    if (!ctx || playing || !musicOn) return;
+    playing = true;
+    musicBus.gain.cancelScheduledValues(ctx.currentTime);
+    musicBus.gain.setValueAtTime(0.0001, ctx.currentTime);
+    musicBus.gain.linearRampToValueAtTime(cfg.volume || 0.16, ctx.currentTime + 1.2);
+    nextT = ctx.currentTime + 0.05;
+    timer = setInterval(scheduler, 40);
+  }
+  function stopMusic() {
+    playing = false;
+    if (timer) clearInterval(timer);
+    timer = null;
+  }
+
+  // mute button
+  const btn = document.createElement('button');
+  btn.setAttribute('aria-label', 'Toggle music');
+  btn.style.cssText = 'position:fixed;z-index:50;right:max(14px,env(safe-area-inset-right));bottom:max(14px,env(safe-area-inset-bottom));' +
+    'width:42px;height:42px;border-radius:50%;border:none;cursor:pointer;font-size:20px;line-height:42px;padding:0;' +
+    'background:' + (cfg.btnBg || 'rgba(0,0,0,.35)') + ';color:' + (cfg.btnColor || '#fff') + ';backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);';
+  const paint = () => { btn.textContent = musicOn ? '♪' : '✕'; btn.style.opacity = musicOn ? '1' : '.6'; };
+  paint();
+  const toggle = e => {
+    e.stopPropagation(); e.preventDefault();
+    musicOn = !musicOn;
+    try { localStorage.setItem('music_off', musicOn ? '0' : '1'); } catch (err) {}
+    init();
+    if (ctx && ctx.state === 'suspended') ctx.resume();
+    if (musicOn) startMusic(); else stopMusic();
+    paint();
+  };
+  btn.addEventListener('pointerdown', e => e.stopPropagation());
+  btn.addEventListener('pointerup', e => e.stopPropagation());
+  btn.addEventListener('click', toggle);
+  document.addEventListener('DOMContentLoaded', () => document.body.appendChild(btn));
+  if (document.body) document.body.appendChild(btn);
+
+  document.addEventListener('visibilitychange', () => {
+    if (!ctx) return;
+    if (document.hidden) ctx.suspend(); else ctx.resume();
+  });
+
+  return {
+    // call from a user gesture (start button) — browsers only allow audio after one
+    start() {
+      init();
+      if (!ctx) return;
+      if (ctx.state === 'suspended') ctx.resume();
+      startMusic();
+    },
+    sfx(freq, dur, type = 'sine', vol = 0.07, to = 0) {
+      init();
+      if (!ctx) return;
+      try {
+        const t = ctx.currentTime;
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.type = type; o.frequency.setValueAtTime(freq, t);
+        if (to) o.frequency.exponentialRampToValueAtTime(Math.max(30, to), t + dur);
+        g.gain.setValueAtTime(vol, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+        o.connect(g); g.connect(sfxBus);
+        o.start(t); o.stop(t + dur + 0.02);
+      } catch (e) {}
+    }
+  };
+};
+/*AUDIO-ENGINE-END*/
+(() => {
+  const audio = GameAudio({
+    bpm: 104, scale: 'major', root: 67, prog: [0, 3, 1, 4], seed: 101,
+    waves: { lead: 'triangle', bass: 'triangle', arp: 'sine', pad: 'sine' },
+    pad: true, arp: true, arpEvery: 2, leadDensity: 0.3, drums: 'soft', bassPattern: [0, 4, 8, 12], volume: 0.18,
+    btnBg: 'rgba(29,68,37,.6)'
+  });
+  const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+  const $ = id => document.getElementById(id);
+  const KEY = 'hedge_turn_best';
+  let best = 0; try { best = +localStorage.getItem(KEY) || 0; } catch (e) {}
+  $('bestMenu').textContent = best;
+
+  let W, H, DPR, S, LW, LH;
+  const T = 64; // tile size
+  function resize() {
+    DPR = Math.min(devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight;
+    canvas.width = W * DPR; canvas.height = H * DPR;
+    S = Math.min(W / 380, H / 560); LW = W / S; LH = H / S;
+  }
+  addEventListener('resize', resize); resize();
+  const hash = (a, b) => { const x = Math.sin(a * 127.1 + b * 311.7) * 43758.5453; return x - Math.floor(x); };
+  const DX = [0, 1, 0, -1], DY = [-1, 0, 1, 0];  // 0 up, 1 right, 2 down, 3 left
+
+  // path: list of tiles {x, y, turn: -1 | 0 | 1, pot, berry, done}
+  let path, gx, gy, gdir, runLeft;
+  function genPath(n) {
+    for (let i = 0; i < n; i++) {
+      path.push({ x: gx, y: gy, turn: 0, pot: false, berry: false });
+      runLeft--;
+      if (runLeft <= 0) {
+        // never head "down" → the maze can't cross itself
+        const turn = gdir === 0 ? (Math.random() < 0.5 ? -1 : 1) : gdir === 1 ? -1 : 1;
+        path[path.length - 1].turn = turn;
+        gdir = (gdir + turn + 4) % 4;
+        runLeft = 3 + Math.floor(Math.random() * 5);
+      } else if (path.length > 8 && runLeft > 1 && Math.random() < 0.22) {
+        path[path.length - 1].pot = true;
+      } else if (Math.random() < 0.35) path[path.length - 1].berry = true;
+      gx += DX[gdir]; gy += DY[gdir];
+    }
+  }
+
+  let state = 'menu', s, speed, hop, hopV, ang, berries, t = 0, dead = false, deadT = 0, msg = null, leaves = [];
+  function reset() {
+    path = []; gx = 0; gy = 0; gdir = 0; runLeft = 9;
+    genPath(60);
+    s = 0; speed = 3; hop = 0; hopV = 0; ang = 0; berries = 0; dead = false; leaves = []; msg = null;
+  }
+  reset();
+  const score = () => Math.floor(s) + berries * 5;
+
+  function posAt(p) {
+    const i = Math.floor(p), k = p - i, a = path[i], b = path[i + 1] || a;
+    return { x: (a.x + (b.x - a.x) * k) * T, y: (a.y + (b.y - a.y) * k) * T };
+  }
+  const headingAt = p => { const i = Math.floor(p), a = path[i], b = path[i + 1] || a; return Math.atan2(b.x - a.x, -(b.y - a.y)); };
+  const nextCorner = () => { for (let i = Math.max(0, Math.floor(s - 1)); i < path.length; i++) if (path[i].turn && !path[i].done) return i; return -1; };
+
+  function start() {
+    reset(); state = 'play'; audio.start();
+    $('menu').classList.add('hidden'); $('over').classList.add('hidden');
+    audio.sfx(523, 0.1, 'triangle', 0.06); setTimeout(() => audio.sfx(784, 0.15, 'triangle', 0.06), 100);
+  }
+  function bonk(text) {
+    if (dead) return;
+    dead = true; deadT = 1.1; msg = text;
+    audio.sfx(240, 0.4, 'square', 0.07, 80);
+    if (navigator.vibrate) try { navigator.vibrate(120); } catch (e) {}
+    const p = posAt(s);
+    for (let i = 0; i < 14; i++) leaves.push({ x: p.x, y: p.y, vx: (Math.random() - .5) * 220, vy: (Math.random() - .5) * 220, r: Math.random() * 6, life: 1 });
+  }
+  function gameOver() {
+    state = 'over';
+    const sc = score(); if (sc > best) { best = sc; try { localStorage.setItem(KEY, best); } catch (e) {} }
+    $('finalScore').textContent = sc; $('finalBerries').textContent = berries; $('bestOver').textContent = best; $('bestMenu').textContent = best;
+    $('over').classList.remove('hidden');
+  }
+  function turn(d) {
+    if (state !== 'play' || dead) return;
+    const c = nextCorner();
+    if (c < 0 || s < c - 0.65) return;           // too early: ignore
+    if (path[c].turn === d) { path[c].done = true; audio.sfx(d > 0 ? 660 : 587, 0.08, 'triangle', 0.06, 880); }
+    else bonk('wrong way!');
+  }
+  function jump() { if (state === 'play' && !dead && hop <= 0) { hopV = 5; hop = 0.001; audio.sfx(440, 0.12, 'sine', 0.06, 880); } }
+
+  let sx = 0, down = false, used = false;
+  canvas.addEventListener('pointerdown', e => { sx = e.clientX; down = true; used = false; });
+  canvas.addEventListener('pointermove', e => {
+    if (!down || used) return;
+    const dx = e.clientX - sx;
+    if (Math.abs(dx) > 24) { used = true; turn(dx > 0 ? 1 : -1); }
+  });
+  canvas.addEventListener('pointerup', () => { if (down && !used) jump(); down = false; });
+  addEventListener('keydown', e => {
+    if (state !== 'play' && (e.key === 'Enter' || e.key === ' ')) { start(); e.preventDefault(); return; }
+    if (e.repeat) return;
+    if (e.key === 'ArrowLeft' || e.key === 'a') turn(-1);
+    else if (e.key === 'ArrowRight' || e.key === 'd') turn(1);
+    else if (e.key === ' ' || e.key === 'ArrowUp') { jump(); e.preventDefault(); }
+  });
+  $('startBtn').onclick = start; $('againBtn').onclick = start;
+
+  function update(dt) {
+    t += dt;
+    if (state === 'menu') {
+      // demo: auto-turn
+      s += 2 * dt;
+      const c = nextCorner(); if (c >= 0 && s > c - 0.1) path[c].done = true;
+    }
+    if (state === 'play' && !dead) {
+      speed = Math.min(7.5, 3 + s / 60);
+      const c = nextCorner();
+      let ns = s + speed * dt;
+      if (c >= 0 && ns > c + 0.12 && !path[c].done) { ns = c + 0.12; bonk('missed the turn!'); }
+      s = ns;
+      if (hop > 0) { hopV -= 16 * dt; hop += hopV * dt; if (hop <= 0) hop = 0; }
+      const i = Math.round(s), tile = path[i];
+      if (tile && Math.abs(s - i) < 0.25) {
+        if (tile.pot && hop < 0.3) bonk('ouch, a pot!');
+        if (tile.berry) { tile.berry = false; berries++; audio.sfx(1046 + (berries % 4) * 130, 0.08, 'sine', 0.06); }
+      }
+    }
+    if (dead) { deadT -= dt; if (deadT <= 0 && state === 'play') gameOver(); }
+    while (path.length < s + 40) genPath(20);
+    // camera rotates to face the running direction
+    let target = headingAt(Math.min(s + 0.35, path.length - 2));
+    let d = target - ang; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2;
+    ang += d * Math.min(1, dt * 7);
+    for (const l of leaves) { l.x += l.vx * dt; l.y += l.vy * dt; l.vx *= 0.95; l.vy *= 0.95; l.life -= dt; }
+    leaves = leaves.filter(l => l.life > 0);
+  }
+
+  function drawBush(x, y, sz, seed) {
+    ctx.fillStyle = '#24592e'; ctx.beginPath(); ctx.arc(x, y + 3, sz, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#3e8a4a'; ctx.beginPath(); ctx.arc(x, y, sz, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#5aa85a'; ctx.beginPath(); ctx.arc(x - sz * 0.3, y - sz * 0.3, sz * 0.5, 0, Math.PI * 2); ctx.fill();
+    if (seed > 0.8) { ctx.fillStyle = seed > 0.9 ? '#ffd23f' : '#ff6b8b'; for (let k = 0; k < 3; k++) { ctx.beginPath(); ctx.arc(x + Math.cos(k * 2 + seed * 9) * sz * 0.5, y + Math.sin(k * 2 + seed * 9) * sz * 0.5, 3, 0, Math.PI * 2); ctx.fill(); } }
+  }
+
+  function render() {
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.fillStyle = '#2f6b3a'; ctx.fillRect(0, 0, W, H);
+    ctx.save(); ctx.scale(S, S);
+    const p = posAt(s);
+    ctx.translate(LW / 2, LH * 0.68);
+    ctx.rotate(-ang);
+    ctx.translate(-p.x, -p.y);
+    // hedge texture around the camera
+    const R = Math.hypot(LW, LH) * 0.8;
+    const x0 = Math.floor((p.x - R) / T) - 1, x1 = Math.ceil((p.x + R) / T) + 1, y0 = Math.floor((p.y - R) / T) - 1, y1 = Math.ceil((p.y + R) / T) + 1;
+    const onPath = new Set();
+    const i0 = Math.max(0, Math.floor(s) - 12), i1 = Math.min(path.length - 1, Math.floor(s) + 30);
+    for (let i = i0; i <= i1; i++) onPath.add(path[i].x + ',' + path[i].y);
+    for (let gy2 = y0; gy2 <= y1; gy2++) for (let gx2 = x0; gx2 <= x1; gx2++) {
+      if (onPath.has(gx2 + ',' + gy2)) continue;
+      const h = hash(gx2, gy2);
+      drawBush(gx2 * T + T / 2 + (h - 0.5) * 10, gy2 * T + T / 2 + (hash(gy2, gx2) - 0.5) * 10, T * 0.48, h);
+    }
+    // path tiles
+    for (let i = i0; i <= i1; i++) {
+      const tl = path[i], x = tl.x * T, y = tl.y * T;
+      ctx.fillStyle = '#e8d29b'; ctx.fillRect(x - T / 2 - 1, y - T / 2 - 1, T + 2, T + 2);
+      ctx.fillStyle = '#d9bf80';
+      for (let k = 0; k < 4; k++) { ctx.beginPath(); ctx.arc(x + (hash(i, k) - 0.5) * T * 0.8, y + (hash(k, i) - 0.5) * T * 0.8, 3 + hash(i + k, 3) * 4, 0, Math.PI * 2); ctx.fill(); }
+    }
+    for (let i = i0; i <= i1; i++) {
+      const tl = path[i], x = tl.x * T, y = tl.y * T;
+      if (tl.turn && !tl.done) {
+        // painted arrow hint on the corner
+        const prev = path[i - 1] || tl, inDir = Math.atan2(tl.x - prev.x, -(tl.y - prev.y));
+        ctx.save(); ctx.translate(x, y); ctx.rotate(inDir + tl.turn * Math.PI / 2);
+        ctx.fillStyle = '#ffffffaa'; ctx.beginPath(); ctx.moveTo(0, -18); ctx.lineTo(14, 2); ctx.lineTo(5, 2); ctx.lineTo(5, 16); ctx.lineTo(-5, 16); ctx.lineTo(-5, 2); ctx.lineTo(-14, 2); ctx.fill();
+        ctx.restore();
+      }
+      if (tl.pot) {
+        ctx.save(); ctx.translate(x, y); ctx.rotate(ang);
+        ctx.fillStyle = '#00000022'; ctx.beginPath(); ctx.ellipse(3, 6, 17, 10, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#c86b3c'; ctx.beginPath(); ctx.arc(0, 0, 15, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#a3542e'; ctx.beginPath(); ctx.arc(0, 0, 11, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#ff6b8b'; for (let k = 0; k < 5; k++) { ctx.beginPath(); ctx.arc(Math.cos(k * 1.26) * 6, Math.sin(k * 1.26) * 6, 4, 0, Math.PI * 2); ctx.fill(); }
+        ctx.fillStyle = '#ffd23f'; ctx.beginPath(); ctx.arc(0, 0, 3, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+      }
+      if (tl.berry) {
+        const bob = Math.sin(t * 5 + i) * 2;
+        ctx.fillStyle = '#c2304a'; ctx.beginPath(); ctx.arc(x - 4, y + bob, 6, 0, Math.PI * 2); ctx.arc(x + 5, y + 2 + bob, 6, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#ffffff88'; ctx.beginPath(); ctx.arc(x - 6, y - 2 + bob, 2, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = '#3e8a4a'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(x, y - 6 + bob); ctx.lineTo(x + 2, y - 12 + bob); ctx.stroke();
+      }
+    }
+    // hedgehog
+    ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(headingAt(s));
+    const sc = 1 + hop * 0.12;
+    ctx.fillStyle = '#00000030'; ctx.beginPath(); ctx.ellipse(2, 4, 15, 19, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.scale(sc, sc);
+    if (dead) ctx.rotate(Math.sin(t * 30) * 0.2);
+    const legs = Math.sin(t * speed * 5) * 4;
+    ctx.fillStyle = '#6b4a2f';
+    ctx.fillRect(-14, -6 + legs, 5, 6); ctx.fillRect(9, -6 - legs, 5, 6); ctx.fillRect(-14, 8 - legs, 5, 6); ctx.fillRect(9, 8 + legs, 5, 6);
+    ctx.fillStyle = '#4a3220';
+    ctx.beginPath();
+    for (let k = 0; k <= 24; k++) { const a = Math.PI * 0.15 + k / 24 * Math.PI * 1.7, rr = k % 2 ? 14 : 19; ctx.lineTo(Math.sin(a) * rr, Math.cos(a) * rr + 3); }
+    ctx.fill();
+    ctx.fillStyle = '#8a6440'; ctx.beginPath(); ctx.ellipse(0, 3, 11, 13, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#f0d3a8'; ctx.beginPath(); ctx.ellipse(0, -12, 8, 10, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#2b1d12'; ctx.beginPath(); ctx.arc(0, -21, 2.6, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(-4, -13, 1.6, 0, Math.PI * 2); ctx.arc(4, -13, 1.6, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+    for (const l of leaves) { ctx.globalAlpha = Math.max(0, l.life); ctx.fillStyle = '#5aa85a'; ctx.beginPath(); ctx.ellipse(l.x, l.y, 5, 3, l.r, 0, Math.PI * 2); ctx.fill(); }
+    ctx.globalAlpha = 1;
+    ctx.restore();
+    if (dead && msg) {
+      ctx.font = 'bold ' + Math.round(26 * S) + 'px Trebuchet MS, sans-serif'; ctx.textAlign = 'center';
+      ctx.fillStyle = '#1d4425'; ctx.fillText(msg, W / 2 + 2, H * 0.4 + 2); ctx.fillStyle = '#fffbea'; ctx.fillText(msg, W / 2, H * 0.4);
+    }
+    $('score').textContent = state === 'menu' ? '' : score(); $('berries').textContent = '● ' + berries;
+  }
+
+  let last = performance.now();
+  (function loop(now) {
+    const dt = Math.max(0, Math.min(0.033, (now - last) / 1000)); last = now;
+    update(dt); render(); requestAnimationFrame(loop);
+  })(last);
+})();
+</script>
+</body>
+</html>

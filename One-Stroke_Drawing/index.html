@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0b0d1e">
+<title>One Line</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #0b0d1e;
+    font-family: "Avenir Next", "Segoe UI", sans-serif; color: #eef0ff;
+    touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+  canvas { display: block; width: 100%; height: 100%; }
+  .hud { position: fixed; top: max(14px, env(safe-area-inset-top)); left: 0; right: 0; text-align: center; pointer-events: none; }
+  .hud b { font-size: 26px; font-weight: 300; letter-spacing: 6px; } .hud div { font-size: 12px; letter-spacing: 3px; opacity: .55; margin-top: 2px; }
+  .tools { position: fixed; bottom: max(16px, env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); display: flex; gap: 12px; }
+  .tools button { padding: 12px 20px; border-radius: 30px; border: 1px solid #ffffff33; background: #ffffff10; color: #fff; font: inherit; font-size: 15px; cursor: pointer; }
+  .overlay { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; padding: 24px; text-align: center; background: #0b0d1ee8; transition: opacity .3s; }
+  .overlay.hidden { opacity: 0; pointer-events: none; }
+  .overlay canvas { width: 200px; height: 200px; }
+  h1 { font-size: clamp(38px, 11vw, 62px); font-weight: 200; letter-spacing: 12px; text-shadow: 0 0 20px #7a6aff; }
+  p { max-width: 300px; font-size: 15px; line-height: 1.7; color: #b0b4e0; }
+  .stat b { color: #ffd36a; font-weight: 500; }
+  .btn { border: 1px solid #ffd36a; background: #ffd36a1a; color: #ffd36a; font: inherit; font-size: 15px; letter-spacing: 6px; padding: 15px 44px; border-radius: 40px; cursor: pointer; }
+  .btn:active { background: #ffd36a44; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud"><b id="level">LEVEL 1</b><div id="edges">0 / 0</div></div>
+<div class="tools"><button id="undo">↶ Undo</button><button id="reset">⟳ Reset</button></div>
+
+<div class="overlay" id="menu">
+  <canvas id="logo" width="400" height="400"></canvas>
+  <h1>ONE LINE</h1>
+  <p><b>Draw the whole figure in one stroke.</b> Start on any dot and drag along the lines — every line must be traced, and none twice. Tip: if two dots have an odd number of lines, start on one of them.</p>
+  <div class="stat" id="bestMenu"></div>
+  <button class="btn" id="startBtn">BEGIN</button>
+</div>
+<div class="overlay hidden" id="win">
+  <h1>DRAWN</h1>
+  <div class="stat">Level <b id="winLevel">1</b> complete</div>
+  <button class="btn" id="nextBtn">NEXT</button>
+</div>
+
+<script>
+/*AUDIO-ENGINE-START*/
+// ---------- audio: procedural background music + sound effects ----------
+// Every note is synthesized with the Web Audio API at runtime, so the music
+// needs no files, works offline and carries no copyright.
+const GameAudio = (cfg) => {
+  let ctx = null, master = null, musicBus = null, sfxBus = null;
+  let timer = null, step = 0, nextT = 0, playing = false;
+  let musicOn = true;
+  try { musicOn = localStorage.getItem('music_off') !== '1'; } catch (e) {}
+
+  const SCALES = {
+    major: [0, 2, 4, 5, 7, 9, 11], minor: [0, 2, 3, 5, 7, 8, 10],
+    dorian: [0, 2, 3, 5, 7, 9, 10], lydian: [0, 2, 4, 6, 7, 9, 11],
+    pentaMajor: [0, 2, 4, 7, 9], pentaMinor: [0, 3, 5, 7, 10],
+    japanese: [0, 1, 5, 7, 8], phrygian: [0, 1, 3, 5, 7, 8, 10]
+  };
+  const scale = SCALES[cfg.scale] || SCALES.major;
+  const root = cfg.root || 57;
+  const bpm = cfg.bpm || 110;
+  const prog = cfg.prog || [0, 5, 3, 4];
+  const sixteenth = 60 / bpm / 4;
+
+  // deterministic random so each game always plays "its" tune
+  let seed = cfg.seed || 1;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
+
+  const deg = (d, oct = 0) => {
+    const n = scale.length;
+    const o = Math.floor(d / n);
+    return root + scale[((d % n) + n) % n] + 12 * (o + oct);
+  };
+  const hz = m => 440 * Math.pow(2, (m - 69) / 12);
+
+  // melody: two 2-bar phrases (A, B) arranged A A B A
+  function phrase() {
+    const notes = [];
+    let d = 2 + Math.floor(rnd() * 3);
+    for (let i = 0; i < 32; i++) {
+      const strong = i % 4 === 0;
+      if (rnd() < (strong ? 0.85 : (cfg.leadDensity || 0.35))) {
+        d += Math.round((rnd() - 0.5) * 4);
+        d = Math.max(0, Math.min(scale.length * 2, d));
+        const len = strong && rnd() < 0.5 ? 2 : 1;
+        notes.push({ i, d, len });
+      }
+    }
+    return notes;
+  }
+  const A = phrase(), B = phrase();
+  const song = [A, A, B, A];
+
+  function init() {
+    if (ctx) return;
+    try {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      master = ctx.createGain(); master.gain.value = 0.9; master.connect(ctx.destination);
+      musicBus = ctx.createGain(); musicBus.gain.value = cfg.volume || 0.16; musicBus.connect(master);
+      sfxBus = ctx.createGain(); sfxBus.gain.value = 1; sfxBus.connect(master);
+    } catch (e) { ctx = null; }
+  }
+
+  function voice(t, freq, dur, type, vol, opts = {}) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, t);
+    if (opts.detune) o.detune.value = opts.detune;
+    let node = o;
+    if (opts.cutoff) {
+      const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = opts.cutoff; f.Q.value = opts.q || 1;
+      o.connect(f); node = f;
+    }
+    const a = opts.attack || 0.008;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(vol, t + a);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    node.connect(g); g.connect(opts.bus || musicBus);
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+
+  let noiseBuf = null;
+  function noise(t, dur, vol, hp) {
+    if (!noiseBuf) {
+      noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 0.5, ctx.sampleRate);
+      const d = noiseBuf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    }
+    const s = ctx.createBufferSource(); s.buffer = noiseBuf;
+    const f = ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = hp;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.connect(f); f.connect(g); g.connect(musicBus);
+    s.start(t); s.stop(t + dur + 0.02);
+  }
+
+  function kick(t) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.setValueAtTime(140, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+    g.gain.setValueAtTime(0.9, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+    o.connect(g); g.connect(musicBus); o.start(t); o.stop(t + 0.25);
+  }
+
+  function playStep(s, t) {
+    const bar = Math.floor(s / 16);
+    const i16 = s % 16;
+    const chordDeg = prog[bar % prog.length];
+    const w = cfg.waves || {};
+    // bass
+    const bassPat = cfg.bassPattern || [0, 8];
+    if (bassPat.includes(i16)) voice(t, hz(deg(chordDeg, -2)), sixteenth * 3.5, w.bass || 'triangle', 0.5, { cutoff: 600 });
+    // pad (chord) at bar start
+    if (cfg.pad && i16 === 0) {
+      for (const k of [0, 2, 4]) voice(t, hz(deg(chordDeg + k, -1)), sixteenth * 15, w.pad || 'sine', 0.12, { attack: 0.3, cutoff: 1400, detune: k * 3 });
+    }
+    // arpeggio
+    if (cfg.arp && i16 % (cfg.arpEvery || 2) === 0) {
+      const k = [0, 2, 4, 2][(i16 / (cfg.arpEvery || 2)) % 4];
+      voice(t, hz(deg(chordDeg + k, cfg.arpOct || 0)), sixteenth * 1.6, w.arp || 'square', 0.1, { cutoff: cfg.arpCutoff || 2200 });
+    }
+    // lead melody
+    const ph = song[Math.floor(bar / 2) % song.length];
+    const pi = (bar % 2) * 16 + i16;
+    for (const n of ph) if (n.i === pi) {
+      voice(t, hz(deg(n.d, cfg.leadOct || 0)), sixteenth * (n.len * 2 + 0.5), w.lead || 'triangle', 0.22, { cutoff: cfg.leadCutoff || 3000 });
+    }
+    // drums
+    if (cfg.drums) {
+      if (i16 % 8 === 0 || (cfg.drums === 'busy' && i16 === 10)) kick(t);
+      if (i16 % 8 === 4) noise(t, 0.14, 0.35, 1500);
+      if (i16 % 2 === 0) noise(t, 0.04, cfg.drums === 'soft' ? 0.06 : 0.12, 7000);
+    }
+  }
+
+  function scheduler() {
+    if (!ctx || !playing) return;
+    while (nextT < ctx.currentTime + 0.15) {
+      playStep(step, nextT);
+      nextT += sixteenth * (cfg.swing && step % 2 === 0 ? 1 + cfg.swing : cfg.swing ? 1 - cfg.swing : 1);
+      step++;
+    }
+  }
+
+  function startMusic() {
+    if (!ctx || playing || !musicOn) return;
+    playing = true;
+    musicBus.gain.cancelScheduledValues(ctx.currentTime);
+    musicBus.gain.setValueAtTime(0.0001, ctx.currentTime);
+    musicBus.gain.linearRampToValueAtTime(cfg.volume || 0.16, ctx.currentTime + 1.2);
+    nextT = ctx.currentTime + 0.05;
+    timer = setInterval(scheduler, 40);
+  }
+  function stopMusic() {
+    playing = false;
+    if (timer) clearInterval(timer);
+    timer = null;
+  }
+
+  // mute button
+  const btn = document.createElement('button');
+  btn.setAttribute('aria-label', 'Toggle music');
+  btn.style.cssText = 'position:fixed;z-index:50;right:max(14px,env(safe-area-inset-right));bottom:max(14px,env(safe-area-inset-bottom));' +
+    'width:42px;height:42px;border-radius:50%;border:none;cursor:pointer;font-size:20px;line-height:42px;padding:0;' +
+    'background:' + (cfg.btnBg || 'rgba(0,0,0,.35)') + ';color:' + (cfg.btnColor || '#fff') + ';backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);';
+  const paint = () => { btn.textContent = musicOn ? '♪' : '✕'; btn.style.opacity = musicOn ? '1' : '.6'; };
+  paint();
+  const toggle = e => {
+    e.stopPropagation(); e.preventDefault();
+    musicOn = !musicOn;
+    try { localStorage.setItem('music_off', musicOn ? '0' : '1'); } catch (err) {}
+    init();
+    if (ctx && ctx.state === 'suspended') ctx.resume();
+    if (musicOn) startMusic(); else stopMusic();
+    paint();
+  };
+  btn.addEventListener('pointerdown', e => e.stopPropagation());
+  btn.addEventListener('pointerup', e => e.stopPropagation());
+  btn.addEventListener('click', toggle);
+  document.addEventListener('DOMContentLoaded', () => document.body.appendChild(btn));
+  if (document.body) document.body.appendChild(btn);
+
+  document.addEventListener('visibilitychange', () => {
+    if (!ctx) return;
+    if (document.hidden) ctx.suspend(); else ctx.resume();
+  });
+
+  return {
+    // call from a user gesture (start button) — browsers only allow audio after one
+    start() {
+      init();
+      if (!ctx) return;
+      if (ctx.state === 'suspended') ctx.resume();
+      startMusic();
+    },
+    sfx(freq, dur, type = 'sine', vol = 0.07, to = 0) {
+      init();
+      if (!ctx) return;
+      try {
+        const t = ctx.currentTime;
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.type = type; o.frequency.setValueAtTime(freq, t);
+        if (to) o.frequency.exponentialRampToValueAtTime(Math.max(30, to), t + dur);
+        g.gain.setValueAtTime(vol, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+        o.connect(g); g.connect(sfxBus);
+        o.start(t); o.stop(t + dur + 0.02);
+      } catch (e) {}
+    }
+  };
+};
+/*AUDIO-ENGINE-END*/
+/*SPRITES-START*/
+// ---------- sprites: detailed SVG artwork rasterised once into canvases ----------
+// Each piece is authored as an SVG (gradients, highlights, shadows, glow) and
+// drawn into an offscreen canvas at load time, so the game loop just blits images.
+const loadSprites = (defs, px = 160) => Promise.all(Object.entries(defs).map(([name, svg]) => new Promise(done => {
+  const img = new Image();
+  const finish = ok => {
+    const c = document.createElement('canvas');
+    const w = Array.isArray(px) ? px[0] : px, h = Array.isArray(px) ? px[1] : px;
+    c.width = w; c.height = h;
+    if (ok) c.getContext('2d').drawImage(img, 0, 0, w, h);
+    done([name, c]);
+  };
+  img.onload = () => finish(true);
+  img.onerror = () => finish(false);
+  img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+}))).then(entries => Object.fromEntries(entries));
+
+// small helpers for writing SVG
+const svgDoc = (body, vb = '0 0 100 100') => '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + vb + '">' + body + '</svg>';
+const shade = (hex, amt) => {
+  const n = parseInt(hex.slice(1), 16);
+  const f = v => Math.max(0, Math.min(255, Math.round(amt < 0 ? v * (1 + amt) : v + (255 - v) * amt)));
+  return '#' + [n >> 16, (n >> 8) & 255, n & 255].map(f).map(v => v.toString(16).padStart(2, '0')).join('');
+};
+/*SPRITES-END*/
+/*INK-START*/
+// ---------- ink: freehand strokes that become solid walls ----------
+// A stroke is a list of points; consecutive points form segments that circles bounce off.
+const Ink = {
+  // append a point only once the finger has moved far enough (keeps strokes light)
+  add(stroke, x, y, minD = 6) {
+    const p = stroke[stroke.length - 1];
+    if (!p || Math.hypot(x - p.x, y - p.y) >= minD) { stroke.push({ x, y }); return true; }
+    return false;
+  },
+  length(stroke) { let L = 0; for (let i = 1; i < stroke.length; i++) L += Math.hypot(stroke[i].x - stroke[i - 1].x, stroke[i].y - stroke[i - 1].y); return L; },
+  segments(strokes) {
+    const out = [];
+    for (const s of strokes) for (let i = 1; i < s.length; i++) out.push({ ax: s[i - 1].x, ay: s[i - 1].y, bx: s[i].x, by: s[i].y });
+    return out;
+  },
+  closest(px, py, ax, ay, bx, by) {
+    const dx = bx - ax, dy = by - ay, L = dx * dx + dy * dy;
+    const k = L ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / L)) : 0;
+    const x = ax + dx * k, y = ay + dy * k;
+    return { x, y, d: Math.hypot(px - x, py - y) };
+  },
+  // push a circle out of every segment it overlaps; reflect its velocity with some bounce and friction
+  collide(b, segs, r, bounce = 0.3, friction = 0.995, thick = 3) {
+    let hit = false;
+    for (const s of segs) {
+      const c = Ink.closest(b.x, b.y, s.ax, s.ay, s.bx, s.by), min = r + thick;
+      if (c.d < min) {
+        let nx = b.x - c.x, ny = b.y - c.y, d = c.d;
+        if (d < 1e-6) { nx = -(s.by - s.ay); ny = s.bx - s.ax; d = Math.hypot(nx, ny) || 1; }
+        nx /= d; ny /= d;
+        b.x = c.x + nx * min; b.y = c.y + ny * min;
+        const vn = b.vx * nx + b.vy * ny;
+        if (vn < 0) { b.vx -= (1 + bounce) * vn * nx; b.vy -= (1 + bounce) * vn * ny; }
+        b.vx *= friction; b.vy *= friction;
+        hit = true;
+      }
+    }
+    return hit;
+  },
+  // does segment p1-p2 cross segment p3-p4?
+  cross(p1, p2, p3, p4) {
+    const d = (a, b, c) => (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+    const d1 = d(p3, p4, p1), d2 = d(p3, p4, p2), d3 = d(p1, p2, p3), d4 = d(p1, p2, p4);
+    return ((d1 > 0) !== (d2 > 0)) && ((d3 > 0) !== (d4 > 0));
+  },
+  // a smooth, tapered pen line
+  draw(ctx, stroke, color, width, glow) {
+    if (stroke.length < 2) return;
+    ctx.save(); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    if (glow) { ctx.shadowColor = glow; ctx.shadowBlur = 12; }
+    ctx.strokeStyle = color; ctx.lineWidth = width;
+    ctx.beginPath(); ctx.moveTo(stroke[0].x, stroke[0].y);
+    for (let i = 1; i < stroke.length - 1; i++) { const mx = (stroke[i].x + stroke[i + 1].x) / 2, my = (stroke[i].y + stroke[i + 1].y) / 2; ctx.quadraticCurveTo(stroke[i].x, stroke[i].y, mx, my); }
+    const l = stroke[stroke.length - 1]; ctx.lineTo(l.x, l.y); ctx.stroke();
+    ctx.restore();
+  }
+};
+/*INK-END*/
+(() => {
+  const audio = GameAudio({
+    bpm: 76, scale: 'lydian', root: 57, prog: [0, 4, 1, 5], seed: 601,
+    waves: { lead: 'sine', bass: 'sine', arp: 'triangle', pad: 'sawtooth' },
+    pad: true, arp: true, arpEvery: 2, arpOct: 1, arpCutoff: 1800, leadOct: 1, leadDensity: 0.2, drums: false, bassPattern: [0, 8], volume: 0.18,
+    btnBg: 'rgba(255,211,106,.15)', btnColor: '#ffd36a'
+  });
+  const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+  const $ = id => document.getElementById(id);
+  const KEY = 'one_line_level';
+  let level = 1; try { level = +localStorage.getItem(KEY) || 1; } catch (e) {}
+  $('bestMenu').innerHTML = level > 1 ? 'Continue from level <b>' + level + '</b>' : '';
+
+  const orbSVG = (c, ring) => svgDoc('<defs><radialGradient id="g" cx="35%" cy="30%" r="75%"><stop offset="0" stop-color="#fff"/><stop offset=".35" stop-color="' + shade(c, 0.3) + '"/><stop offset="1" stop-color="' + shade(c, -0.4) + '"/></radialGradient>' +
+    '<radialGradient id="h"><stop offset="0" stop-color="' + c + '" stop-opacity=".7"/><stop offset="1" stop-color="' + c + '" stop-opacity="0"/></radialGradient></defs>' +
+    '<circle cx="50" cy="50" r="48" fill="url(#h)"/><circle cx="50" cy="50" r="22" fill="url(#g)"/>' + (ring ? '<circle cx="50" cy="50" r="30" fill="none" stroke="' + c + '" stroke-width="3" stroke-dasharray="6 5"/>' : '') +
+    '<ellipse cx="43" cy="42" rx="7" ry="4" fill="#fff" opacity=".75" transform="rotate(-30 43 42)"/>');
+  let SPR = null;
+  loadSprites({ dot: orbSVG('#8a9aff'), lit: orbSVG('#ffd36a'), odd: orbSVG('#8a9aff', true) }, 128).then(s => { SPR = s; logo(); });
+
+  // ---------- level generator: a random non-crossing walk is always drawable in one stroke ----------
+  function generate(lv) {
+    const cols = Math.min(5, 3 + Math.floor(lv / 4)), rows = Math.min(6, 3 + Math.floor((lv + 2) / 4));
+    const want = Math.min(26, 5 + lv * 1.4);
+    for (let attempt = 0; attempt < 200; attempt++) {
+      const nodes = []; for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) nodes.push({ x: c + (Math.random() - .5) * 0.35, y: r + (Math.random() - .5) * 0.35 });
+      const edges = [], has = new Set(), key = (a, b) => Math.min(a, b) + '-' + Math.max(a, b);
+      let cur = Math.floor(Math.random() * nodes.length); const start = cur;
+      for (let step = 0; step < want * 3 && edges.length < want; step++) {
+        const cand = nodes.map((n, i) => i).filter(i => {
+          if (i === cur || has.has(key(cur, i))) return false;
+          const d = Math.hypot(nodes[i].x - nodes[cur].x, nodes[i].y - nodes[cur].y); if (d > 1.5) return false;
+          // no crossings and no passing through another node
+          for (const [a, b] of edges) if (a !== cur && b !== cur && a !== i && b !== i && Ink.cross(nodes[cur], nodes[i], nodes[a], nodes[b])) return false;
+          for (let k = 0; k < nodes.length; k++) if (k !== cur && k !== i && Ink.closest(nodes[k].x, nodes[k].y, nodes[cur].x, nodes[cur].y, nodes[i].x, nodes[i].y).d < 0.2) return false;
+          return true;
+        });
+        if (!cand.length) break;
+        const nx = cand[Math.floor(Math.random() * cand.length)];
+        edges.push([cur, nx]); has.add(key(cur, nx)); cur = nx;
+      }
+      if (edges.length >= want * (attempt < 150 ? 0.8 : 0.4)) {
+        const used = new Set(edges.flat()), map = new Map(); let k = 0;
+        for (const i of used) map.set(i, k++);
+        return { nodes: [...used].map(i => nodes[i]), edges: edges.map(([a, b]) => [map.get(a), map.get(b)]), cols, rows };
+      }
+    }
+  }
+
+  let W, H, DPR, G, scale, ox, oy, done, path, cur, state = 'menu', t = 0, finger = null, sparks = [], winT = 0;
+  function resize() {
+    DPR = Math.min(devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight; canvas.width = W * DPR; canvas.height = H * DPR; ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    if (!G) return;
+    const xs = G.nodes.map(n => n.x), ys = G.nodes.map(n => n.y), minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+    scale = Math.min((W - 80) / Math.max(1, maxX - minX), (H - 220) / Math.max(1, maxY - minY), 140);
+    ox = W / 2 - (minX + maxX) / 2 * scale; oy = 90 + (H - 180) / 2 - (minY + maxY) / 2 * scale;
+  }
+  addEventListener('resize', resize); resize();
+  const P = i => ({ x: ox + G.nodes[i].x * scale, y: oy + G.nodes[i].y * scale });
+  const degree = i => G.edges.filter(e => e.includes(i)).length;
+  function load() { G = generate(level); done = new Set(); path = []; cur = -1; winT = 0; resize(); hud(); }
+  function hud() { $('level').textContent = 'LEVEL ' + level; $('edges').textContent = done.size + ' / ' + G.edges.length; }
+  function start() { if (!SPR) return; load(); state = 'play'; audio.start(); $('menu').classList.add('hidden'); $('win').classList.add('hidden'); }
+  $('startBtn').onclick = start;
+  $('nextBtn').onclick = () => { level++; try { localStorage.setItem(KEY, level); } catch (e) {} start(); };
+  $('reset').onclick = () => { if (state === 'play') { done = new Set(); path = []; cur = -1; hud(); } };
+  $('undo').onclick = () => { if (state === 'play' && path.length) { const e = path.pop(); done.delete(e.i); cur = e.from; hud(); } };
+
+  const NOTES = [0, 2, 4, 7, 9, 12, 14, 16, 19, 21, 24, 26, 28];
+  function nodeAt(x, y) { let best = -1, bd = Math.max(26, scale * 0.3); G.nodes.forEach((_, i) => { const p = P(i), d = Math.hypot(x - p.x, y - p.y); if (d < bd) { bd = d; best = i; } }); return best; }
+  function tryStep(i) {
+    if (i < 0 || i === cur) return;
+    const ei = G.edges.findIndex(([a, b], k) => !done.has(k) && ((a === cur && b === i) || (b === cur && a === i)));
+    if (ei < 0) return;
+    done.add(ei); path.push({ i: ei, from: cur, to: i }); cur = i;
+    audio.sfx(330 * Math.pow(2, NOTES[Math.min(12, done.size % 13)] / 12), 0.25, 'sine', 0.06);
+    const p = P(i); for (let k = 0; k < 8; k++) sparks.push({ x: p.x, y: p.y, vx: (Math.random() - .5) * 160, vy: (Math.random() - .5) * 160, life: 0.5 });
+    hud();
+    if (done.size === G.edges.length) {
+      state = 'won'; winT = 0.001; $('winLevel').textContent = level;
+      [523, 659, 784, 1046, 1318].forEach((f, k) => setTimeout(() => audio.sfx(f, 0.4, 'sine', 0.06), k * 120));
+      setTimeout(() => $('win').classList.remove('hidden'), 1300);
+    }
+  }
+  canvas.addEventListener('pointerdown', e => {
+    if (state !== 'play') return;
+    const i = nodeAt(e.clientX, e.clientY);
+    if (cur < 0) { if (i >= 0) { cur = i; audio.sfx(440, 0.1, 'sine', 0.05); } }
+    else if (i >= 0 && i !== cur) tryStep(i);
+    finger = { x: e.clientX, y: e.clientY };
+  });
+  addEventListener('pointermove', e => { if (!finger || state !== 'play') return; finger = { x: e.clientX, y: e.clientY }; if (cur >= 0) tryStep(nodeAt(e.clientX, e.clientY)); });
+  addEventListener('pointerup', () => { finger = null; });
+  addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && state === 'menu') { e.preventDefault(); start(); } });
+
+  function update(dt) { t += dt; if (winT) winT += dt; for (const s of sparks) { s.x += s.vx * dt; s.y += s.vy * dt; s.life -= dt; } sparks = sparks.filter(s => s.life > 0); }
+  function render() {
+    const g = ctx.createRadialGradient(W / 2, H * 0.45, 0, W / 2, H * 0.45, Math.max(W, H) * 0.7); g.addColorStop(0, '#1c1f44'); g.addColorStop(1, '#07081a');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    for (let i = 0; i < 80; i++) { ctx.fillStyle = 'rgba(255,255,255,' + (0.2 + 0.5 * Math.abs(Math.sin(t * 0.8 + i))) + ')'; ctx.fillRect((i * 137.7) % W, (i * 71.3) % H, 1.4, 1.4); }
+    if (!G || !SPR) return;
+    // untraced lines
+    ctx.lineCap = 'round';
+    G.edges.forEach(([a, b], k) => { if (done.has(k)) return; const p = P(a), q = P(b); ctx.strokeStyle = 'rgba(140,150,255,.35)'; ctx.lineWidth = 6; ctx.setLineDash([2, 10]); ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke(); });
+    ctx.setLineDash([]);
+    // traced lines glow, with a travelling shimmer
+    path.forEach((s, n) => {
+      const p = P(s.from), q = P(s.to);
+      const gr = ctx.createLinearGradient(p.x, p.y, q.x, q.y); gr.addColorStop(0, '#ffb36a'); gr.addColorStop(1, '#ffe39a');
+      ctx.shadowColor = '#ffb36a'; ctx.shadowBlur = winT ? 30 : 16; ctx.strokeStyle = gr; ctx.lineWidth = 8; ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke();
+      ctx.shadowBlur = 0; ctx.strokeStyle = 'rgba(255,255,255,.7)'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke();
+      const k = (t * 1.5 + n * 0.3) % 1; ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(p.x + (q.x - p.x) * k, p.y + (q.y - p.y) * k, 3, 0, Math.PI * 2); ctx.fill();
+    });
+    if (finger && cur >= 0 && state === 'play') { const p = P(cur); ctx.strokeStyle = 'rgba(255,211,106,.4)'; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(finger.x, finger.y); ctx.stroke(); }
+    const hintOdd = level <= 4 && cur < 0;
+    G.nodes.forEach((_, i) => {
+      const p = P(i), active = i === cur, s = (active ? 64 + Math.sin(t * 6) * 6 : 48) * Math.min(1, scale / 90);
+      const img = active || G.edges.every((e, k) => !e.includes(i) || done.has(k)) && done.size ? SPR.lit : hintOdd && degree(i) % 2 ? SPR.odd : SPR.dot;
+      ctx.drawImage(img, p.x - s / 2, p.y - s / 2, s, s);
+    });
+    for (const s of sparks) { ctx.globalAlpha = Math.max(0, s.life * 2); ctx.fillStyle = '#ffe39a'; ctx.fillRect(s.x, s.y, 2.5, 2.5); }
+    ctx.globalAlpha = 1;
+  }
+  function logo() {
+    const lc = $('logo').getContext('2d'), pts = Array.from({ length: 5 }, (_, i) => ({ x: 200 + Math.cos(i * 4 * Math.PI / 5 - Math.PI / 2) * 150, y: 210 + Math.sin(i * 4 * Math.PI / 5 - Math.PI / 2) * 150 }));
+    lc.lineCap = 'round'; lc.shadowColor = '#ffb36a'; lc.shadowBlur = 20; lc.strokeStyle = '#ffd36a'; lc.lineWidth = 8;
+    lc.beginPath(); pts.forEach((p, i) => i ? lc.lineTo(p.x, p.y) : lc.moveTo(p.x, p.y)); lc.closePath(); lc.stroke(); lc.shadowBlur = 0;
+    pts.forEach(p => lc.drawImage(SPR.lit, p.x - 30, p.y - 30, 60, 60));
+  }
+
+  let last = performance.now();
+  (function loop(now) {
+    const dt = Math.max(0, Math.min(0.033, (now - last) / 1000)); last = now;
+    update(dt); render(); requestAnimationFrame(loop);
+  })(last);
+})();
+</script>
+</body>
+</html>

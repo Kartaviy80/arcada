@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#8fd8f0">
+<title>Sand Castle</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #8fd8f0;
+    font-family: "Verdana", "Segoe UI", sans-serif; color: #5b3a1a;
+    touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+  canvas { display: block; width: 100%; height: 100%; }
+  .hud { position: fixed; top: max(10px, env(safe-area-inset-top)); left: 12px; right: 12px; display: flex; gap: 10px; align-items: center; pointer-events: none; }
+  .pill { background: #fff8e6e6; border-radius: 14px; padding: 6px 12px; font-weight: bold; font-size: 15px; box-shadow: 0 3px 0 #d9b77a; }
+  .sandbar { flex: 1; height: 14px; border-radius: 8px; background: #fff8e699; overflow: hidden; box-shadow: 0 3px 0 #d9b77a; }
+  .sandbar i { display: block; height: 100%; width: 100%; background: linear-gradient(90deg, #e8b765, #f3d08f); }
+  .overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; padding: 20px; background: #3a6f8a99; transition: opacity .3s; }
+  .overlay.hidden { opacity: 0; pointer-events: none; }
+  .card { width: min(350px, 100%); background: #fff8e6; border-radius: 24px; padding: 26px 22px; text-align: center; display: flex; flex-direction: column; gap: 12px;
+    box-shadow: 0 10px 0 #d9b77a, 0 20px 40px #0004; }
+  .card .ico { font-size: 50px; }
+  h1 { font-size: clamp(36px, 11vw, 50px); color: #e07a3c; line-height: 1; }
+  p { font-size: 14px; line-height: 1.6; }
+  .stat { font-size: 17px; } .stat b { color: #e07a3c; }
+  .btn { border: none; background: #3fa7d6; color: #fff; font: inherit; font-weight: bold; font-size: 20px; padding: 14px; border-radius: 16px; cursor: pointer; box-shadow: 0 5px 0 #2a7ea6; }
+  .btn:active { transform: translateY(3px); box-shadow: 0 2px 0 #2a7ea6; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud"><div class="pill" id="level">Lv 1</div><div class="sandbar"><i id="sand"></i></div><div class="pill" id="fill">0%</div></div>
+
+<div class="overlay" id="menu"><div class="card">
+  <div class="ico">🏰</div>
+  <h1>Sand Castle</h1>
+  <p><b>Hold</b> anywhere to pour sand and <b>drag</b> to move the bucket. Fill the dotted castle shapes before your bucket runs dry — real sand slides and piles up, so pour smartly!</p>
+  <div class="stat" id="bestMenu"></div>
+  <button class="btn" id="startBtn">Build!</button>
+</div></div>
+<div class="overlay hidden" id="next"><div class="card">
+  <div class="ico">🚩</div>
+  <h1>Castle built!</h1>
+  <div class="stat">Sand saved <b id="saved">0</b></div>
+  <div class="stat">Score <b id="midScore">0</b></div>
+  <button class="btn" id="nextBtn">Next castle</button>
+</div></div>
+<div class="overlay hidden" id="over"><div class="card">
+  <div class="ico">🌊</div>
+  <h1>Out of sand!</h1>
+  <div class="stat">Castles <b id="finalLevels">0</b> · Score <b id="finalScore">0</b></div>
+  <div class="stat">Best <b id="bestOver">0</b></div>
+  <button class="btn" id="againBtn">Start over</button>
+</div></div>
+
+<script>
+/*AUDIO-ENGINE-START*/
+// ---------- audio: procedural background music + sound effects ----------
+// Every note is synthesized with the Web Audio API at runtime, so the music
+// needs no files, works offline and carries no copyright.
+const GameAudio = (cfg) => {
+  let ctx = null, master = null, musicBus = null, sfxBus = null;
+  let timer = null, step = 0, nextT = 0, playing = false;
+  let musicOn = true;
+  try { musicOn = localStorage.getItem('music_off') !== '1'; } catch (e) {}
+
+  const SCALES = {
+    major: [0, 2, 4, 5, 7, 9, 11], minor: [0, 2, 3, 5, 7, 8, 10],
+    dorian: [0, 2, 3, 5, 7, 9, 10], lydian: [0, 2, 4, 6, 7, 9, 11],
+    pentaMajor: [0, 2, 4, 7, 9], pentaMinor: [0, 3, 5, 7, 10],
+    japanese: [0, 1, 5, 7, 8], phrygian: [0, 1, 3, 5, 7, 8, 10]
+  };
+  const scale = SCALES[cfg.scale] || SCALES.major;
+  const root = cfg.root || 57;
+  const bpm = cfg.bpm || 110;
+  const prog = cfg.prog || [0, 5, 3, 4];
+  const sixteenth = 60 / bpm / 4;
+
+  // deterministic random so each game always plays "its" tune
+  let seed = cfg.seed || 1;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
+
+  const deg = (d, oct = 0) => {
+    const n = scale.length;
+    const o = Math.floor(d / n);
+    return root + scale[((d % n) + n) % n] + 12 * (o + oct);
+  };
+  const hz = m => 440 * Math.pow(2, (m - 69) / 12);
+
+  // melody: two 2-bar phrases (A, B) arranged A A B A
+  function phrase() {
+    const notes = [];
+    let d = 2 + Math.floor(rnd() * 3);
+    for (let i = 0; i < 32; i++) {
+      const strong = i % 4 === 0;
+      if (rnd() < (strong ? 0.85 : (cfg.leadDensity || 0.35))) {
+        d += Math.round((rnd() - 0.5) * 4);
+        d = Math.max(0, Math.min(scale.length * 2, d));
+        const len = strong && rnd() < 0.5 ? 2 : 1;
+        notes.push({ i, d, len });
+      }
+    }
+    return notes;
+  }
+  const A = phrase(), B = phrase();
+  const song = [A, A, B, A];
+
+  function init() {
+    if (ctx) return;
+    try {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      master = ctx.createGain(); master.gain.value = 0.9; master.connect(ctx.destination);
+      musicBus = ctx.createGain(); musicBus.gain.value = cfg.volume || 0.16; musicBus.connect(master);
+      sfxBus = ctx.createGain(); sfxBus.gain.value = 1; sfxBus.connect(master);
+    } catch (e) { ctx = null; }
+  }
+
+  function voice(t, freq, dur, type, vol, opts = {}) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, t);
+    if (opts.detune) o.detune.value = opts.detune;
+    let node = o;
+    if (opts.cutoff) {
+      const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = opts.cutoff; f.Q.value = opts.q || 1;
+      o.connect(f); node = f;
+    }
+    const a = opts.attack || 0.008;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(vol, t + a);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    node.connect(g); g.connect(opts.bus || musicBus);
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+
+  let noiseBuf = null;
+  function noise(t, dur, vol, hp) {
+    if (!noiseBuf) {
+      noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 0.5, ctx.sampleRate);
+      const d = noiseBuf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    }
+    const s = ctx.createBufferSource(); s.buffer = noiseBuf;
+    const f = ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = hp;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.connect(f); f.connect(g); g.connect(musicBus);
+    s.start(t); s.stop(t + dur + 0.02);
+  }
+
+  function kick(t) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.setValueAtTime(140, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+    g.gain.setValueAtTime(0.9, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+    o.connect(g); g.connect(musicBus); o.start(t); o.stop(t + 0.25);
+  }
+
+  function playStep(s, t) {
+    const bar = Math.floor(s / 16);
+    const i16 = s % 16;
+    const chordDeg = prog[bar % prog.length];
+    const w = cfg.waves || {};
+    // bass
+    const bassPat = cfg.bassPattern || [0, 8];
+    if (bassPat.includes(i16)) voice(t, hz(deg(chordDeg, -2)), sixteenth * 3.5, w.bass || 'triangle', 0.5, { cutoff: 600 });
+    // pad (chord) at bar start
+    if (cfg.pad && i16 === 0) {
+      for (const k of [0, 2, 4]) voice(t, hz(deg(chordDeg + k, -1)), sixteenth * 15, w.pad || 'sine', 0.12, { attack: 0.3, cutoff: 1400, detune: k * 3 });
+    }
+    // arpeggio
+    if (cfg.arp && i16 % (cfg.arpEvery || 2) === 0) {
+      const k = [0, 2, 4, 2][(i16 / (cfg.arpEvery || 2)) % 4];
+      voice(t, hz(deg(chordDeg + k, cfg.arpOct || 0)), sixteenth * 1.6, w.arp || 'square', 0.1, { cutoff: cfg.arpCutoff || 2200 });
+    }
+    // lead melody
+    const ph = song[Math.floor(bar / 2) % song.length];
+    const pi = (bar % 2) * 16 + i16;
+    for (const n of ph) if (n.i === pi) {
+      voice(t, hz(deg(n.d, cfg.leadOct || 0)), sixteenth * (n.len * 2 + 0.5), w.lead || 'triangle', 0.22, { cutoff: cfg.leadCutoff || 3000 });
+    }
+    // drums
+    if (cfg.drums) {
+      if (i16 % 8 === 0 || (cfg.drums === 'busy' && i16 === 10)) kick(t);
+      if (i16 % 8 === 4) noise(t, 0.14, 0.35, 1500);
+      if (i16 % 2 === 0) noise(t, 0.04, cfg.drums === 'soft' ? 0.06 : 0.12, 7000);
+    }
+  }
+
+  function scheduler() {
+    if (!ctx || !playing) return;
+    while (nextT < ctx.currentTime + 0.15) {
+      playStep(step, nextT);
+      nextT += sixteenth * (cfg.swing && step % 2 === 0 ? 1 + cfg.swing : cfg.swing ? 1 - cfg.swing : 1);
+      step++;
+    }
+  }
+
+  function startMusic() {
+    if (!ctx || playing || !musicOn) return;
+    playing = true;
+    musicBus.gain.cancelScheduledValues(ctx.currentTime);
+    musicBus.gain.setValueAtTime(0.0001, ctx.currentTime);
+    musicBus.gain.linearRampToValueAtTime(cfg.volume || 0.16, ctx.currentTime + 1.2);
+    nextT = ctx.currentTime + 0.05;
+    timer = setInterval(scheduler, 40);
+  }
+  function stopMusic() {
+    playing = false;
+    if (timer) clearInterval(timer);
+    timer = null;
+  }
+
+  // mute button
+  const btn = document.createElement('button');
+  btn.setAttribute('aria-label', 'Toggle music');
+  btn.style.cssText = 'position:fixed;z-index:50;right:max(14px,env(safe-area-inset-right));bottom:max(14px,env(safe-area-inset-bottom));' +
+    'width:42px;height:42px;border-radius:50%;border:none;cursor:pointer;font-size:20px;line-height:42px;padding:0;' +
+    'background:' + (cfg.btnBg || 'rgba(0,0,0,.35)') + ';color:' + (cfg.btnColor || '#fff') + ';backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);';
+  const paint = () => { btn.textContent = musicOn ? '♪' : '✕'; btn.style.opacity = musicOn ? '1' : '.6'; };
+  paint();
+  const toggle = e => {
+    e.stopPropagation(); e.preventDefault();
+    musicOn = !musicOn;
+    try { localStorage.setItem('music_off', musicOn ? '0' : '1'); } catch (err) {}
+    init();
+    if (ctx && ctx.state === 'suspended') ctx.resume();
+    if (musicOn) startMusic(); else stopMusic();
+    paint();
+  };
+  btn.addEventListener('pointerdown', e => e.stopPropagation());
+  btn.addEventListener('pointerup', e => e.stopPropagation());
+  btn.addEventListener('click', toggle);
+  document.addEventListener('DOMContentLoaded', () => document.body.appendChild(btn));
+  if (document.body) document.body.appendChild(btn);
+
+  document.addEventListener('visibilitychange', () => {
+    if (!ctx) return;
+    if (document.hidden) ctx.suspend(); else ctx.resume();
+  });
+
+  return {
+    // call from a user gesture (start button) — browsers only allow audio after one
+    start() {
+      init();
+      if (!ctx) return;
+      if (ctx.state === 'suspended') ctx.resume();
+      startMusic();
+    },
+    sfx(freq, dur, type = 'sine', vol = 0.07, to = 0) {
+      init();
+      if (!ctx) return;
+      try {
+        const t = ctx.currentTime;
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.type = type; o.frequency.setValueAtTime(freq, t);
+        if (to) o.frequency.exponentialRampToValueAtTime(Math.max(30, to), t + dur);
+        g.gain.setValueAtTime(vol, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+        o.connect(g); g.connect(sfxBus);
+        o.start(t); o.stop(t + dur + 0.02);
+      } catch (e) {}
+    }
+  };
+};
+/*AUDIO-ENGINE-END*/
+(() => {
+  const audio = GameAudio({
+    bpm: 100, scale: 'pentaMajor', root: 62, prog: [0, 2, 3, 1], seed: 210,
+    waves: { lead: 'triangle', bass: 'sine', arp: 'sine', pad: 'sine' },
+    pad: true, arp: true, arpEvery: 2, arpOct: 1, leadOct: 1, leadDensity: 0.28, drums: 'soft', swing: 0.15, bassPattern: [0, 6, 10], volume: 0.18,
+    btnBg: 'rgba(63,167,214,.6)'
+  });
+  const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+  const $ = id => document.getElementById(id);
+  const KEY = 'sand_castle_best';
+  let best = 0; try { best = +localStorage.getItem(KEY) || 0; } catch (e) {}
+  const showBest = () => { $('bestMenu').innerHTML = best ? 'Best score <b>' + best + '</b>' : ''; }; showBest();
+
+  const GW = 72, GH = 92;
+  const grid = new Uint8Array(GW * GH);        // 0 empty, 1..4 sand shades
+  const target = new Uint8Array(GW * GH);      // 1 = part of the castle outline
+  const off = document.createElement('canvas'); off.width = GW; off.height = GH;
+  const octx = off.getContext('2d'), img = octx.createImageData(GW, GH);
+  const SHADES = [null, [232, 190, 112], [222, 176, 98], [240, 203, 130], [214, 166, 90]];
+
+  let W, H, DPR, cell, gx0, gy0;
+  function resize() {
+    DPR = Math.min(devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight;
+    canvas.width = W * DPR; canvas.height = H * DPR; ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    cell = Math.min(W / GW, (H * 0.86) / GH);
+    gx0 = (W - GW * cell) / 2; gy0 = H - GH * cell;
+  }
+  addEventListener('resize', resize); resize();
+
+  let state = 'menu', level, score, budget, budgetMax, targetCount, spoutX, pouring, t = 0, flags = [], pourSfx = 0;
+  // a castle is made of sand-friendly trapezoids (45° sides), the shape sand naturally forms
+  function buildLevel() {
+    grid.fill(0); target.fill(0); flags = [];
+    const n = Math.min(3, 1 + Math.floor((level - 1) / 2));
+    const slots = [];
+    const span = GW - 10;
+    for (let i = 0; i < n; i++) {
+      const cx = Math.round(5 + span * (i + 0.5) / n + (Math.random() - 0.5) * 6);
+      const maxW = Math.floor(span / n) - 4;
+      const w = Math.max(14, Math.min(maxW, 16 + Math.floor(Math.random() * 14) + level * 2));
+      const h = Math.max(6, Math.min(Math.floor(w / 2) - 1, 8 + Math.floor(Math.random() * 6) + level));
+      slots.push({ cx, w, h });
+    }
+    targetCount = 0;
+    for (const s of slots) {
+      for (let dy = 0; dy < s.h; dy++) {
+        const half = Math.floor(s.w / 2) - dy;
+        if (half < 2) break;
+        for (let x = s.cx - half; x <= s.cx + half; x++) if (x >= 0 && x < GW) { const y = GH - 1 - dy; if (!target[y * GW + x]) { target[y * GW + x] = 1; targetCount++; } }
+      }
+      flags.push({ x: s.cx, y: GH - s.h });
+    }
+    budgetMax = Math.round(targetCount * (1.9 - Math.min(0.6, level * 0.05)) + 150);
+    budget = budgetMax;
+    spoutX = GW / 2;
+  }
+
+  function filledPct() {
+    let f = 0;
+    for (let i = 0; i < GW * GH; i++) if (target[i] && grid[i]) f++;
+    return f / targetCount;
+  }
+
+  function start() { level = 1; score = 0; buildLevel(); state = 'play'; audio.start(); for (const id of ['menu', 'over', 'next']) $(id).classList.add('hidden'); }
+  function nextLevel() { level++; buildLevel(); state = 'play'; $('next').classList.add('hidden'); }
+  function win() {
+    state = 'won';
+    const saved = budget; score += 100 * level + saved;
+    $('saved').textContent = saved; $('midScore').textContent = score;
+    [523, 659, 784, 1046].forEach((f, i) => setTimeout(() => audio.sfx(f, 0.2, 'triangle', 0.08), i * 120));
+    setTimeout(() => $('next').classList.remove('hidden'), 500);
+  }
+  function lose() {
+    state = 'over';
+    if (score > best) { best = score; try { localStorage.setItem(KEY, best); } catch (e) {} }
+    $('finalLevels').textContent = level - 1; $('finalScore').textContent = score; $('bestOver').textContent = best; showBest();
+    audio.sfx(400, 0.6, 'sine', 0.08, 150);
+    setTimeout(() => $('over').classList.remove('hidden'), 400);
+  }
+
+  canvas.addEventListener('pointerdown', e => { pouring = true; spoutX = Math.max(1, Math.min(GW - 2, (e.clientX - gx0) / cell)); });
+  addEventListener('pointermove', e => { if (pouring) spoutX = Math.max(1, Math.min(GW - 2, (e.clientX - gx0) / cell)); });
+  addEventListener('pointerup', () => { pouring = false; });
+  const keys = {};
+  addEventListener('keydown', e => {
+    if ((e.key === 'Enter' || e.key === ' ') && state !== 'play') {
+      e.preventDefault();
+      if (state === 'won' && !$('next').classList.contains('hidden')) nextLevel();
+      else if (state === 'menu' || !$('over').classList.contains('hidden')) start();
+      return;
+    }
+    keys[e.key] = true; if (e.key === ' ') e.preventDefault();
+  });
+  addEventListener('keyup', e => { keys[e.key] = false; });
+  $('startBtn').onclick = start; $('againBtn').onclick = start; $('nextBtn').onclick = nextLevel;
+
+  function stepSand() {
+    const flip = (t * 60 | 0) % 2;
+    for (let y = GH - 2; y >= 0; y--) {
+      for (let k = 0; k < GW; k++) {
+        const x = flip ? k : GW - 1 - k, i = y * GW + x, v = grid[i];
+        if (!v) continue;
+        const below = i + GW;
+        if (!grid[below]) { grid[below] = v; grid[i] = 0; continue; }
+        const dir = Math.random() < 0.5 ? -1 : 1;
+        for (const d of [dir, -dir]) {
+          const nx = x + d;
+          if (nx < 0 || nx >= GW) continue;
+          if (!grid[below + d] && !grid[i + d]) { grid[below + d] = v; grid[i] = 0; break; }
+        }
+      }
+    }
+  }
+
+  let settle = 0;
+  function update(dt) {
+    t += dt;
+    if (state === 'play') {
+      const kd = (keys.ArrowRight || keys.d ? 1 : 0) - (keys.ArrowLeft || keys.a ? 1 : 0);
+      spoutX = Math.max(1, Math.min(GW - 2, spoutX + kd * 40 * dt));
+      const pour = (pouring || keys[' ']) && budget > 0;
+      if (pour) {
+        for (let k = 0; k < 3 && budget > 0; k++) {
+          const x = Math.round(spoutX + (Math.random() - 0.5) * 2.5), i = 2 * GW + x;
+          if (x >= 0 && x < GW && !grid[i]) { grid[i] = 1 + Math.floor(Math.random() * 4); budget--; }
+        }
+        pourSfx -= dt;
+        if (pourSfx <= 0) { audio.sfx(2000 + Math.random() * 2000, 0.03, 'sine', 0.012); pourSfx = 0.05; }
+      }
+      // budget empty → wait for the sand to settle, then judge
+      if (budget <= 0) settle += dt; else settle = 0;
+      if (filledPct() >= 0.85) win();
+      else if (settle > 2.5) lose();
+    }
+    stepSand();
+  }
+
+  function render() {
+    // sky, sea and beach
+    const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#8fd8f0'); g.addColorStop(0.45, '#d4f2fb'); g.addColorStop(0.46, '#3fa7d6'); g.addColorStop(0.6, '#62c0e0'); g.addColorStop(0.61, '#f3d9a4'); g.addColorStop(1, '#ebc88a');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#fff6b0'; ctx.beginPath(); ctx.arc(W * 0.85, H * 0.12, Math.min(W, H) * 0.07, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#ffffffaa';
+    for (let i = 0; i < 5; i++) { const x = ((i * 190 + t * 18) % (W + 120)) - 60; ctx.fillRect(x, H * 0.48 + i * 9, 50, 3); }
+    // grid image
+    const d = img.data;
+    for (let i = 0; i < GW * GH; i++) {
+      const v = grid[i], o = i * 4;
+      if (v) { const c = SHADES[v]; d[o] = c[0]; d[o + 1] = c[1]; d[o + 2] = c[2]; d[o + 3] = 255; }
+      else if (target[i]) { const x = i % GW, y = (i / GW) | 0; const dot = (x + y) % 3 === 0; d[o] = 255; d[o + 1] = 255; d[o + 2] = 255; d[o + 3] = dot ? 170 : 60; }
+      else d[o + 3] = 0;
+    }
+    octx.putImageData(img, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(off, gx0, gy0, GW * cell, GH * cell);
+    // flags on finished towers
+    for (const f of flags) {
+      const x = gx0 + f.x * cell, y = gy0 + f.y * cell;
+      ctx.strokeStyle = '#5b3a1a'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y - 26); ctx.stroke();
+      ctx.fillStyle = '#e04a3c'; ctx.beginPath(); ctx.moveTo(x, y - 26); ctx.lineTo(x + 16 + Math.sin(t * 6 + f.x) * 2, y - 21); ctx.lineTo(x, y - 16); ctx.fill();
+    }
+    // bucket / spout
+    if (state === 'play' || state === 'menu') {
+      const sx = gx0 + spoutX * cell, sy = gy0 - 6;
+      ctx.save(); ctx.translate(sx, sy); ctx.rotate((pouring || keys[' ']) ? 0.5 : 0);
+      ctx.fillStyle = '#e04a3c'; ctx.beginPath(); ctx.moveTo(-18, -34); ctx.lineTo(18, -34); ctx.lineTo(13, 0); ctx.lineTo(-13, 0); ctx.fill();
+      ctx.fillStyle = '#ff7a6a'; ctx.fillRect(-18, -34, 36, 5);
+      ctx.strokeStyle = '#5b3a1a'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(0, -34, 16, Math.PI, 0); ctx.stroke();
+      ctx.restore();
+      if ((pouring || keys[' ']) && budget > 0) { ctx.fillStyle = 'rgba(232,190,112,.7)'; ctx.fillRect(sx - 1.5, sy, 3, cell * 3); }
+    }
+    $('level').textContent = 'Lv ' + (level || 1);
+    $('sand').style.width = (budgetMax ? Math.max(0, budget / budgetMax) * 100 : 100) + '%';
+    $('fill').textContent = targetCount ? Math.floor(filledPct() * 100) + '%' : '0%';
+  }
+
+  level = 1; buildLevel();
+  let last = performance.now();
+  (function loop(now) {
+    const dt = Math.max(0, Math.min(0.033, (now - last) / 1000)); last = now;
+    update(dt); render(); requestAnimationFrame(loop);
+  })(last);
+})();
+</script>
+</body>
+</html>

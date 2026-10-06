@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#f28a4b">
+<title>Crane Crates</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #f28a4b;
+    font-family: "Impact", "Haettenschweiler", "Arial Narrow Bold", sans-serif; color: #fff;
+    touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+  canvas { display: block; width: 100%; height: 100%; }
+  .hud { position: fixed; top: max(12px, env(safe-area-inset-top)); left: 16px; right: 16px; display: flex; justify-content: space-between; pointer-events: none;
+    font-size: 30px; letter-spacing: 1px; text-shadow: 2px 2px 0 #7a2f12; }
+  .overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; padding: 20px; background: #3a1d2acc; transition: opacity .3s; }
+  .overlay.hidden { opacity: 0; pointer-events: none; }
+  .plate { width: min(360px, 100%); background: #f2c230; color: #222; padding: 22px; text-align: center; display: flex; flex-direction: column; gap: 12px;
+    border: 5px solid #222; position: relative; }
+  .plate::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 12px; background: repeating-linear-gradient(-45deg, #222 0 12px, #f2c230 12px 24px); }
+  .plate::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 12px; background: repeating-linear-gradient(-45deg, #222 0 12px, #f2c230 12px 24px); }
+  h1 { font-size: clamp(40px, 12vw, 60px); line-height: 1; margin-top: 10px; letter-spacing: 2px; }
+  p { font-family: "Arial", sans-serif; font-size: 15px; line-height: 1.5; }
+  .stat { font-size: 22px; } .stat b { color: #c43d1f; }
+  .btn { border: 4px solid #222; background: #c43d1f; color: #fff; font: inherit; font-size: 26px; letter-spacing: 2px; padding: 10px; margin-bottom: 10px; cursor: pointer; }
+  .btn:active { background: #9c2e15; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud"><div id="score">0</div><div id="lives">■■■</div></div>
+
+<div class="overlay" id="menu"><div class="plate">
+  <h1>CRANE CRATES</h1>
+  <p>The crane swings the container. <b>Tap</b> to release it onto the stack. Keep the tower's weight over its base — lean too far and it all comes down. 3 misses and you're fired!</p>
+  <div class="stat" id="bestMenu"></div>
+  <button class="btn" id="startBtn">START SHIFT</button>
+</div></div>
+<div class="overlay hidden" id="over"><div class="plate">
+  <h1 id="overTitle">COLLAPSE!</h1>
+  <div class="stat">CRATES <b id="finalScore">0</b></div>
+  <div class="stat">BEST <b id="bestOver">0</b></div>
+  <button class="btn" id="againBtn">NEW SHIFT</button>
+</div></div>
+
+<script>
+/*AUDIO-ENGINE-START*/
+// ---------- audio: procedural background music + sound effects ----------
+// Every note is synthesized with the Web Audio API at runtime, so the music
+// needs no files, works offline and carries no copyright.
+const GameAudio = (cfg) => {
+  let ctx = null, master = null, musicBus = null, sfxBus = null;
+  let timer = null, step = 0, nextT = 0, playing = false;
+  let musicOn = true;
+  try { musicOn = localStorage.getItem('music_off') !== '1'; } catch (e) {}
+
+  const SCALES = {
+    major: [0, 2, 4, 5, 7, 9, 11], minor: [0, 2, 3, 5, 7, 8, 10],
+    dorian: [0, 2, 3, 5, 7, 9, 10], lydian: [0, 2, 4, 6, 7, 9, 11],
+    pentaMajor: [0, 2, 4, 7, 9], pentaMinor: [0, 3, 5, 7, 10],
+    japanese: [0, 1, 5, 7, 8], phrygian: [0, 1, 3, 5, 7, 8, 10]
+  };
+  const scale = SCALES[cfg.scale] || SCALES.major;
+  const root = cfg.root || 57;
+  const bpm = cfg.bpm || 110;
+  const prog = cfg.prog || [0, 5, 3, 4];
+  const sixteenth = 60 / bpm / 4;
+
+  // deterministic random so each game always plays "its" tune
+  let seed = cfg.seed || 1;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
+
+  const deg = (d, oct = 0) => {
+    const n = scale.length;
+    const o = Math.floor(d / n);
+    return root + scale[((d % n) + n) % n] + 12 * (o + oct);
+  };
+  const hz = m => 440 * Math.pow(2, (m - 69) / 12);
+
+  // melody: two 2-bar phrases (A, B) arranged A A B A
+  function phrase() {
+    const notes = [];
+    let d = 2 + Math.floor(rnd() * 3);
+    for (let i = 0; i < 32; i++) {
+      const strong = i % 4 === 0;
+      if (rnd() < (strong ? 0.85 : (cfg.leadDensity || 0.35))) {
+        d += Math.round((rnd() - 0.5) * 4);
+        d = Math.max(0, Math.min(scale.length * 2, d));
+        const len = strong && rnd() < 0.5 ? 2 : 1;
+        notes.push({ i, d, len });
+      }
+    }
+    return notes;
+  }
+  const A = phrase(), B = phrase();
+  const song = [A, A, B, A];
+
+  function init() {
+    if (ctx) return;
+    try {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      master = ctx.createGain(); master.gain.value = 0.9; master.connect(ctx.destination);
+      musicBus = ctx.createGain(); musicBus.gain.value = cfg.volume || 0.16; musicBus.connect(master);
+      sfxBus = ctx.createGain(); sfxBus.gain.value = 1; sfxBus.connect(master);
+    } catch (e) { ctx = null; }
+  }
+
+  function voice(t, freq, dur, type, vol, opts = {}) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, t);
+    if (opts.detune) o.detune.value = opts.detune;
+    let node = o;
+    if (opts.cutoff) {
+      const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = opts.cutoff; f.Q.value = opts.q || 1;
+      o.connect(f); node = f;
+    }
+    const a = opts.attack || 0.008;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(vol, t + a);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    node.connect(g); g.connect(opts.bus || musicBus);
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+
+  let noiseBuf = null;
+  function noise(t, dur, vol, hp) {
+    if (!noiseBuf) {
+      noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 0.5, ctx.sampleRate);
+      const d = noiseBuf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    }
+    const s = ctx.createBufferSource(); s.buffer = noiseBuf;
+    const f = ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = hp;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.connect(f); f.connect(g); g.connect(musicBus);
+    s.start(t); s.stop(t + dur + 0.02);
+  }
+
+  function kick(t) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.setValueAtTime(140, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+    g.gain.setValueAtTime(0.9, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+    o.connect(g); g.connect(musicBus); o.start(t); o.stop(t + 0.25);
+  }
+
+  function playStep(s, t) {
+    const bar = Math.floor(s / 16);
+    const i16 = s % 16;
+    const chordDeg = prog[bar % prog.length];
+    const w = cfg.waves || {};
+    // bass
+    const bassPat = cfg.bassPattern || [0, 8];
+    if (bassPat.includes(i16)) voice(t, hz(deg(chordDeg, -2)), sixteenth * 3.5, w.bass || 'triangle', 0.5, { cutoff: 600 });
+    // pad (chord) at bar start
+    if (cfg.pad && i16 === 0) {
+      for (const k of [0, 2, 4]) voice(t, hz(deg(chordDeg + k, -1)), sixteenth * 15, w.pad || 'sine', 0.12, { attack: 0.3, cutoff: 1400, detune: k * 3 });
+    }
+    // arpeggio
+    if (cfg.arp && i16 % (cfg.arpEvery || 2) === 0) {
+      const k = [0, 2, 4, 2][(i16 / (cfg.arpEvery || 2)) % 4];
+      voice(t, hz(deg(chordDeg + k, cfg.arpOct || 0)), sixteenth * 1.6, w.arp || 'square', 0.1, { cutoff: cfg.arpCutoff || 2200 });
+    }
+    // lead melody
+    const ph = song[Math.floor(bar / 2) % song.length];
+    const pi = (bar % 2) * 16 + i16;
+    for (const n of ph) if (n.i === pi) {
+      voice(t, hz(deg(n.d, cfg.leadOct || 0)), sixteenth * (n.len * 2 + 0.5), w.lead || 'triangle', 0.22, { cutoff: cfg.leadCutoff || 3000 });
+    }
+    // drums
+    if (cfg.drums) {
+      if (i16 % 8 === 0 || (cfg.drums === 'busy' && i16 === 10)) kick(t);
+      if (i16 % 8 === 4) noise(t, 0.14, 0.35, 1500);
+      if (i16 % 2 === 0) noise(t, 0.04, cfg.drums === 'soft' ? 0.06 : 0.12, 7000);
+    }
+  }
+
+  function scheduler() {
+    if (!ctx || !playing) return;
+    while (nextT < ctx.currentTime + 0.15) {
+      playStep(step, nextT);
+      nextT += sixteenth * (cfg.swing && step % 2 === 0 ? 1 + cfg.swing : cfg.swing ? 1 - cfg.swing : 1);
+      step++;
+    }
+  }
+
+  function startMusic() {
+    if (!ctx || playing || !musicOn) return;
+    playing = true;
+    musicBus.gain.cancelScheduledValues(ctx.currentTime);
+    musicBus.gain.setValueAtTime(0.0001, ctx.currentTime);
+    musicBus.gain.linearRampToValueAtTime(cfg.volume || 0.16, ctx.currentTime + 1.2);
+    nextT = ctx.currentTime + 0.05;
+    timer = setInterval(scheduler, 40);
+  }
+  function stopMusic() {
+    playing = false;
+    if (timer) clearInterval(timer);
+    timer = null;
+  }
+
+  // mute button
+  const btn = document.createElement('button');
+  btn.setAttribute('aria-label', 'Toggle music');
+  btn.style.cssText = 'position:fixed;z-index:50;right:max(14px,env(safe-area-inset-right));bottom:max(14px,env(safe-area-inset-bottom));' +
+    'width:42px;height:42px;border-radius:50%;border:none;cursor:pointer;font-size:20px;line-height:42px;padding:0;' +
+    'background:' + (cfg.btnBg || 'rgba(0,0,0,.35)') + ';color:' + (cfg.btnColor || '#fff') + ';backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);';
+  const paint = () => { btn.textContent = musicOn ? '♪' : '✕'; btn.style.opacity = musicOn ? '1' : '.6'; };
+  paint();
+  const toggle = e => {
+    e.stopPropagation(); e.preventDefault();
+    musicOn = !musicOn;
+    try { localStorage.setItem('music_off', musicOn ? '0' : '1'); } catch (err) {}
+    init();
+    if (ctx && ctx.state === 'suspended') ctx.resume();
+    if (musicOn) startMusic(); else stopMusic();
+    paint();
+  };
+  btn.addEventListener('pointerdown', e => e.stopPropagation());
+  btn.addEventListener('pointerup', e => e.stopPropagation());
+  btn.addEventListener('click', toggle);
+  document.addEventListener('DOMContentLoaded', () => document.body.appendChild(btn));
+  if (document.body) document.body.appendChild(btn);
+
+  document.addEventListener('visibilitychange', () => {
+    if (!ctx) return;
+    if (document.hidden) ctx.suspend(); else ctx.resume();
+  });
+
+  return {
+    // call from a user gesture (start button) — browsers only allow audio after one
+    start() {
+      init();
+      if (!ctx) return;
+      if (ctx.state === 'suspended') ctx.resume();
+      startMusic();
+    },
+    sfx(freq, dur, type = 'sine', vol = 0.07, to = 0) {
+      init();
+      if (!ctx) return;
+      try {
+        const t = ctx.currentTime;
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.type = type; o.frequency.setValueAtTime(freq, t);
+        if (to) o.frequency.exponentialRampToValueAtTime(Math.max(30, to), t + dur);
+        g.gain.setValueAtTime(vol, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+        o.connect(g); g.connect(sfxBus);
+        o.start(t); o.stop(t + dur + 0.02);
+      } catch (e) {}
+    }
+  };
+};
+/*AUDIO-ENGINE-END*/
+(() => {
+  const audio = GameAudio({
+    bpm: 96, scale: 'dorian', root: 50, prog: [0, 3, 0, 4], seed: 203,
+    waves: { lead: 'square', bass: 'triangle', arp: 'triangle' },
+    arp: true, arpEvery: 2, arpOct: 1, arpCutoff: 1800, leadCutoff: 1500, leadOct: 1, drums: true, swing: 0.1, bassPattern: [0, 6, 8, 14], volume: 0.14,
+    btnBg: 'rgba(58,29,42,.6)', btnColor: '#f2c230'
+  });
+  const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+  const $ = id => document.getElementById(id);
+  const KEY = 'crane_crates_best';
+  let best = 0; try { best = +localStorage.getItem(KEY) || 0; } catch (e) {}
+  const showBest = () => { $('bestMenu').innerHTML = best ? 'BEST <b>' + best + '</b>' : ''; }; showBest();
+
+  let W, H, DPR, S, LW, LH;
+  const CH = 46, ROPE = 150, G = 1500;
+  function resize() {
+    DPR = Math.min(devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight;
+    canvas.width = W * DPR; canvas.height = H * DPR;
+    S = Math.min(W / 400, H / 700); LW = W / S; LH = H / S;
+  }
+  addEventListener('resize', resize); resize();
+  const COLORS = ['#2f80c2', '#c43d1f', '#2e9a62', '#e0a422', '#7d4cb3', '#1f8c94'];
+
+  // tower[i] = { x, w, col }  (x = centre, world coordinates, ground at y = 0)
+  let state = 'menu', tower, hook, falling, camY, lives, t = 0, topple = null, shake = 0, msg = '', msgT = 0;
+  function reset() {
+    tower = [{ x: 0, w: 140, col: '#555', base: true }];
+    falling = null; camY = 0; lives = 3; topple = null; msg = ''; msgT = 0;
+    hook = { ang: 0, w: 100, col: COLORS[0], amp: 0.55, speed: 1.6, phase: 0 };
+    nextCrate();
+  }
+  function nextCrate() {
+    const n = tower.length;
+    hook.w = 90 + Math.random() * 40 - Math.min(30, n);
+    hook.col = COLORS[Math.floor(Math.random() * COLORS.length)];
+    hook.amp = Math.min(0.85, 0.45 + n * 0.02);
+    hook.speed = Math.min(3, 1.6 + n * 0.05);
+    hook.has = true;
+  }
+  reset();
+  const topY = () => tower.length * CH;              // height of the stack top
+  const pivot = () => ({ x: 0, y: topY() + ROPE + 140 });
+
+  function start() { reset(); state = 'play'; audio.start(); $('menu').classList.add('hidden'); $('over').classList.add('hidden'); }
+  function end(title) {
+    if (state !== 'play') return;
+    state = 'over';
+    const s = tower.length - 1; if (s > best) { best = s; try { localStorage.setItem(KEY, best); } catch (e) {} }
+    $('overTitle').textContent = title; $('finalScore').textContent = s; $('bestOver').textContent = best; showBest();
+    setTimeout(() => $('over').classList.remove('hidden'), 1300);
+  }
+  function release() {
+    if (state !== 'play' || !hook.has || falling || topple) return;
+    const pv = pivot(), a = hook.ang;
+    const omega = hook.amp * hook.speed * Math.cos(hook.phase);
+    falling = { x: pv.x + Math.sin(a) * ROPE, y: pv.y - Math.cos(a) * ROPE - 22 - CH, vx: Math.cos(a) * ROPE * omega, vy: Math.sin(a) * ROPE * omega, w: hook.w, col: hook.col, rot: 0 };
+    hook.has = false;
+    audio.sfx(700, 0.08, 'square', 0.04, 400);
+  }
+  canvas.addEventListener('pointerdown', release);
+  addEventListener('keydown', e => {
+    if (e.key !== ' ' && e.key !== 'Enter') return; e.preventDefault();
+    if (state === 'play') release(); else if (state === 'menu' || !$('over').classList.contains('hidden')) start();
+  });
+  $('startBtn').onclick = start; $('againBtn').onclick = start;
+
+  // returns the index whose support fails, or -1 if the tower is stable
+  function unstableAt() {
+    for (let i = tower.length - 1; i >= 1; i--) {
+      let m = 0, mx = 0;
+      for (let j = i; j < tower.length; j++) { const wgt = tower[j].w; m += wgt; mx += wgt * tower[j].x; }
+      const com = mx / m, below = tower[i - 1];
+      if (com < below.x - below.w / 2 || com > below.x + below.w / 2) return { i, side: com > below.x ? 1 : -1 };
+    }
+    return null;
+  }
+
+  function update(dt) {
+    t += dt;
+    hook.phase += hook.speed * dt;
+    hook.ang = Math.sin(hook.phase) * hook.amp;
+    if (falling) {
+      const prevY = falling.y;
+      falling.vy -= G * dt; falling.x += falling.vx * dt; falling.y += falling.vy * dt;
+      const top = tower[tower.length - 1];
+      if (falling.y <= topY() && falling.vy < 0) {
+        const overlap = Math.min(falling.x + falling.w / 2, top.x + top.w / 2) - Math.max(falling.x - falling.w / 2, top.x - top.w / 2);
+        if (overlap > falling.w * 0.25 && prevY >= topY()) {
+          const off = falling.x - top.x;
+          tower.push({ x: falling.x, w: falling.w, col: falling.col });
+          falling = null; shake = 4;
+          if (Math.abs(off) < 6) { msg = 'PERFECT!'; msgT = 1; audio.sfx(880, 0.2, 'triangle', 0.08, 1320); tower[tower.length - 1].x = top.x; }
+          else audio.sfx(150, 0.15, 'square', 0.08, 80);
+          const u = unstableAt();
+          if (u) { topple = { i: u.i, side: u.side, ang: 0, av: 0, pivotX: tower[u.i - 1].x + u.side * tower[u.i - 1].w / 2, pivotY: u.i * CH }; audio.sfx(200, 1, 'sawtooth', 0.07, 50); }
+          else nextCrate();
+        } else if (falling.y < camY - 200) {
+          falling = null; lives--; msg = 'MISS'; msgT = 1; audio.sfx(300, 0.3, 'sawtooth', 0.06, 100);
+          if (lives <= 0) end('FIRED!'); else nextCrate();
+        }
+      }
+    }
+    if (topple) {
+      topple.av += 2.5 * dt * (1 + topple.ang * 3); topple.ang += topple.av * dt;
+      if (topple.ang > 1.2) end('COLLAPSE!');
+    }
+    const target = Math.max(0, topY() - LH * 0.35);
+    camY += (target - camY) * Math.min(1, dt * 3);
+    shake = Math.max(0, shake - dt * 30); msgT = Math.max(0, msgT - dt);
+  }
+
+  const sy = y => LH * 0.85 - (y - camY);
+  function crate(x, yTop, w, col) {
+    ctx.fillStyle = col; ctx.fillRect(x - w / 2, yTop, w, CH);
+    ctx.fillStyle = 'rgba(0,0,0,.18)';
+    for (let k = x - w / 2 + 6; k < x + w / 2 - 4; k += 9) ctx.fillRect(k, yTop + 4, 3, CH - 8);
+    ctx.fillStyle = 'rgba(255,255,255,.25)'; ctx.fillRect(x - w / 2, yTop, w, 4);
+    ctx.strokeStyle = 'rgba(0,0,0,.35)'; ctx.lineWidth = 2; ctx.strokeRect(x - w / 2 + 1, yTop + 1, w - 2, CH - 2);
+  }
+
+  function render() {
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, '#3a1d4a'); g.addColorStop(0.55, '#e5605a'); g.addColorStop(1, '#f6b05c');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    ctx.save(); ctx.scale(S, S);
+    if (shake) ctx.translate((Math.random() - .5) * shake, (Math.random() - .5) * shake);
+    // sun + sea + far cranes
+    ctx.fillStyle = '#ffd88a'; ctx.beginPath(); ctx.arc(LW * 0.25, sy(40) - 40 + camY * 0.7, 60, 0, Math.PI * 2); ctx.fill();
+    const seaY = sy(0) + camY * 0.0;
+    ctx.fillStyle = '#5a2f5c';
+    for (let i = 0; i < 4; i++) {
+      const x = 30 + i * (LW / 4), b = seaY;
+      ctx.fillRect(x, b - 160, 6, 160); ctx.fillRect(x - 30, b - 160, 90, 6); ctx.fillRect(x + 50, b - 160, 2, 50);
+      ctx.fillRect(x + 20, b - 40, 40, 40);
+    }
+    ctx.fillStyle = '#3d2a5e'; ctx.fillRect(0, seaY, LW, 1000);
+    ctx.fillStyle = '#5b4380'; for (let i = 0; i < 12; i++) ctx.fillRect(((i * 90 + t * 20) % (LW + 60)) - 30, seaY + 12 + (i % 3) * 14, 30, 2);
+    // dock
+    ctx.fillStyle = '#2b2b33'; ctx.fillRect(-10, sy(0), LW + 20, 30);
+    // tower
+    ctx.save(); ctx.translate(LW / 2, 0);
+    tower.forEach((b, i) => {
+      if (topple && i >= topple.i) return;
+      if (b.base) { ctx.fillStyle = '#444'; ctx.fillRect(b.x - b.w / 2, sy(CH), b.w, CH); ctx.fillStyle = '#f2c230'; for (let k = 0; k < 7; k++) ctx.fillRect(b.x - b.w / 2 + k * 20, sy(CH), 10, 6); return; }
+      crate(b.x, sy((i + 1) * CH), b.w, b.col);
+    });
+    if (topple) {
+      ctx.save(); ctx.translate(topple.pivotX, sy(topple.pivotY)); ctx.rotate(topple.side * topple.ang); ctx.translate(-topple.pivotX, -sy(topple.pivotY));
+      for (let i = topple.i; i < tower.length; i++) crate(tower[i].x, sy((i + 1) * CH), tower[i].w, tower[i].col);
+      ctx.restore();
+    }
+    // crane arm and hook
+    const pv = pivot();
+    ctx.fillStyle = '#222'; ctx.fillRect(-LW, sy(pv.y) - 14, LW * 2, 12);
+    ctx.strokeStyle = '#222'; ctx.lineWidth = 2;
+    for (let x = -LW; x < LW; x += 24) { ctx.beginPath(); ctx.moveTo(x, sy(pv.y) - 14); ctx.lineTo(x + 12, sy(pv.y) - 26); ctx.lineTo(x + 24, sy(pv.y) - 14); ctx.stroke(); }
+    ctx.fillStyle = '#f2c230'; ctx.fillRect(-14, sy(pv.y) - 10, 28, 14);
+    const hx = Math.sin(hook.ang) * ROPE, hy = pv.y - Math.cos(hook.ang) * ROPE;
+    ctx.strokeStyle = '#222'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(0, sy(pv.y)); ctx.lineTo(hx, sy(hy)); ctx.stroke();
+    ctx.fillStyle = '#222'; ctx.fillRect(hx - 6, sy(hy) - 2, 12, 8);
+    if (hook.has && state === 'play') {
+      ctx.save(); ctx.translate(hx, sy(hy)); ctx.rotate(-hook.ang * 0.3); ctx.translate(-hx, -sy(hy));
+      ctx.beginPath(); ctx.moveTo(hx, sy(hy) + 6); ctx.lineTo(hx - hook.w / 2 + 6, sy(hy) + 22); ctx.moveTo(hx, sy(hy) + 6); ctx.lineTo(hx + hook.w / 2 - 6, sy(hy) + 22); ctx.stroke();
+      crate(hx, sy(hy) + 22, hook.w, hook.col);
+      ctx.restore();
+    }
+    if (falling) crate(falling.x, sy(falling.y + CH), falling.w, falling.col);
+    // drop guide
+    if (hook.has && state === 'play') { ctx.strokeStyle = 'rgba(255,255,255,.18)'; ctx.setLineDash([4, 8]); ctx.beginPath(); ctx.moveTo(hx, sy(hy) + 70); ctx.lineTo(hx, sy(topY())); ctx.stroke(); ctx.setLineDash([]); }
+    ctx.restore();
+    if (msgT > 0) { ctx.font = '34px Impact, sans-serif'; ctx.textAlign = 'center'; ctx.fillStyle = 'rgba(255,255,255,' + msgT + ')'; ctx.fillText(msg, LW / 2, LH * 0.3); }
+    ctx.restore();
+    $('score').textContent = tower.length - 1; $('lives').textContent = '■'.repeat(Math.max(0, lives)) + '□'.repeat(3 - Math.max(0, lives));
+  }
+
+  let last = performance.now();
+  (function loop(now) {
+    const dt = Math.max(0, Math.min(0.033, (now - last) / 1000)); last = now;
+    update(dt); render(); requestAnimationFrame(loop);
+  })(last);
+})();
+</script>
+</body>
+</html>

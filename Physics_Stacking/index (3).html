@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#dfe5dc">
+<title>Zen Stones</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #dfe5dc;
+    font-family: "Optima", "Candara", "Segoe UI", sans-serif; color: #3d4a42;
+    touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+  canvas { display: block; width: 100%; height: 100%; }
+  .hud { position: fixed; top: max(18px, env(safe-area-inset-top)); left: 0; right: 0; text-align: center; pointer-events: none; }
+  .hud b { font-size: 46px; font-weight: 300; }
+  .hud div { font-size: 13px; letter-spacing: 5px; min-height: 18px; color: #7d8f6e; }
+  .overlay { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; padding: 24px; text-align: center;
+    background: #eef1eadd; transition: opacity .6s; }
+  .overlay.hidden { opacity: 0; pointer-events: none; }
+  .enso { width: 90px; height: 90px; border-radius: 50%; border: 7px solid #3d4a42; border-right-color: transparent; transform: rotate(30deg); }
+  h1 { font-size: clamp(36px, 10vw, 54px); font-weight: 300; letter-spacing: 12px; }
+  p { max-width: 300px; font-size: 15px; line-height: 1.8; color: #5e6b60; }
+  .stat { letter-spacing: 3px; } .stat b { font-weight: 400; color: #7d8f6e; }
+  .btn { border: 1px solid #3d4a42; background: transparent; color: #3d4a42; font: inherit; font-size: 16px; letter-spacing: 8px; padding: 14px 40px; cursor: pointer; border-radius: 40px; }
+  .btn:active { background: #3d4a42; color: #eef1ea; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud"><b id="score"></b><div id="note"></div></div>
+
+<div class="overlay" id="menu">
+  <div class="enso"></div>
+  <h1>ZEN STONES</h1>
+  <p>Breathe. Tap to let each stone go. Keep the cairn's weight above its base, or it will fall.</p>
+  <div class="stat" id="bestMenu"></div>
+  <button class="btn" id="startBtn">BEGIN</button>
+</div>
+<div class="overlay hidden" id="over">
+  <div class="enso"></div>
+  <h1 id="finalScore">0</h1>
+  <p>stones in balance</p>
+  <div class="stat">best <b id="bestOver">0</b></div>
+  <button class="btn" id="againBtn">AGAIN</button>
+</div>
+
+<script>
+/*AUDIO-ENGINE-START*/
+// ---------- audio: procedural background music + sound effects ----------
+// Every note is synthesized with the Web Audio API at runtime, so the music
+// needs no files, works offline and carries no copyright.
+const GameAudio = (cfg) => {
+  let ctx = null, master = null, musicBus = null, sfxBus = null;
+  let timer = null, step = 0, nextT = 0, playing = false;
+  let musicOn = true;
+  try { musicOn = localStorage.getItem('music_off') !== '1'; } catch (e) {}
+
+  const SCALES = {
+    major: [0, 2, 4, 5, 7, 9, 11], minor: [0, 2, 3, 5, 7, 8, 10],
+    dorian: [0, 2, 3, 5, 7, 9, 10], lydian: [0, 2, 4, 6, 7, 9, 11],
+    pentaMajor: [0, 2, 4, 7, 9], pentaMinor: [0, 3, 5, 7, 10],
+    japanese: [0, 1, 5, 7, 8], phrygian: [0, 1, 3, 5, 7, 8, 10]
+  };
+  const scale = SCALES[cfg.scale] || SCALES.major;
+  const root = cfg.root || 57;
+  const bpm = cfg.bpm || 110;
+  const prog = cfg.prog || [0, 5, 3, 4];
+  const sixteenth = 60 / bpm / 4;
+
+  // deterministic random so each game always plays "its" tune
+  let seed = cfg.seed || 1;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
+
+  const deg = (d, oct = 0) => {
+    const n = scale.length;
+    const o = Math.floor(d / n);
+    return root + scale[((d % n) + n) % n] + 12 * (o + oct);
+  };
+  const hz = m => 440 * Math.pow(2, (m - 69) / 12);
+
+  // melody: two 2-bar phrases (A, B) arranged A A B A
+  function phrase() {
+    const notes = [];
+    let d = 2 + Math.floor(rnd() * 3);
+    for (let i = 0; i < 32; i++) {
+      const strong = i % 4 === 0;
+      if (rnd() < (strong ? 0.85 : (cfg.leadDensity || 0.35))) {
+        d += Math.round((rnd() - 0.5) * 4);
+        d = Math.max(0, Math.min(scale.length * 2, d));
+        const len = strong && rnd() < 0.5 ? 2 : 1;
+        notes.push({ i, d, len });
+      }
+    }
+    return notes;
+  }
+  const A = phrase(), B = phrase();
+  const song = [A, A, B, A];
+
+  function init() {
+    if (ctx) return;
+    try {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      master = ctx.createGain(); master.gain.value = 0.9; master.connect(ctx.destination);
+      musicBus = ctx.createGain(); musicBus.gain.value = cfg.volume || 0.16; musicBus.connect(master);
+      sfxBus = ctx.createGain(); sfxBus.gain.value = 1; sfxBus.connect(master);
+    } catch (e) { ctx = null; }
+  }
+
+  function voice(t, freq, dur, type, vol, opts = {}) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, t);
+    if (opts.detune) o.detune.value = opts.detune;
+    let node = o;
+    if (opts.cutoff) {
+      const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = opts.cutoff; f.Q.value = opts.q || 1;
+      o.connect(f); node = f;
+    }
+    const a = opts.attack || 0.008;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(vol, t + a);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    node.connect(g); g.connect(opts.bus || musicBus);
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+
+  let noiseBuf = null;
+  function noise(t, dur, vol, hp) {
+    if (!noiseBuf) {
+      noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 0.5, ctx.sampleRate);
+      const d = noiseBuf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    }
+    const s = ctx.createBufferSource(); s.buffer = noiseBuf;
+    const f = ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = hp;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.connect(f); f.connect(g); g.connect(musicBus);
+    s.start(t); s.stop(t + dur + 0.02);
+  }
+
+  function kick(t) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.setValueAtTime(140, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+    g.gain.setValueAtTime(0.9, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+    o.connect(g); g.connect(musicBus); o.start(t); o.stop(t + 0.25);
+  }
+
+  function playStep(s, t) {
+    const bar = Math.floor(s / 16);
+    const i16 = s % 16;
+    const chordDeg = prog[bar % prog.length];
+    const w = cfg.waves || {};
+    // bass
+    const bassPat = cfg.bassPattern || [0, 8];
+    if (bassPat.includes(i16)) voice(t, hz(deg(chordDeg, -2)), sixteenth * 3.5, w.bass || 'triangle', 0.5, { cutoff: 600 });
+    // pad (chord) at bar start
+    if (cfg.pad && i16 === 0) {
+      for (const k of [0, 2, 4]) voice(t, hz(deg(chordDeg + k, -1)), sixteenth * 15, w.pad || 'sine', 0.12, { attack: 0.3, cutoff: 1400, detune: k * 3 });
+    }
+    // arpeggio
+    if (cfg.arp && i16 % (cfg.arpEvery || 2) === 0) {
+      const k = [0, 2, 4, 2][(i16 / (cfg.arpEvery || 2)) % 4];
+      voice(t, hz(deg(chordDeg + k, cfg.arpOct || 0)), sixteenth * 1.6, w.arp || 'square', 0.1, { cutoff: cfg.arpCutoff || 2200 });
+    }
+    // lead melody
+    const ph = song[Math.floor(bar / 2) % song.length];
+    const pi = (bar % 2) * 16 + i16;
+    for (const n of ph) if (n.i === pi) {
+      voice(t, hz(deg(n.d, cfg.leadOct || 0)), sixteenth * (n.len * 2 + 0.5), w.lead || 'triangle', 0.22, { cutoff: cfg.leadCutoff || 3000 });
+    }
+    // drums
+    if (cfg.drums) {
+      if (i16 % 8 === 0 || (cfg.drums === 'busy' && i16 === 10)) kick(t);
+      if (i16 % 8 === 4) noise(t, 0.14, 0.35, 1500);
+      if (i16 % 2 === 0) noise(t, 0.04, cfg.drums === 'soft' ? 0.06 : 0.12, 7000);
+    }
+  }
+
+  function scheduler() {
+    if (!ctx || !playing) return;
+    while (nextT < ctx.currentTime + 0.15) {
+      playStep(step, nextT);
+      nextT += sixteenth * (cfg.swing && step % 2 === 0 ? 1 + cfg.swing : cfg.swing ? 1 - cfg.swing : 1);
+      step++;
+    }
+  }
+
+  function startMusic() {
+    if (!ctx || playing || !musicOn) return;
+    playing = true;
+    musicBus.gain.cancelScheduledValues(ctx.currentTime);
+    musicBus.gain.setValueAtTime(0.0001, ctx.currentTime);
+    musicBus.gain.linearRampToValueAtTime(cfg.volume || 0.16, ctx.currentTime + 1.2);
+    nextT = ctx.currentTime + 0.05;
+    timer = setInterval(scheduler, 40);
+  }
+  function stopMusic() {
+    playing = false;
+    if (timer) clearInterval(timer);
+    timer = null;
+  }
+
+  // mute button
+  const btn = document.createElement('button');
+  btn.setAttribute('aria-label', 'Toggle music');
+  btn.style.cssText = 'position:fixed;z-index:50;right:max(14px,env(safe-area-inset-right));bottom:max(14px,env(safe-area-inset-bottom));' +
+    'width:42px;height:42px;border-radius:50%;border:none;cursor:pointer;font-size:20px;line-height:42px;padding:0;' +
+    'background:' + (cfg.btnBg || 'rgba(0,0,0,.35)') + ';color:' + (cfg.btnColor || '#fff') + ';backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);';
+  const paint = () => { btn.textContent = musicOn ? '♪' : '✕'; btn.style.opacity = musicOn ? '1' : '.6'; };
+  paint();
+  const toggle = e => {
+    e.stopPropagation(); e.preventDefault();
+    musicOn = !musicOn;
+    try { localStorage.setItem('music_off', musicOn ? '0' : '1'); } catch (err) {}
+    init();
+    if (ctx && ctx.state === 'suspended') ctx.resume();
+    if (musicOn) startMusic(); else stopMusic();
+    paint();
+  };
+  btn.addEventListener('pointerdown', e => e.stopPropagation());
+  btn.addEventListener('pointerup', e => e.stopPropagation());
+  btn.addEventListener('click', toggle);
+  document.addEventListener('DOMContentLoaded', () => document.body.appendChild(btn));
+  if (document.body) document.body.appendChild(btn);
+
+  document.addEventListener('visibilitychange', () => {
+    if (!ctx) return;
+    if (document.hidden) ctx.suspend(); else ctx.resume();
+  });
+
+  return {
+    // call from a user gesture (start button) — browsers only allow audio after one
+    start() {
+      init();
+      if (!ctx) return;
+      if (ctx.state === 'suspended') ctx.resume();
+      startMusic();
+    },
+    sfx(freq, dur, type = 'sine', vol = 0.07, to = 0) {
+      init();
+      if (!ctx) return;
+      try {
+        const t = ctx.currentTime;
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.type = type; o.frequency.setValueAtTime(freq, t);
+        if (to) o.frequency.exponentialRampToValueAtTime(Math.max(30, to), t + dur);
+        g.gain.setValueAtTime(vol, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+        o.connect(g); g.connect(sfxBus);
+        o.start(t); o.stop(t + dur + 0.02);
+      } catch (e) {}
+    }
+  };
+};
+/*AUDIO-ENGINE-END*/
+(() => {
+  const audio = GameAudio({
+    bpm: 66, scale: 'pentaMajor', root: 60, prog: [0, 3, 1, 4], seed: 204,
+    waves: { lead: 'sine', bass: 'sine', arp: 'triangle', pad: 'sine' },
+    pad: true, arp: true, arpEvery: 4, arpOct: 1, leadOct: 1, leadDensity: 0.15, drums: false, bassPattern: [0], volume: 0.22,
+    btnBg: 'rgba(61,74,66,.25)', btnColor: '#3d4a42'
+  });
+  const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+  const $ = id => document.getElementById(id);
+  const KEY = 'zen_stones_best';
+  let best = 0; try { best = +localStorage.getItem(KEY) || 0; } catch (e) {}
+  const showBest = () => { $('bestMenu').innerHTML = best ? 'best <b>' + best + '</b>' : ''; }; showBest();
+
+  let W, H, DPR, S, LW, LH;
+  function resize() {
+    DPR = Math.min(devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight;
+    canvas.width = W * DPR; canvas.height = H * DPR;
+    S = Math.min(W / 400, H / 700); LW = W / S; LH = H / S;
+  }
+  addEventListener('resize', resize); resize();
+
+  let state = 'menu', stones, held, drop, camY, t = 0, topple = null, note = '', noteT = 0, ripples = [];
+  const newStone = () => {
+    const w = 70 + Math.random() * 70, h = 24 + Math.random() * 16;
+    return { w, h, tone: 0.35 + Math.random() * 0.35, moss: Math.random() < 0.3, seed: Math.random() * 10 };
+  };
+  function reset() {
+    stones = [{ x: 0, y: 0, w: 170, h: 46, tone: 0.3, seed: 1, base: true }];
+    held = newStone(); drop = null; camY = 0; topple = null; ripples = [];
+  }
+  reset();
+  const topY = () => { const s = stones[stones.length - 1]; return s.y + s.h; };
+
+  function start() { reset(); state = 'play'; audio.start(); $('menu').classList.add('hidden'); $('over').classList.add('hidden'); }
+  function end() {
+    if (state !== 'play') return;
+    state = 'over';
+    const s = stones.length - 1; if (s > best) { best = s; try { localStorage.setItem(KEY, best); } catch (e) {} }
+    $('finalScore').textContent = s; $('bestOver').textContent = best; showBest();
+    setTimeout(() => $('over').classList.remove('hidden'), 1500);
+  }
+  const handX = () => Math.sin(t * (0.9 + Math.min(1.4, stones.length * 0.07))) * Math.min(LW * 0.38, 150);
+  function release() {
+    if (state !== 'play' || !held || drop || topple) return;
+    drop = Object.assign(held, { x: handX(), y: topY() + 150, vy: 0 });
+    held = null;
+  }
+  canvas.addEventListener('pointerdown', release);
+  addEventListener('keydown', e => {
+    if (e.key !== ' ' && e.key !== 'Enter') return; e.preventDefault();
+    if (state === 'play') release(); else if (state === 'menu' || !$('over').classList.contains('hidden')) start();
+  });
+  $('startBtn').onclick = start; $('againBtn').onclick = start;
+
+  function unstable() {
+    for (let i = stones.length - 1; i >= 1; i--) {
+      let m = 0, mx = 0;
+      for (let j = i; j < stones.length; j++) { const k = stones[j].w * stones[j].h; m += k; mx += k * stones[j].x; }
+      const com = mx / m, b = stones[i - 1], half = b.w * 0.42;   // rounded stones: the usable top is narrower
+      if (Math.abs(com - b.x) > half) return { i, side: Math.sign(com - b.x) };
+    }
+    return null;
+  }
+
+  const CHIME = [0, 2, 4, 7, 9, 12, 14, 16];
+  function update(dt) {
+    t += dt;
+    if (drop) {
+      drop.vy -= 1300 * dt; drop.y += drop.vy * dt;
+      const top = stones[stones.length - 1];
+      if (drop.y <= topY()) {
+        drop.y = topY() - 3;
+        const dx = drop.x - top.x;
+        if (Math.abs(dx) > top.w * 0.45) {
+          // slides off the top stone
+          topple = { i: stones.length, side: Math.sign(dx), ang: 0, av: 0, px: top.x + Math.sign(dx) * top.w * 0.45, py: topY() };
+          stones.push(drop); drop = null;
+          audio.sfx(180, 0.6, 'sine', 0.1, 90);
+        } else {
+          if (Math.abs(dx) < 4) { drop.x = top.x; note = 'perfect'; noteT = 1.5; }
+          stones.push(drop); drop = null;
+          const n = stones.length - 2;
+          audio.sfx(392 * Math.pow(2, CHIME[n % CHIME.length] / 12), 1.2, 'sine', 0.1);
+          ripples.push({ r: 0, life: 1 });
+          const u = unstable();
+          if (u) {
+            const b = stones[u.i - 1];
+            topple = { i: u.i, side: u.side, ang: 0, av: 0, px: b.x + u.side * b.w * 0.42, py: b.y + b.h };
+            audio.sfx(160, 0.8, 'sine', 0.09, 80);
+          } else held = newStone();
+        }
+      }
+    }
+    if (topple) { topple.av += 3 * dt; topple.ang += topple.av * dt; if (topple.ang > 1.3) end(); }
+    const target = Math.max(0, topY() - LH * 0.4);
+    camY += (target - camY) * Math.min(1, dt * 2.5);
+    noteT = Math.max(0, noteT - dt);
+    for (const r of ripples) { r.r += 60 * dt; r.life -= dt * 0.5; }
+    ripples = ripples.filter(r => r.life > 0);
+  }
+
+  const sy = y => LH * 0.82 - (y - camY);
+  function stone(s, x, yBottom) {
+    const cy = sy(yBottom) - s.h / 2;
+    ctx.fillStyle = 'rgba(40,50,40,.18)'; ctx.beginPath(); ctx.ellipse(x + 4, sy(yBottom) - 2, s.w / 2, 5, 0, 0, Math.PI * 2); ctx.fill();
+    const l = Math.round(s.tone * 100);
+    const g = ctx.createRadialGradient(x - s.w * 0.2, cy - s.h * 0.3, 2, x, cy, s.w * 0.6);
+    g.addColorStop(0, 'hsl(90,6%,' + (l + 25) + '%)'); g.addColorStop(1, 'hsl(100,8%,' + l + '%)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    for (let a = 0; a <= 24; a++) {
+      const ang = a / 24 * Math.PI * 2, wob = 1 + Math.sin(ang * 3 + s.seed) * 0.04;
+      const rx = s.w / 2 * wob, ry = s.h / 2 * wob * (Math.sin(ang) > 0 ? 0.92 : 1);
+      ctx.lineTo(x + Math.cos(ang) * rx, cy + Math.sin(ang) * ry);
+    }
+    ctx.fill();
+    if (s.moss) { ctx.fillStyle = 'rgba(110,140,80,.55)'; ctx.beginPath(); ctx.ellipse(x - s.w * 0.15, cy - s.h * 0.3, s.w * 0.2, s.h * 0.15, 0.2, 0, Math.PI * 2); ctx.fill(); }
+  }
+
+  function render() {
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, '#c9d6cf'); g.addColorStop(1, '#eef1ea');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    ctx.save(); ctx.scale(S, S);
+    const groundY = sy(0);
+    // misty mountains
+    for (const [col, amp, base, f] of [['rgba(120,140,130,.25)', 120, 160, 0.008], ['rgba(90,110,100,.3)', 80, 90, 0.013]]) {
+      ctx.fillStyle = col; ctx.beginPath(); ctx.moveTo(0, groundY);
+      for (let x = 0; x <= LW + 10; x += 10) ctx.lineTo(x, groundY - base - Math.abs(Math.sin(x * f + amp)) * amp + camY * 0.2);
+      ctx.lineTo(LW, groundY); ctx.fill();
+    }
+    // bamboo at the edges
+    for (const bx of [18, 40, LW - 30]) {
+      ctx.fillStyle = '#7d8f6e'; ctx.fillRect(bx, 0, 10, groundY);
+      ctx.fillStyle = '#5e6f52'; for (let y = (camY * 0.5) % 90; y < groundY; y += 90) ctx.fillRect(bx - 1, groundY - y, 12, 3);
+    }
+    // raked sand
+    ctx.fillStyle = '#e8e1cf'; ctx.fillRect(0, groundY, LW, 600);
+    ctx.strokeStyle = '#d3cab2'; ctx.lineWidth = 2;
+    for (let k = 1; k < 12; k++) { ctx.beginPath(); ctx.ellipse(LW / 2, groundY + 6, 90 + k * 26, 6 + k * 9, 0, 0, Math.PI); ctx.stroke(); }
+    for (const r of ripples) { ctx.strokeStyle = 'rgba(125,143,110,' + r.life * 0.6 + ')'; ctx.beginPath(); ctx.ellipse(LW / 2 + stones[0].x, groundY + 6, 90 + r.r * 3, 8 + r.r, 0, 0, Math.PI); ctx.stroke(); }
+    ctx.save(); ctx.translate(LW / 2, 0);
+    stones.forEach((s, i) => { if (!topple || i < topple.i) stone(s, s.x, s.y); });
+    if (topple) {
+      ctx.save(); ctx.translate(topple.px, sy(topple.py)); ctx.rotate(topple.side * topple.ang); ctx.translate(-topple.px, -sy(topple.py));
+      for (let i = topple.i; i < stones.length; i++) stone(stones[i], stones[i].x, stones[i].y);
+      ctx.restore();
+    }
+    if (drop) stone(drop, drop.x, drop.y);
+    if (held && state === 'play') {
+      const hx = handX(), hy = topY() + 150;
+      ctx.strokeStyle = 'rgba(61,74,66,.15)'; ctx.setLineDash([3, 9]); ctx.beginPath(); ctx.moveTo(hx, sy(hy)); ctx.lineTo(hx, sy(topY())); ctx.stroke(); ctx.setLineDash([]);
+      stone(held, hx, hy);
+      // thread from above
+      ctx.strokeStyle = 'rgba(61,74,66,.5)'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(hx, 0); ctx.lineTo(hx, sy(hy + held.h)); ctx.stroke();
+    }
+    ctx.restore();
+    ctx.restore();
+    $('score').textContent = state === 'menu' ? '' : stones.length - 1;
+    $('note').textContent = noteT > 0 ? note : '';
+  }
+
+  let last = performance.now();
+  (function loop(now) {
+    const dt = Math.max(0, Math.min(0.033, (now - last) / 1000)); last = now;
+    update(dt); render(); requestAnimationFrame(loop);
+  })(last);
+})();
+</script>
+</body>
+</html>

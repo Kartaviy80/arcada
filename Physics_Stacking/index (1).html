@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#1a1036">
+<title>Neon Stack</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #1a1036;
+    font-family: "Futura", "Avenir Next", "Segoe UI", sans-serif; color: #fff;
+    touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+  canvas { display: block; width: 100%; height: 100%; }
+  .hud { position: fixed; top: max(20px, env(safe-area-inset-top)); left: 0; right: 0; text-align: center; pointer-events: none; }
+  .hud b { font-size: 58px; font-weight: 300; letter-spacing: 2px; }
+  .hud div { font-size: 13px; letter-spacing: 6px; color: #ffe9ff; min-height: 18px; }
+  .overlay { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 16px;
+    padding: 24px 24px max(70px, env(safe-area-inset-bottom)); text-align: center; transition: opacity .3s; }
+  .overlay.hidden { opacity: 0; pointer-events: none; }
+  h1 { font-size: clamp(40px, 12vw, 70px); font-weight: 300; letter-spacing: 10px; text-shadow: 0 0 20px #ff6ad5; }
+  p { max-width: 300px; font-size: 15px; line-height: 1.6; opacity: .85; }
+  .stat { letter-spacing: 4px; } .stat b { color: #94fff8; }
+  .btn { border: 1px solid #fff; background: #ffffff14; color: #fff; font: inherit; font-size: 16px; letter-spacing: 8px; padding: 16px 44px; border-radius: 2px;
+    cursor: pointer; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+  .btn:active { background: #ffffff33; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud"><b id="score"></b><div id="combo"></div></div>
+
+<div class="overlay" id="menu">
+  <h1>NEON STACK</h1>
+  <p>Tap to place each slab. Trim the overhang, hit it exactly for a perfect glow.</p>
+  <div class="stat" id="bestMenu"></div>
+  <button class="btn" id="startBtn">TAP TO START</button>
+</div>
+<div class="overlay hidden" id="over">
+  <h1 id="finalScore">0</h1>
+  <div class="stat">BEST <b id="bestOver">0</b></div>
+  <button class="btn" id="againBtn">AGAIN</button>
+</div>
+
+<script>
+/*AUDIO-ENGINE-START*/
+// ---------- audio: procedural background music + sound effects ----------
+// Every note is synthesized with the Web Audio API at runtime, so the music
+// needs no files, works offline and carries no copyright.
+const GameAudio = (cfg) => {
+  let ctx = null, master = null, musicBus = null, sfxBus = null;
+  let timer = null, step = 0, nextT = 0, playing = false;
+  let musicOn = true;
+  try { musicOn = localStorage.getItem('music_off') !== '1'; } catch (e) {}
+
+  const SCALES = {
+    major: [0, 2, 4, 5, 7, 9, 11], minor: [0, 2, 3, 5, 7, 8, 10],
+    dorian: [0, 2, 3, 5, 7, 9, 10], lydian: [0, 2, 4, 6, 7, 9, 11],
+    pentaMajor: [0, 2, 4, 7, 9], pentaMinor: [0, 3, 5, 7, 10],
+    japanese: [0, 1, 5, 7, 8], phrygian: [0, 1, 3, 5, 7, 8, 10]
+  };
+  const scale = SCALES[cfg.scale] || SCALES.major;
+  const root = cfg.root || 57;
+  const bpm = cfg.bpm || 110;
+  const prog = cfg.prog || [0, 5, 3, 4];
+  const sixteenth = 60 / bpm / 4;
+
+  // deterministic random so each game always plays "its" tune
+  let seed = cfg.seed || 1;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
+
+  const deg = (d, oct = 0) => {
+    const n = scale.length;
+    const o = Math.floor(d / n);
+    return root + scale[((d % n) + n) % n] + 12 * (o + oct);
+  };
+  const hz = m => 440 * Math.pow(2, (m - 69) / 12);
+
+  // melody: two 2-bar phrases (A, B) arranged A A B A
+  function phrase() {
+    const notes = [];
+    let d = 2 + Math.floor(rnd() * 3);
+    for (let i = 0; i < 32; i++) {
+      const strong = i % 4 === 0;
+      if (rnd() < (strong ? 0.85 : (cfg.leadDensity || 0.35))) {
+        d += Math.round((rnd() - 0.5) * 4);
+        d = Math.max(0, Math.min(scale.length * 2, d));
+        const len = strong && rnd() < 0.5 ? 2 : 1;
+        notes.push({ i, d, len });
+      }
+    }
+    return notes;
+  }
+  const A = phrase(), B = phrase();
+  const song = [A, A, B, A];
+
+  function init() {
+    if (ctx) return;
+    try {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      master = ctx.createGain(); master.gain.value = 0.9; master.connect(ctx.destination);
+      musicBus = ctx.createGain(); musicBus.gain.value = cfg.volume || 0.16; musicBus.connect(master);
+      sfxBus = ctx.createGain(); sfxBus.gain.value = 1; sfxBus.connect(master);
+    } catch (e) { ctx = null; }
+  }
+
+  function voice(t, freq, dur, type, vol, opts = {}) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, t);
+    if (opts.detune) o.detune.value = opts.detune;
+    let node = o;
+    if (opts.cutoff) {
+      const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = opts.cutoff; f.Q.value = opts.q || 1;
+      o.connect(f); node = f;
+    }
+    const a = opts.attack || 0.008;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(vol, t + a);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    node.connect(g); g.connect(opts.bus || musicBus);
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+
+  let noiseBuf = null;
+  function noise(t, dur, vol, hp) {
+    if (!noiseBuf) {
+      noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 0.5, ctx.sampleRate);
+      const d = noiseBuf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    }
+    const s = ctx.createBufferSource(); s.buffer = noiseBuf;
+    const f = ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = hp;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.connect(f); f.connect(g); g.connect(musicBus);
+    s.start(t); s.stop(t + dur + 0.02);
+  }
+
+  function kick(t) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.setValueAtTime(140, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+    g.gain.setValueAtTime(0.9, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+    o.connect(g); g.connect(musicBus); o.start(t); o.stop(t + 0.25);
+  }
+
+  function playStep(s, t) {
+    const bar = Math.floor(s / 16);
+    const i16 = s % 16;
+    const chordDeg = prog[bar % prog.length];
+    const w = cfg.waves || {};
+    // bass
+    const bassPat = cfg.bassPattern || [0, 8];
+    if (bassPat.includes(i16)) voice(t, hz(deg(chordDeg, -2)), sixteenth * 3.5, w.bass || 'triangle', 0.5, { cutoff: 600 });
+    // pad (chord) at bar start
+    if (cfg.pad && i16 === 0) {
+      for (const k of [0, 2, 4]) voice(t, hz(deg(chordDeg + k, -1)), sixteenth * 15, w.pad || 'sine', 0.12, { attack: 0.3, cutoff: 1400, detune: k * 3 });
+    }
+    // arpeggio
+    if (cfg.arp && i16 % (cfg.arpEvery || 2) === 0) {
+      const k = [0, 2, 4, 2][(i16 / (cfg.arpEvery || 2)) % 4];
+      voice(t, hz(deg(chordDeg + k, cfg.arpOct || 0)), sixteenth * 1.6, w.arp || 'square', 0.1, { cutoff: cfg.arpCutoff || 2200 });
+    }
+    // lead melody
+    const ph = song[Math.floor(bar / 2) % song.length];
+    const pi = (bar % 2) * 16 + i16;
+    for (const n of ph) if (n.i === pi) {
+      voice(t, hz(deg(n.d, cfg.leadOct || 0)), sixteenth * (n.len * 2 + 0.5), w.lead || 'triangle', 0.22, { cutoff: cfg.leadCutoff || 3000 });
+    }
+    // drums
+    if (cfg.drums) {
+      if (i16 % 8 === 0 || (cfg.drums === 'busy' && i16 === 10)) kick(t);
+      if (i16 % 8 === 4) noise(t, 0.14, 0.35, 1500);
+      if (i16 % 2 === 0) noise(t, 0.04, cfg.drums === 'soft' ? 0.06 : 0.12, 7000);
+    }
+  }
+
+  function scheduler() {
+    if (!ctx || !playing) return;
+    while (nextT < ctx.currentTime + 0.15) {
+      playStep(step, nextT);
+      nextT += sixteenth * (cfg.swing && step % 2 === 0 ? 1 + cfg.swing : cfg.swing ? 1 - cfg.swing : 1);
+      step++;
+    }
+  }
+
+  function startMusic() {
+    if (!ctx || playing || !musicOn) return;
+    playing = true;
+    musicBus.gain.cancelScheduledValues(ctx.currentTime);
+    musicBus.gain.setValueAtTime(0.0001, ctx.currentTime);
+    musicBus.gain.linearRampToValueAtTime(cfg.volume || 0.16, ctx.currentTime + 1.2);
+    nextT = ctx.currentTime + 0.05;
+    timer = setInterval(scheduler, 40);
+  }
+  function stopMusic() {
+    playing = false;
+    if (timer) clearInterval(timer);
+    timer = null;
+  }
+
+  // mute button
+  const btn = document.createElement('button');
+  btn.setAttribute('aria-label', 'Toggle music');
+  btn.style.cssText = 'position:fixed;z-index:50;right:max(14px,env(safe-area-inset-right));bottom:max(14px,env(safe-area-inset-bottom));' +
+    'width:42px;height:42px;border-radius:50%;border:none;cursor:pointer;font-size:20px;line-height:42px;padding:0;' +
+    'background:' + (cfg.btnBg || 'rgba(0,0,0,.35)') + ';color:' + (cfg.btnColor || '#fff') + ';backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);';
+  const paint = () => { btn.textContent = musicOn ? '♪' : '✕'; btn.style.opacity = musicOn ? '1' : '.6'; };
+  paint();
+  const toggle = e => {
+    e.stopPropagation(); e.preventDefault();
+    musicOn = !musicOn;
+    try { localStorage.setItem('music_off', musicOn ? '0' : '1'); } catch (err) {}
+    init();
+    if (ctx && ctx.state === 'suspended') ctx.resume();
+    if (musicOn) startMusic(); else stopMusic();
+    paint();
+  };
+  btn.addEventListener('pointerdown', e => e.stopPropagation());
+  btn.addEventListener('pointerup', e => e.stopPropagation());
+  btn.addEventListener('click', toggle);
+  document.addEventListener('DOMContentLoaded', () => document.body.appendChild(btn));
+  if (document.body) document.body.appendChild(btn);
+
+  document.addEventListener('visibilitychange', () => {
+    if (!ctx) return;
+    if (document.hidden) ctx.suspend(); else ctx.resume();
+  });
+
+  return {
+    // call from a user gesture (start button) — browsers only allow audio after one
+    start() {
+      init();
+      if (!ctx) return;
+      if (ctx.state === 'suspended') ctx.resume();
+      startMusic();
+    },
+    sfx(freq, dur, type = 'sine', vol = 0.07, to = 0) {
+      init();
+      if (!ctx) return;
+      try {
+        const t = ctx.currentTime;
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.type = type; o.frequency.setValueAtTime(freq, t);
+        if (to) o.frequency.exponentialRampToValueAtTime(Math.max(30, to), t + dur);
+        g.gain.setValueAtTime(vol, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+        o.connect(g); g.connect(sfxBus);
+        o.start(t); o.stop(t + dur + 0.02);
+      } catch (e) {}
+    }
+  };
+};
+/*AUDIO-ENGINE-END*/
+(() => {
+  const audio = GameAudio({
+    bpm: 96, scale: 'lydian', root: 57, prog: [0, 1, 4, 3], seed: 202,
+    waves: { lead: 'sine', bass: 'sawtooth', arp: 'square', pad: 'sawtooth' },
+    pad: true, arp: true, arpEvery: 1, arpOct: 1, arpCutoff: 1600, leadOct: 1, leadDensity: 0.22, drums: 'soft', volume: 0.13,
+    btnBg: 'rgba(255,255,255,.12)'
+  });
+  const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+  const $ = id => document.getElementById(id);
+  const KEY = 'neon_stack_best';
+  let best = 0; try { best = +localStorage.getItem(KEY) || 0; } catch (e) {}
+  const showBest = () => { $('bestMenu').innerHTML = best ? 'BEST <b>' + best + '</b>' : ''; }; showBest();
+
+  let W, H, DPR, U;
+  const SH = 0.22, SIZE = 1.6, RANGE = 2.4;
+  function resize() {
+    DPR = Math.min(devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight;
+    canvas.width = W * DPR; canvas.height = H * DPR; ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    U = Math.min(W, H * 0.75) * 0.27;
+  }
+  addEventListener('resize', resize); resize();
+  const C30 = Math.cos(Math.PI / 6), S30 = 0.5;
+
+  let state = 'menu', stack, cur, camY, combo, debris, t = 0, glow = 0, popT = 0;
+  function reset() {
+    stack = [];
+    for (let i = 0; i < 6; i++) stack.push({ x: 0, z: 0, w: SIZE, d: SIZE, y: (i - 5) * SH });
+    combo = 0; debris = []; camY = 0; spawn();
+  }
+  function spawn() {
+    const top = stack[stack.length - 1], axis = stack.length % 2 ? 'x' : 'z';
+    cur = { x: top.x, z: top.z, w: top.w, d: top.d, y: top.y + SH, axis, p: -RANGE, dir: 1, speed: 1.6 + Math.min(2.4, stack.length * 0.045) };
+    cur[axis] = (axis === 'x' ? top.x : top.z) - RANGE;
+  }
+  reset();
+  const score = () => stack.length - 6;
+  const hueAt = i => (300 + i * 7) % 360;
+
+  function start() { reset(); state = 'play'; audio.start(); $('menu').classList.add('hidden'); $('over').classList.add('hidden'); }
+  function end() {
+    state = 'over';
+    const s = score(); if (s > best) { best = s; try { localStorage.setItem(KEY, best); } catch (e) {} }
+    $('finalScore').textContent = s; $('bestOver').textContent = best; showBest();
+    setTimeout(() => $('over').classList.remove('hidden'), 600);
+  }
+  function place() {
+    if (state !== 'play' || !cur) return;
+    const top = stack[stack.length - 1], a = cur.axis, size = a === 'x' ? 'w' : 'd';
+    const delta = cur[a] - top[a], overlap = top[size] - Math.abs(delta);
+    if (overlap <= 0) { debris.push(Object.assign({}, cur, { vy: 0 })); cur = null; audio.sfx(120, 0.6, 'sawtooth', 0.08, 40); end(); return; }
+    if (Math.abs(delta) < 0.06) {
+      combo++; cur[a] = top[a]; glow = 1; popT = 1;
+      if (combo > 2) { cur.w = Math.min(SIZE, cur.w + 0.08); cur.d = Math.min(SIZE, cur.d + 0.08); }
+      audio.sfx(523 * Math.pow(2, Math.min(12, combo * 2) / 12), 0.35, 'sine', 0.09);
+    } else {
+      combo = 0;
+      const piece = Object.assign({}, cur, { vy: 0 });
+      piece[size] = Math.abs(delta);
+      piece[a] = cur[a] + Math.sign(delta) * (overlap / 2);
+      cur[size] = overlap; cur[a] = top[a] + delta / 2;
+      piece[a] = cur[a] + Math.sign(delta) * (overlap / 2 + piece[size] / 2);
+      debris.push(piece);
+      audio.sfx(330, 0.12, 'triangle', 0.07, 220);
+    }
+    stack.push({ x: cur.x, z: cur.z, w: cur.w, d: cur.d, y: cur.y });
+    spawn();
+  }
+  canvas.addEventListener('pointerdown', () => { if (state === 'play') place(); });
+  addEventListener('keydown', e => {
+    if (e.key !== ' ' && e.key !== 'Enter') return; e.preventDefault();
+    if (state === 'play') place(); else if (state === 'menu' || !$('over').classList.contains('hidden')) start();
+  });
+  $('startBtn').onclick = start; $('againBtn').onclick = start;
+
+  function update(dt) {
+    t += dt;
+    if (cur && state === 'play') {
+      const top = stack[stack.length - 1], a = cur.axis, base = top[a];
+      cur[a] += cur.dir * cur.speed * dt;
+      if (cur[a] > base + RANGE) { cur[a] = base + RANGE; cur.dir = -1; } else if (cur[a] < base - RANGE) { cur[a] = base - RANGE; cur.dir = 1; }
+    }
+    if (state === 'menu') { /* slow orbit look */ }
+    const ty = stack[stack.length - 1].y;
+    camY += (ty - camY) * Math.min(1, dt * 4);
+    for (const d of debris) { d.vy -= 9 * dt; d.y += d.vy * dt; }
+    debris = debris.filter(d => d.y > camY - 8);
+    glow = Math.max(0, glow - dt * 1.5); popT = Math.max(0, popT - dt);
+  }
+
+  function P(x, y, z) { return [W / 2 + (x - z) * C30 * U, H * 0.56 + (x + z) * S30 * U - (y - camY) * U]; }
+  function poly(pts, fill) { ctx.fillStyle = fill; ctx.beginPath(); pts.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])); ctx.closePath(); ctx.fill(); }
+  function slab(b, h, alpha = 1) {
+    const x0 = b.x - b.w / 2, x1 = b.x + b.w / 2, z0 = b.z - b.d / 2, z1 = b.z + b.d / 2, y0 = b.y, y1 = b.y + SH;
+    ctx.globalAlpha = alpha;
+    poly([P(x0, y1, z1), P(x1, y1, z1), P(x1, y0, z1), P(x0, y0, z1)], 'hsl(' + h + ',70%,42%)');   // front-left face
+    poly([P(x1, y1, z0), P(x1, y1, z1), P(x1, y0, z1), P(x1, y0, z0)], 'hsl(' + h + ',75%,55%)');   // front-right face
+    poly([P(x0, y1, z0), P(x1, y1, z0), P(x1, y1, z1), P(x0, y1, z1)], 'hsl(' + h + ',90%,72%)');   // top
+    ctx.globalAlpha = 1;
+  }
+
+  function render() {
+    const h0 = hueAt(stack.length);
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, 'hsl(' + ((h0 + 200) % 360) + ',45%,14%)'); g.addColorStop(1, 'hsl(' + ((h0 + 160) % 360) + ',55%,30%)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    // floating particles
+    for (let i = 0; i < 40; i++) {
+      const x = (i * 131.7) % W, y = H - ((i * 89.3 + t * (10 + i % 7) * 3 + camY * 40) % (H + 20));
+      ctx.fillStyle = 'rgba(255,255,255,' + (0.15 + (i % 5) * 0.06) + ')'; ctx.fillRect(x, y, 2, 2);
+    }
+    const from = Math.max(0, stack.length - 40);
+    for (let i = from; i < stack.length; i++) slab(stack[i], hueAt(i));
+    if (glow > 0) {
+      const b = stack[stack.length - 1];
+      const e = 0.1 + (1 - glow) * 0.5;
+      ctx.strokeStyle = 'rgba(255,255,255,' + glow + ')'; ctx.lineWidth = 2;
+      const pts = [P(b.x - b.w / 2 - e, b.y + SH, b.z - b.d / 2 - e), P(b.x + b.w / 2 + e, b.y + SH, b.z - b.d / 2 - e), P(b.x + b.w / 2 + e, b.y + SH, b.z + b.d / 2 + e), P(b.x - b.w / 2 - e, b.y + SH, b.z + b.d / 2 + e)];
+      ctx.beginPath(); pts.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])); ctx.closePath(); ctx.stroke();
+    }
+    for (const d of debris) slab(d, hueAt(stack.length), Math.max(0, 1 - (camY - d.y) / 6));
+    if (cur && state === 'play') {
+      ctx.shadowColor = 'hsl(' + hueAt(stack.length) + ',100%,70%)'; ctx.shadowBlur = 18;
+      slab(cur, hueAt(stack.length));
+      ctx.shadowBlur = 0;
+    }
+    $('score').textContent = state === 'menu' ? '' : score();
+    $('combo').textContent = popT > 0 && combo ? (combo > 1 ? 'PERFECT ×' + combo : 'PERFECT') : '';
+  }
+
+  let last = performance.now();
+  (function loop(now) {
+    const dt = Math.max(0, Math.min(0.033, (now - last) / 1000)); last = now;
+    update(dt); render(); requestAnimationFrame(loop);
+  })(last);
+})();
+</script>
+</body>
+</html>

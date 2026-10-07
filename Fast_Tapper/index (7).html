@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#ff8a4a">
+<title>Piñata Party</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #ff8a4a;
+    font-family: "Avenir Next", "Trebuchet MS", "Segoe UI", sans-serif; color: #3a1a08;
+    touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+  canvas { display: block; width: 100%; height: 100%; }
+  .overlay { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 24px; text-align: center;
+    background: radial-gradient(ellipse at 50% 35%, rgba(255,246,220,.96), rgba(255,170,120,.96)); transition: opacity .3s; }
+  .overlay.hidden { opacity: 0; pointer-events: none; }
+  .overlay canvas { width: 250px; height: 250px; }
+  h1 { font-size: clamp(42px, 13vw, 70px); font-weight: 900; letter-spacing: 2px; line-height: .95; color: #ff3a8a;
+    -webkit-text-stroke: 3px #5a0a3a; text-shadow: 0 5px 0 #5a0a3a, 0 10px 20px rgba(0,0,0,.2); }
+  p { max-width: 320px; font-size: 15px; line-height: 1.55; color: #6a2a1a; }
+  .stat { font-size: 17px; font-weight: 800; color: #6a2a1a; } .stat b { color: #d82a6a; }
+  .big { font-size: 46px; font-weight: 900; color: #d82a6a; -webkit-text-stroke: 2px #5a0a3a; }
+  .btn { border: 4px solid #fff; background: linear-gradient(#ffd24a, #ff6a2a); color: #fff; font: inherit; font-size: 21px; font-weight: 900; letter-spacing: 4px; padding: 14px 50px; border-radius: 40px; cursor: pointer;
+    box-shadow: 0 6px 0 #a83a0a, 0 12px 24px rgba(0,0,0,.25); text-shadow: 0 2px 0 #a83a0a; animation: bob 1.2s ease-in-out infinite; }
+  @keyframes bob { 50% { transform: translateY(-4px) rotate(-1deg) scale(1.03); } }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="overlay" id="menu">
+  <canvas id="logo" width="500" height="500"></canvas>
+  <h1>PIÑATA<br>PARTY</h1>
+  <p><b>¡Fiesta!</b> Smash the swinging piñata before the time runs out — tap it as fast as you can. When it bursts, tap the falling candy for bonus points. Watch out for hot chillies!</p>
+  <div class="stat" id="bestMenu"></div>
+  <button class="btn" id="startBtn">¡VAMOS!</button>
+</div>
+<div class="overlay hidden" id="clear">
+  <canvas id="clearArt" width="500" height="500"></canvas>
+  <h1>¡OLÉ!</h1>
+  <div class="stat">Fiesta <b id="clrStage">1</b> · candy <b id="clrCandy">0</b></div>
+  <div class="big" id="clrScore">0</div>
+  <button class="btn" id="nextBtn">NEXT PIÑATA</button>
+</div>
+<div class="overlay hidden" id="over">
+  <canvas id="overArt" width="500" height="500"></canvas>
+  <h1>TIME'S<br>UP!</h1>
+  <div class="big" id="ovScore">0</div>
+  <div class="stat" id="ovBest">Best: 0</div>
+  <button class="btn" id="againBtn">TRY AGAIN</button>
+</div>
+
+<script>
+/*AUDIO-ENGINE-START*/
+// ---------- audio: procedural background music + sound effects ----------
+// Every note is synthesized with the Web Audio API at runtime, so the music
+// needs no files, works offline and carries no copyright.
+const GameAudio = (cfg) => {
+  let ctx = null, master = null, musicBus = null, sfxBus = null;
+  let timer = null, step = 0, nextT = 0, playing = false;
+  let musicOn = true;
+  try { musicOn = localStorage.getItem('music_off') !== '1'; } catch (e) {}
+
+  const SCALES = {
+    major: [0, 2, 4, 5, 7, 9, 11], minor: [0, 2, 3, 5, 7, 8, 10],
+    dorian: [0, 2, 3, 5, 7, 9, 10], lydian: [0, 2, 4, 6, 7, 9, 11],
+    pentaMajor: [0, 2, 4, 7, 9], pentaMinor: [0, 3, 5, 7, 10],
+    japanese: [0, 1, 5, 7, 8], phrygian: [0, 1, 3, 5, 7, 8, 10]
+  };
+  const scale = SCALES[cfg.scale] || SCALES.major;
+  const root = cfg.root || 57;
+  const bpm = cfg.bpm || 110;
+  const prog = cfg.prog || [0, 5, 3, 4];
+  const sixteenth = 60 / bpm / 4;
+
+  // deterministic random so each game always plays "its" tune
+  let seed = cfg.seed || 1;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
+
+  const deg = (d, oct = 0) => {
+    const n = scale.length;
+    const o = Math.floor(d / n);
+    return root + scale[((d % n) + n) % n] + 12 * (o + oct);
+  };
+  const hz = m => 440 * Math.pow(2, (m - 69) / 12);
+
+  // melody: two 2-bar phrases (A, B) arranged A A B A
+  function phrase() {
+    const notes = [];
+    let d = 2 + Math.floor(rnd() * 3);
+    for (let i = 0; i < 32; i++) {
+      const strong = i % 4 === 0;
+      if (rnd() < (strong ? 0.85 : (cfg.leadDensity || 0.35))) {
+        d += Math.round((rnd() - 0.5) * 4);
+        d = Math.max(0, Math.min(scale.length * 2, d));
+        const len = strong && rnd() < 0.5 ? 2 : 1;
+        notes.push({ i, d, len });
+      }
+    }
+    return notes;
+  }
+  const A = phrase(), B = phrase();
+  const song = [A, A, B, A];
+
+  function init() {
+    if (ctx) return;
+    try {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      master = ctx.createGain(); master.gain.value = 0.9; master.connect(ctx.destination);
+      musicBus = ctx.createGain(); musicBus.gain.value = cfg.volume || 0.16; musicBus.connect(master);
+      sfxBus = ctx.createGain(); sfxBus.gain.value = 1; sfxBus.connect(master);
+    } catch (e) { ctx = null; }
+  }
+
+  function voice(t, freq, dur, type, vol, opts = {}) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, t);
+    if (opts.detune) o.detune.value = opts.detune;
+    let node = o;
+    if (opts.cutoff) {
+      const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = opts.cutoff; f.Q.value = opts.q || 1;
+      o.connect(f); node = f;
+    }
+    const a = opts.attack || 0.008;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(vol, t + a);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    node.connect(g); g.connect(opts.bus || musicBus);
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+
+  let noiseBuf = null;
+  function noise(t, dur, vol, hp) {
+    if (!noiseBuf) {
+      noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 0.5, ctx.sampleRate);
+      const d = noiseBuf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    }
+    const s = ctx.createBufferSource(); s.buffer = noiseBuf;
+    const f = ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = hp;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.connect(f); f.connect(g); g.connect(musicBus);
+    s.start(t); s.stop(t + dur + 0.02);
+  }
+
+  function kick(t) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.setValueAtTime(140, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+    g.gain.setValueAtTime(0.9, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+    o.connect(g); g.connect(musicBus); o.start(t); o.stop(t + 0.25);
+  }
+
+  function playStep(s, t) {
+    const bar = Math.floor(s / 16);
+    const i16 = s % 16;
+    const chordDeg = prog[bar % prog.length];
+    const w = cfg.waves || {};
+    // bass
+    const bassPat = cfg.bassPattern || [0, 8];
+    if (bassPat.includes(i16)) voice(t, hz(deg(chordDeg, -2)), sixteenth * 3.5, w.bass || 'triangle', 0.5, { cutoff: 600 });
+    // pad (chord) at bar start
+    if (cfg.pad && i16 === 0) {
+      for (const k of [0, 2, 4]) voice(t, hz(deg(chordDeg + k, -1)), sixteenth * 15, w.pad || 'sine', 0.12, { attack: 0.3, cutoff: 1400, detune: k * 3 });
+    }
+    // arpeggio
+    if (cfg.arp && i16 % (cfg.arpEvery || 2) === 0) {
+      const k = [0, 2, 4, 2][(i16 / (cfg.arpEvery || 2)) % 4];
+      voice(t, hz(deg(chordDeg + k, cfg.arpOct || 0)), sixteenth * 1.6, w.arp || 'square', 0.1, { cutoff: cfg.arpCutoff || 2200 });
+    }
+    // lead melody
+    const ph = song[Math.floor(bar / 2) % song.length];
+    const pi = (bar % 2) * 16 + i16;
+    for (const n of ph) if (n.i === pi) {
+      voice(t, hz(deg(n.d, cfg.leadOct || 0)), sixteenth * (n.len * 2 + 0.5), w.lead || 'triangle', 0.22, { cutoff: cfg.leadCutoff || 3000 });
+    }
+    // drums
+    if (cfg.drums) {
+      if (i16 % 8 === 0 || (cfg.drums === 'busy' && i16 === 10)) kick(t);
+      if (i16 % 8 === 4) noise(t, 0.14, 0.35, 1500);
+      if (i16 % 2 === 0) noise(t, 0.04, cfg.drums === 'soft' ? 0.06 : 0.12, 7000);
+    }
+  }
+
+  function scheduler() {
+    if (!ctx || !playing) return;
+    while (nextT < ctx.currentTime + 0.15) {
+      playStep(step, nextT);
+      nextT += sixteenth * (cfg.swing && step % 2 === 0 ? 1 + cfg.swing : cfg.swing ? 1 - cfg.swing : 1);
+      step++;
+    }
+  }
+
+  function startMusic() {
+    if (!ctx || playing || !musicOn) return;
+    playing = true;
+    musicBus.gain.cancelScheduledValues(ctx.currentTime);
+    musicBus.gain.setValueAtTime(0.0001, ctx.currentTime);
+    musicBus.gain.linearRampToValueAtTime(cfg.volume || 0.16, ctx.currentTime + 1.2);
+    nextT = ctx.currentTime + 0.05;
+    timer = setInterval(scheduler, 40);
+  }
+  function stopMusic() {
+    playing = false;
+    if (timer) clearInterval(timer);
+    timer = null;
+  }
+
+  // mute button
+  const btn = document.createElement('button');
+  btn.setAttribute('aria-label', 'Toggle music');
+  btn.style.cssText = 'position:fixed;z-index:50;right:max(14px,env(safe-area-inset-right));bottom:max(14px,env(safe-area-inset-bottom));' +
+    'width:42px;height:42px;border-radius:50%;border:none;cursor:pointer;font-size:20px;line-height:42px;padding:0;' +
+    'background:' + (cfg.btnBg || 'rgba(0,0,0,.35)') + ';color:' + (cfg.btnColor || '#fff') + ';backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);';
+  const paint = () => { btn.textContent = musicOn ? '♪' : '✕'; btn.style.opacity = musicOn ? '1' : '.6'; };
+  paint();
+  const toggle = e => {
+    e.stopPropagation(); e.preventDefault();
+    musicOn = !musicOn;
+    try { localStorage.setItem('music_off', musicOn ? '0' : '1'); } catch (err) {}
+    init();
+    if (ctx && ctx.state === 'suspended') ctx.resume();
+    if (musicOn) startMusic(); else stopMusic();
+    paint();
+  };
+  btn.addEventListener('pointerdown', e => e.stopPropagation());
+  btn.addEventListener('pointerup', e => e.stopPropagation());
+  btn.addEventListener('click', toggle);
+  document.addEventListener('DOMContentLoaded', () => document.body.appendChild(btn));
+  if (document.body) document.body.appendChild(btn);
+
+  document.addEventListener('visibilitychange', () => {
+    if (!ctx) return;
+    if (document.hidden) ctx.suspend(); else ctx.resume();
+  });
+
+  return {
+    // call from a user gesture (start button) — browsers only allow audio after one
+    start() {
+      init();
+      if (!ctx) return;
+      if (ctx.state === 'suspended') ctx.resume();
+      startMusic();
+    },
+    sfx(freq, dur, type = 'sine', vol = 0.07, to = 0) {
+      init();
+      if (!ctx) return;
+      try {
+        const t = ctx.currentTime;
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.type = type; o.frequency.setValueAtTime(freq, t);
+        if (to) o.frequency.exponentialRampToValueAtTime(Math.max(30, to), t + dur);
+        g.gain.setValueAtTime(vol, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+        o.connect(g); g.connect(sfxBus);
+        o.start(t); o.stop(t + dur + 0.02);
+      } catch (e) {}
+    }
+  };
+};
+/*AUDIO-ENGINE-END*/
+/*SPRITES-START*/
+// ---------- sprites: detailed SVG artwork rasterised once into canvases ----------
+// Each piece is authored as an SVG (gradients, highlights, shadows, glow) and
+// drawn into an offscreen canvas at load time, so the game loop just blits images.
+const loadSprites = (defs, px = 160) => Promise.all(Object.entries(defs).map(([name, svg]) => new Promise(done => {
+  const img = new Image();
+  const finish = ok => {
+    const c = document.createElement('canvas');
+    const w = Array.isArray(px) ? px[0] : px, h = Array.isArray(px) ? px[1] : px;
+    c.width = w; c.height = h;
+    if (ok) c.getContext('2d').drawImage(img, 0, 0, w, h);
+    done([name, c]);
+  };
+  img.onload = () => finish(true);
+  img.onerror = () => finish(false);
+  img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+}))).then(entries => Object.fromEntries(entries));
+
+// small helpers for writing SVG
+const svgDoc = (body, vb = '0 0 100 100') => '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + vb + '">' + body + '</svg>';
+const shade = (hex, amt) => {
+  const n = parseInt(hex.slice(1), 16);
+  const f = v => Math.max(0, Math.min(255, Math.round(amt < 0 ? v * (1 + amt) : v + (255 - v) * amt)));
+  return '#' + [n >> 16, (n >> 8) & 255, n & 255].map(f).map(v => v.toString(16).padStart(2, '0')).join('');
+};
+/*SPRITES-END*/
+/*FX-START*/
+// ---------- juice: particles, popping text, shock rings, screen shake and flashes ----------
+// Coordinates are screen pixels. Call FX.update(dt) every frame and FX.draw(ctx) after the scene.
+const FX = (() => {
+  let parts = [], texts = [], rings = [], shakeT = 0, shakeA = 0, flashC = '#fff', flashA = 0;
+  const TAU = Math.PI * 2;
+  function star(ctx, r) { ctx.beginPath(); for (let k = 0; k < 10; k++) { const a = -Math.PI / 2 + k * Math.PI / 5, rr = k % 2 ? r * .45 : r; ctx.lineTo(Math.cos(a) * rr, Math.sin(a) * rr); } ctx.closePath(); ctx.fill(); }
+  function heart(ctx, r) { ctx.beginPath(); ctx.moveTo(0, r * .7); ctx.bezierCurveTo(-r * 1.6, -r * .3, -r * .6, -r * 1.4, 0, -r * .4); ctx.bezierCurveTo(r * .6, -r * 1.4, r * 1.6, -r * .3, 0, r * .7); ctx.fill(); }
+  return {
+    // o: n, colors, speed, size, gravity, life, shape (circle|star|square|spark|heart|drop), dir, spread, drag
+    burst(x, y, o = {}) {
+      const n = o.n || 14;
+      for (let i = 0; i < n; i++) {
+        const a = o.dir != null ? o.dir + (Math.random() - .5) * (o.spread != null ? o.spread : TAU) : Math.random() * TAU, v = (o.speed || 240) * (.3 + Math.random() * .8), life = (o.life || .8) * (.6 + Math.random() * .6);
+        parts.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, g: o.gravity != null ? o.gravity : 600, life, max: life, size: (o.size || 6) * (.5 + Math.random() * .8), c: o.colors ? o.colors[i % o.colors.length] : '#fff', shape: o.shape || 'circle', rot: Math.random() * 6, vr: (Math.random() - .5) * 14, drag: o.drag || .985, glow: o.glow });
+      }
+    },
+    // popping score text with an elastic scale-in
+    text(x, y, str, o = {}) { texts.push({ x, y, str: String(str), c: o.color || '#fff', stroke: o.stroke || 'rgba(0,0,0,.55)', size: o.size || 28, life: o.life || .9, max: o.life || .9, rise: o.rise != null ? o.rise : 70, font: o.font || '900 ', wobble: o.wobble || 0 }); },
+    ring(x, y, o = {}) { rings.push({ x, y, r0: o.r0 || 6, r1: o.r1 || 70, c: o.color || '#fff', w: o.width || 6, life: o.life || .4, max: o.life || .4 }); },
+    shake(a = 8, t = .25) { shakeA = Math.max(shakeA, a); shakeT = Math.max(shakeT, t); },
+    flash(c = '#fff', a = .35) { flashC = c; flashA = Math.max(flashA, a); },
+    offset() { if (shakeT <= 0) return [0, 0]; const k = shakeA * Math.min(1, shakeT * 4); return [(Math.random() - .5) * 2 * k, (Math.random() - .5) * 2 * k]; },
+    clear() { parts = []; texts = []; rings = []; shakeT = 0; flashA = 0; },
+    update(dt) {
+      shakeT = Math.max(0, shakeT - dt); if (shakeT <= 0) shakeA = 0; flashA = Math.max(0, flashA - dt * 2.2);
+      for (const p of parts) { p.vx *= p.drag; p.vy *= p.drag; p.vy += p.g * dt; p.x += p.vx * dt; p.y += p.vy * dt; p.rot += p.vr * dt; p.life -= dt; }
+      parts = parts.filter(p => p.life > 0);
+      for (const t of texts) { t.life -= dt; t.y -= t.rise * dt * (t.life / t.max); } texts = texts.filter(t => t.life > 0);
+      for (const r of rings) r.life -= dt; rings = rings.filter(r => r.life > 0);
+    },
+    draw(ctx) {
+      for (const r of rings) { const k = 1 - r.life / r.max, e = 1 - (1 - k) * (1 - k); ctx.globalAlpha = 1 - k; ctx.strokeStyle = r.c; ctx.lineWidth = r.w * (1 - k) + 1; ctx.beginPath(); ctx.arc(r.x, r.y, r.r0 + (r.r1 - r.r0) * e, 0, TAU); ctx.stroke(); }
+      for (const p of parts) {
+        const k = p.life / p.max; ctx.globalAlpha = Math.min(1, k * 1.6); ctx.fillStyle = p.c;
+        if (p.glow) { ctx.shadowColor = p.c; ctx.shadowBlur = 10; }
+        ctx.save(); ctx.translate(p.x, p.y);
+        if (p.shape === 'spark') { ctx.rotate(Math.atan2(p.vy, p.vx)); ctx.fillRect(-p.size * 1.6, -p.size * .18, p.size * 3.2, p.size * .36); }
+        else if (p.shape === 'star') { ctx.rotate(p.rot); star(ctx, p.size); }
+        else if (p.shape === 'square') { ctx.rotate(p.rot); ctx.scale(1, Math.abs(Math.cos(p.rot * 1.3)) + .2); ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size * .7); }
+        else if (p.shape === 'heart') { ctx.rotate(p.rot * .2); heart(ctx, p.size); }
+        else if (p.shape === 'drop') { ctx.rotate(Math.atan2(p.vy, p.vx) - Math.PI / 2); ctx.beginPath(); ctx.moveTo(0, -p.size * 1.4); ctx.quadraticCurveTo(p.size, 0, 0, p.size); ctx.quadraticCurveTo(-p.size, 0, 0, -p.size * 1.4); ctx.fill(); }
+        else { ctx.beginPath(); ctx.arc(0, 0, p.size * (.4 + k * .6), 0, TAU); ctx.fill(); }
+        ctx.restore(); ctx.shadowBlur = 0;
+      }
+      for (const t of texts) {
+        const age = t.max - t.life, pop = age < .18 ? 1 + Math.sin(age / .18 * Math.PI) * .45 : 1, a = Math.min(1, t.life / t.max * 2.2);
+        ctx.save(); ctx.globalAlpha = a; ctx.translate(t.x, t.y); ctx.scale(pop, pop); if (t.wobble) ctx.rotate(Math.sin(age * 20) * t.wobble);
+        ctx.font = t.font + t.size + 'px "Avenir Next", "Trebuchet MS", sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.lineJoin = 'round'; ctx.lineWidth = Math.max(3, t.size * .16); ctx.strokeStyle = t.stroke; ctx.strokeText(t.str, 0, 0); ctx.fillStyle = t.c; ctx.fillText(t.str, 0, 0);
+        ctx.restore();
+      }
+      ctx.globalAlpha = 1;
+    },
+    drawFlash(ctx, W, H) { if (flashA > 0) { ctx.globalAlpha = flashA; ctx.fillStyle = flashC; ctx.fillRect(0, 0, W, H); ctx.globalAlpha = 1; } }
+  };
+})();
+/*FX-END*/
+(() => {
+  const audio = GameAudio({
+    bpm: 150, scale: 'major', root: 60, prog: [0, 4, 0, 4, 3, 0, 4, 0], seed: 808,
+    waves: { lead: 'square', bass: 'triangle', arp: 'triangle', pad: 'sine' },
+    pad: false, arp: true, arpEvery: 1, arpOct: 2, arpCutoff: 2600, leadOct: 1, leadCutoff: 2400, leadDensity: 0.46, drums: 'busy', bassPattern: [0, 4, 8, 12], swing: 0.2, volume: 0.15,
+    btnBg: 'rgba(255,255,255,.75)', btnColor: '#ff3a8a'
+  });
+  const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+  const $ = id => document.getElementById(id);
+  const KEY = 'pinata_party';
+  let save = { stage: 1, best: 0 }; try { save = Object.assign(save, JSON.parse(localStorage.getItem(KEY)) || {}); } catch (e) {}
+  const store = () => { try { localStorage.setItem(KEY, JSON.stringify(save)); } catch (e) {} };
+  $('bestMenu').innerHTML = save.best ? 'Best score <b>' + save.best + '</b> · fiesta <b>' + save.stage + '</b>' : '';
+
+  // ---------- endless fiestas ----------
+  const rng = seed => () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  const PALETTES = [['#ff3a8a', '#ffd24a', '#2ad8c8', '#ff8a2a', '#8a4aff'], ['#ff5a3a', '#ffe24a', '#4ac83a', '#2a8aff', '#ff4ab0'], ['#ffb0d8', '#b0e8ff', '#fff0a0', '#c8a8ff', '#a8ffc8'], ['#e8202a', '#ffffff', '#2a9a4a', '#ffd24a', '#ff8a2a'], ['#2ad8ff', '#ff2ad8', '#ffe24a', '#7aff4a', '#ff7a2a']];
+  const SHAPES = ['donkey', 'star', 'llama', 'fish', 'cactus', 'unicorn'];
+  function stageParams(n) {
+    const r = rng(n * 887);
+    // hits climb toward ~6.5 taps a second; later fiestas get there through a faster swing and more chillies instead
+    return { hits: Math.round(14 + 64 * (1 - Math.exp(-(n - 1) / 18)) + r() * 4), time: 12, swing: Math.min(1.1, .35 + n * .045), chili: n < 3 ? 0 : Math.min(.3, .08 + n * .012), shape: SHAPES[(n - 1 + Math.floor(r() * 2)) % SHAPES.length], pal: PALETTES[Math.floor(r() * PALETTES.length)].slice().sort(() => r() - .5), flip: r() < .5 };
+  }
+
+  // ---------- piñata silhouettes (unit coords, centred, ~[-1,1]) ----------
+  function shapePath(kind) {
+    const p = new Path2D(), circ = (x, y, r) => { p.moveTo(x + r, y); p.arc(x, y, r, 0, Math.PI * 2); };
+    if (kind === 'donkey' || kind === 'llama' || kind === 'unicorn') {
+      // body, legs, neck, head, ears
+      p.roundRect(-.75, -.15, 1.3, .6, .25);
+      for (const x of [-.62, -.32, .18, .42]) p.roundRect(x, .35, .17, .55, .06);
+      const neckTop = kind === 'llama' ? -.95 : -.6;
+      p.moveTo(.3, -.05); p.lineTo(.45, neckTop); p.lineTo(.75, neckTop); p.lineTo(.62, .1); p.closePath();
+      p.roundRect(.38, neckTop - .25, .62, .38, .16);
+      p.moveTo(.45, neckTop - .2); p.lineTo(.48, neckTop - .62); p.lineTo(.62, neckTop - .2); p.closePath();
+      p.moveTo(.68, neckTop - .2); p.lineTo(.74, neckTop - .6); p.lineTo(.84, neckTop - .2); p.closePath();
+      p.moveTo(-.75, .0); p.quadraticCurveTo(-1.05, .1, -1, .45); p.lineTo(-.9, .45); p.quadraticCurveTo(-.92, .2, -.72, .15); p.closePath();
+      if (kind === 'unicorn') { p.moveTo(.7, neckTop - .22); p.lineTo(.95, neckTop - .75); p.lineTo(.8, neckTop - .2); p.closePath(); }
+    } else if (kind === 'star') {
+      for (let k = 0; k < 10; k++) { const a = -Math.PI / 2 + k * Math.PI / 5, r = k % 2 ? .4 : 1; k ? p.lineTo(Math.cos(a) * r, Math.sin(a) * r) : p.moveTo(Math.cos(a) * r, Math.sin(a) * r); } p.closePath();
+    } else if (kind === 'fish') {
+      p.ellipse(-.1, 0, .75, .5, 0, 0, Math.PI * 2); p.moveTo(.55, 0); p.lineTo(1, -.45); p.lineTo(.9, 0); p.lineTo(1, .45); p.closePath();
+      p.moveTo(-.2, -.45); p.quadraticCurveTo(.05, -.85, .3, -.4); p.closePath();
+    } else if (kind === 'cactus') {
+      p.roundRect(-.22, -.95, .44, 1.85, .22); p.roundRect(-.72, -.35, .3, .7, .15); p.roundRect(-.72, .15, .6, .22, .1); p.roundRect(.42, -.6, .3, .7, .15); p.roundRect(.12, -.05, .6, .22, .1);
+    }
+    return p;
+  }
+
+  // ---------- candy art ----------
+  const rg = (id, stops, cx = '40%', cy = '35%', r = '70%') => '<radialGradient id="' + id + '" cx="' + cx + '" cy="' + cy + '" r="' + r + '">' + stops.map(([o, c]) => '<stop offset="' + o + '" stop-color="' + c + '"/>').join('') + '</radialGradient>';
+  const WRAP = c => svgDoc('<defs>' + rg('w', [[0, '#ffffff'], [.4, c], [1, shade(c, -.45)]]) + '</defs><path d="M28 50L4 30Q0 50 4 70Z" fill="url(#w)" stroke="' + shade(c, -.6) + '" stroke-width="2"/><path d="M72 50L96 30Q100 50 96 70Z" fill="url(#w)" stroke="' + shade(c, -.6) + '" stroke-width="2"/><ellipse cx="50" cy="50" rx="26" ry="20" fill="url(#w)" stroke="' + shade(c, -.6) + '" stroke-width="2"/><path d="M36 38q14 24 28 0" stroke="#fff" stroke-width="3" fill="none" opacity=".6"/>');
+  const LOLLY = c => svgDoc('<defs>' + rg('l', [[0, '#ffffff'], [.5, c], [1, shade(c, -.4)]]) + '</defs><rect x="46" y="54" width="8" height="44" rx="4" fill="#fff6e8" stroke="#c8b8a0" stroke-width="1.6"/><circle cx="50" cy="38" r="30" fill="url(#l)" stroke="' + shade(c, -.6) + '" stroke-width="2.4"/><path d="M50 38m-22 0a22 22 0 1 0 44 0a16 16 0 1 0 -32 0a10 10 0 1 0 20 0" stroke="#fff" stroke-width="5" fill="none" opacity=".8"/>');
+  const CHILI = svgDoc('<defs>' + rg('c', [[0, '#ff9a8a'], [.5, '#e8201a'], [1, '#7a0a04']]) + '</defs><path d="M20 30Q60 20 80 70Q86 90 70 92Q50 60 22 46Q12 40 20 30Z" fill="url(#c)" stroke="#5a0a04" stroke-width="2.4"/><path d="M14 30Q8 14 24 12Q30 22 26 32Z" fill="#3a9a2a" stroke="#1a5a1a" stroke-width="2"/><path d="M34 36Q56 34 70 62" stroke="#fff" stroke-width="3" fill="none" opacity=".6" stroke-linecap="round"/><path d="M60 50l6 -6M66 60l6 -4" stroke="#ffe24a" stroke-width="3" stroke-linecap="round"/>');
+  const BAT = svgDoc('<defs><linearGradient id="b" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#8a5a24"/><stop offset=".5" stop-color="#e8b070"/><stop offset="1" stop-color="#6a3a14"/></linearGradient></defs><path d="M44 4Q60 4 60 16L56 150H44L40 16Q40 4 44 4Z" fill="url(#b)" stroke="#3a1a04" stroke-width="2.4"/><path d="M42 30H58M42 50H58M41 70H57" stroke="#ff3a8a" stroke-width="5"/><path d="M41 40H58M41 60H57" stroke="#2ad8c8" stroke-width="5"/><rect x="42" y="120" width="16" height="32" rx="3" fill="#3a1a04"/>', '0 0 100 160');
+  let SPR = null;
+  loadSprites({ wPink: WRAP('#ff3a8a'), wBlue: WRAP('#2a8aff'), wYellow: WRAP('#ffd24a'), wGreen: WRAP('#4ac83a'), lPink: LOLLY('#ff4ab0'), lOrange: LOLLY('#ff8a2a'), chili: CHILI, bat: BAT }, 120).then(s => { SPR = s; art($('logo'), 1, 0); art($('clearArt'), 6, 1); art($('overArt'), 3, 2); });
+  const CANDY = ['wPink', 'wBlue', 'wYellow', 'wGreen', 'lPink', 'lOrange'];
+
+  // ---------- state ----------
+  let W, H, DPR, BG = null, P = null, phase = 'menu', t = 0, stage = 1, score = 0, shown = 0, hp = 1, maxHp = 1, timeLeft = 0, ang = 0, angV = 0, hitT = 0, candies = [], caught = 0, combo = 0, lastHit = -9, burstT = 0, pieces = [], tex = null, size = 100, PATH = null, batT = 1, batX = 0, batY = 0;
+  function resize() { DPR = Math.min(devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight; canvas.width = W * DPR; canvas.height = H * DPR; size = Math.min(W * .3, H * .17, 150); BG = paintBG(); }
+  addEventListener('resize', resize);
+  // fiesta courtyard: sunset sky, adobe wall, arches, papel picado, cactus pots
+  function paintBG() {
+    const c = document.createElement('canvas'); c.width = W * DPR; c.height = H * DPR; const g = c.getContext('2d'); g.scale(DPR, DPR);
+    const sky = g.createLinearGradient(0, 0, 0, H * .55); sky.addColorStop(0, '#ff6a8a'); sky.addColorStop(.6, '#ffb06a'); sky.addColorStop(1, '#ffe0a0'); g.fillStyle = sky; g.fillRect(0, 0, W, H);
+    const sun = g.createRadialGradient(W * .5, H * .5, 0, W * .5, H * .5, H * .4); sun.addColorStop(0, 'rgba(255,250,210,.9)'); sun.addColorStop(1, 'rgba(255,250,210,0)'); g.fillStyle = sun; g.fillRect(0, 0, W, H);
+    // adobe wall with arches
+    const wy = H * .55, wall = g.createLinearGradient(0, wy, 0, H); wall.addColorStop(0, '#e8a06a'); wall.addColorStop(1, '#b86a3a'); g.fillStyle = wall; g.fillRect(0, wy, W, H - wy);
+    for (let x = 30; x < W; x += 140) { g.fillStyle = '#7a3a1a'; g.beginPath(); g.moveTo(x, H * .86); g.lineTo(x, wy + 60); g.arc(x + 40, wy + 60, 40, Math.PI, 0); g.lineTo(x + 80, H * .86); g.fill(); g.fillStyle = 'rgba(255,200,140,.3)'; g.fillRect(x - 6, wy + 50, 6, H * .86 - wy - 50); }
+    g.fillStyle = 'rgba(255,230,190,.25)'; for (let i = 0; i < 60; i++) { g.beginPath(); g.ellipse((i * 83.3) % W, wy + (i * 41.7) % (H - wy), 10, 3, 0, 0, 7); g.fill(); }
+    // tiled floor
+    const fy = H * .86; g.fillStyle = '#c86a3a'; g.fillRect(0, fy, W, H - fy); g.strokeStyle = 'rgba(90,30,10,.4)'; g.lineWidth = 2; for (let x = 0; x < W; x += 40) { g.beginPath(); g.moveTo(x, fy); g.lineTo(x - 20, H); g.stroke(); } for (let y = fy; y < H; y += 18) { g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke(); }
+    // potted cacti on both sides
+    const pot = (x, s) => { const y = fy; g.fillStyle = '#4aa84a'; g.beginPath(); g.roundRect(x - 10 * s, y - 70 * s, 20 * s, 60 * s, 10 * s); g.fill(); g.beginPath(); g.roundRect(x - 26 * s, y - 50 * s, 12 * s, 26 * s, 6 * s); g.fill(); g.fillRect(x - 26 * s, y - 30 * s, 20 * s, 8 * s); g.fillStyle = '#ff4ab0'; g.beginPath(); g.arc(x, y - 72 * s, 5 * s, 0, 7); g.fill(); g.fillStyle = '#c8501a'; g.beginPath(); g.moveTo(x - 20 * s, y - 14 * s); g.lineTo(x + 20 * s, y - 14 * s); g.lineTo(x + 15 * s, y + 6 * s); g.lineTo(x - 15 * s, y + 6 * s); g.fill(); g.fillStyle = '#ffd24a'; g.fillRect(x - 18 * s, y - 10 * s, 36 * s, 4 * s); };
+    pot(W * .08, 1.1); pot(W * .92, 1);
+    // papel picado banners in two rows
+    const row = (y, sag) => {
+      const cols = ['#ff3a8a', '#ffd24a', '#2ad8c8', '#8a4aff', '#ff8a2a', '#4ac83a'];
+      g.strokeStyle = '#5a2a1a'; g.lineWidth = 1.5; g.beginPath(); g.moveTo(0, y); g.quadraticCurveTo(W / 2, y + sag, W, y); g.stroke();
+      for (let x = 10, k = 0; x < W - 20; x += 38, k++) {
+        const u = (x + 15) / W, yy = y + sag * 2 * u * (1 - u) * 2 * .5 + 0, fw = 30, fh = 38; g.save(); g.translate(x, (1 - u) * (1 - u) * y + 2 * u * (1 - u) * (y + sag) + u * u * y); g.rotate(Math.sin(k) * .05);
+        g.fillStyle = cols[k % cols.length]; g.beginPath(); g.moveTo(0, 0); g.lineTo(fw, 0); g.lineTo(fw, fh); for (let z = fw; z > 0; z -= 5) g.lineTo(z - 2.5, fh - 4 - (z % 10 ? 0 : 0)), g.lineTo(z - 5, fh); g.closePath(); g.fill();
+        // cut-out pattern
+        g.globalCompositeOperation = 'destination-out'; g.beginPath(); g.arc(fw / 2, fh * .45, 7, 0, 7); g.fill(); for (const [dx, dy] of [[-9, -10], [9, -10], [-9, 12], [9, 12]]) { g.beginPath(); g.arc(fw / 2 + dx, fh * .45 + dy, 2.4, 0, 7); g.fill(); } g.fillRect(fw / 2 - 1, 4, 2, 6); g.globalCompositeOperation = 'source-over';
+        g.restore();
+      }
+    };
+    row(14, 40); row(H * .22, 50);
+    return c;
+  }
+  // fringe texture: horizontal crepe-paper rows with frilly edges in the palette
+  function makeTexture(pal) {
+    const s = 256, c = document.createElement('canvas'); c.width = c.height = s; const g = c.getContext('2d');
+    const rowH = 18;
+    for (let y = -rowH, k = 0; y < s + rowH; y += rowH * .72, k++) {
+      const col = pal[k % pal.length]; g.fillStyle = shade(col, -.25); g.fillRect(0, y, s, rowH);
+      g.fillStyle = col; g.beginPath(); g.moveTo(0, y);
+      for (let x = 0; x <= s; x += 6) { g.lineTo(x, y + rowH * .85 + Math.sin(x * 1.7 + k) * 2.5); g.lineTo(x + 3, y + rowH * .55); }
+      g.lineTo(s, y); g.closePath(); g.fill();
+      g.strokeStyle = 'rgba(255,255,255,.35)'; g.lineWidth = 1; for (let x = 2; x < s; x += 6) { g.beginPath(); g.moveTo(x, y + 2); g.lineTo(x + 1, y + rowH * .6); g.stroke(); }
+    }
+    return c;
+  }
+
+  // ---------- flow ----------
+  function startStage(n) {
+    stage = n; P = stageParams(n); maxHp = P.hits; hp = maxHp; timeLeft = P.time; ang = .3; angV = 0; candies = []; pieces = []; caught = 0; combo = 0; burstT = 0; FX.clear(); phase = 'play';
+    tex = makeTexture(P.pal); PATH = shapePath(P.shape);
+    resize(); for (const o of ['menu', 'clear', 'over']) $(o).classList.add('hidden');
+  }
+  $('startBtn').onclick = () => { if (!SPR) return; score = 0; shown = 0; audio.start(); startStage(save.stage); };
+  $('againBtn').onclick = () => { score = 0; shown = 0; startStage(save.stage); };
+  $('nextBtn').onclick = () => startStage(stage + 1);
+  addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && phase === 'menu') { e.preventDefault(); $('startBtn').click(); } });
+  const ropeLen = () => H * .3, pivot = () => ({ x: W / 2, y: H * .08 });
+  const pinataPos = () => { const p = pivot(), L = ropeLen(); return { x: p.x + Math.sin(ang) * L, y: p.y + Math.cos(ang) * L + size * .5 }; };
+  canvas.addEventListener('pointerdown', e => {
+    const x = e.clientX, y = e.clientY;
+    if (phase === 'play') {
+      const pp = pinataPos(); batT = 0; batX = x; batY = y;
+      if (Math.hypot(x - pp.x, y - pp.y) < size * 1.15) hit(x, y, pp);
+      else { combo = 0; audio.sfx(300, .08, 'triangle', .04, 160); FX.burst(x, y, { n: 4, colors: ['#ffffff'], shape: 'spark', speed: 200, size: 5, gravity: 0, life: .2 }); }
+    } else if (phase === 'candy') {
+      batT = 0; batX = x; batY = y;
+      let best = null, bd = 1e9; for (const c of candies) { const d = Math.hypot(x - c.x, y - c.y); if (!c.got && d < c.r * 1.6 && d < bd) { bd = d; best = c; } }
+      if (best) grab(best);
+    }
+  });
+  function hit(x, y, pp) {
+    hp--; hitT = 1; if (t - lastHit < .5) combo++; else combo = 1; lastHit = t;
+    angV += (x < pp.x ? 1 : -1) * (.35 + Math.random() * .2);
+    const mult = 1 + Math.min(4, Math.floor(combo / 6)), pts = 5 * mult; score += pts;
+    FX.burst(x, y, { n: 12, colors: P.pal, shape: 'square', speed: 320, size: 7, gravity: 700 });
+    FX.burst(x, y, { n: 6, colors: ['#ffffff', '#ffe24a'], shape: 'star', speed: 260, size: 8, gravity: 300 });
+    FX.text(x, y - 20, ['¡PUM!', '¡ZAS!', '¡BAM!', '+' + pts][Math.floor(Math.random() * 4)], { color: '#ffffff', size: 26 + mult * 3, stroke: '#a8105a', rise: 90 });
+    if (combo > 0 && combo % 6 === 0) FX.text(W / 2, H * .62, ['¡ARRIBA!', '¡ÁNDALE!', '¡FUEGO!', '¡INCREÍBLE!'][Math.min(3, combo / 6 - 1)] + ' x' + mult, { color: '#ffe24a', size: 40, stroke: '#a8105a', wobble: .08, life: 1.1 });
+    FX.shake(4 + Math.min(6, combo * .3), .1);
+    audio.sfx(140 + Math.random() * 30, .12, 'triangle', .1, 60); audio.sfx(900 + combo * 30, .04, 'square', .03);
+    // a few sweets drop out as it cracks
+    if (Math.random() < .35) dropCandy(pp.x, pp.y, 1, false);
+    if (hp <= 0) burst(pp);
+  }
+  function dropCandy(x, y, n, rain) {
+    for (let i = 0; i < n; i++) {
+      const chili = rain && Math.random() < P.chili;
+      candies.push({ x: x + (Math.random() - .5) * size, y, vx: (Math.random() - .5) * (rain ? 520 : 240), vy: -200 - Math.random() * (rain ? 520 : 200), r: 22, k: chili ? 'chili' : CANDY[Math.floor(Math.random() * CANDY.length)], rot: Math.random() * 6, vr: (Math.random() - .5) * 10, got: false, life: rain ? 5 : 3, chili });
+    }
+  }
+  function burst(pp) {
+    phase = 'candy'; burstT = 0; const bonus = Math.round(timeLeft * 15); score += bonus;
+    // the piñata breaks into fringe chunks
+    for (let i = 0; i < 16; i++) pieces.push({ x: pp.x + (Math.random() - .5) * size, y: pp.y + (Math.random() - .5) * size * .6, vx: (Math.random() - .5) * 700, vy: -300 - Math.random() * 400, rot: Math.random() * 6, vr: (Math.random() - .5) * 14, s: size * (.2 + Math.random() * .25), c: P.pal[i % P.pal.length] });
+    FX.burst(pp.x, pp.y, { n: 90, colors: P.pal.concat(['#ffffff']), shape: 'square', speed: 800, size: 9, gravity: 600, life: 1.8 });
+    FX.ring(pp.x, pp.y, { color: '#ffffff', r1: Math.max(W, H) * .6, width: 16, life: .6 }); FX.flash('#fff6c0', .5); FX.shake(18, .5);
+    FX.text(W / 2, H * .4, '¡PIÑATA!', { color: '#ffe24a', size: 58, stroke: '#a8105a', wobble: .1, life: 1.4 });
+    FX.text(W / 2, H * .4 + 54, 'time bonus +' + bonus, { color: '#ffffff', size: 22, stroke: '#a8105a', life: 1.4 });
+    audio.sfx(80, .6, 'sawtooth', .1, 40); [523, 659, 784, 1046, 1318, 1568].forEach((f, k) => setTimeout(() => audio.sfx(f, .2, 'square', .05), 100 + k * 70));
+    dropCandy(pp.x, pp.y, 18 + Math.min(14, stage), true);
+  }
+  function grab(c) {
+    c.got = true;
+    if (c.chili) { score = Math.max(0, score - 40); FX.burst(c.x, c.y, { n: 20, colors: ['#ff3a1a', '#ffb02a', '#ffe24a'], speed: 300, size: 9, gravity: -200, life: .8 }); FX.text(c.x, c.y - 20, '¡PICANTE! -40', { color: '#ff3a1a', size: 26, stroke: '#ffe24a' }); FX.flash('#ff3a1a', .3); audio.sfx(200, .4, 'sawtooth', .07, 600); return; }
+    caught++; score += 15; FX.burst(c.x, c.y, { n: 10, colors: ['#ffffff', '#ffe24a', '#ff8ab0'], shape: 'star', speed: 260, size: 7, gravity: 200 }); FX.text(c.x, c.y - 20, '+15', { color: '#ffe24a', size: 24, stroke: '#a8105a' });
+    audio.sfx(1200 + caught * 30, .07, 'square', .04, 1800);
+  }
+  function stageClear() {
+    phase = 'clearing'; save.stage = stage + 1; save.best = Math.max(save.best, score); store();
+    setTimeout(() => { $('clrStage').textContent = stage; $('clrCandy').textContent = caught; $('clrScore').textContent = score; $('clear').classList.remove('hidden'); }, 400);
+  }
+  function gameOver() {
+    phase = 'over'; save.best = Math.max(save.best, score); store(); audio.sfx(300, .9, 'sawtooth', .06, 80);
+    setTimeout(() => { $('ovScore').textContent = score; $('ovBest').textContent = 'Best: ' + save.best + ' · you reached fiesta ' + stage; $('over').classList.remove('hidden'); }, 900);
+  }
+  window.__pp = { phase: () => phase, stage: () => stage, score: () => score, pos: () => pinataPos(), hp: () => hp, candies: () => candies.filter(c => !c.got && c.y > 0 && c.y < innerHeight).map(c => ({ x: c.x, y: c.y, chili: c.chili })), params: stageParams };
+
+  // ---------- update ----------
+  function update(dt) {
+    t += dt; FX.update(dt); shown += (score - shown) * Math.min(1, dt * 10); if (Math.abs(score - shown) < .5) shown = score;
+    hitT = Math.max(0, hitT - dt * 5); batT = Math.min(1, batT + dt * 5);
+    for (const p of pieces) { p.vy += 1200 * dt; p.x += p.vx * dt; p.y += p.vy * dt; p.rot += p.vr * dt; } pieces = pieces.filter(p => p.y < H + 100);
+    for (const c of candies) { if (c.got) continue; c.vy += 700 * dt; c.x += c.vx * dt; c.y += c.vy * dt; c.rot += c.vr * dt; c.life -= dt; if (c.y > H * .9) { c.y = H * .9; c.vy *= -.35; c.vx *= .6; c.vr *= .5; } if (c.x < 20 || c.x > W - 20) c.vx *= -1; }
+    candies = candies.filter(c => !c.got && c.life > 0);
+    if (phase === 'play' || phase === 'menu' || phase === 'clearing' || phase === 'over') {
+      // pendulum with a little motor so it keeps swinging harder each stage
+      const g = 9.8 / (ropeLen() / 100), drive = P ? P.swing : .4;
+      angV += (-g * Math.sin(ang) * .35) * dt; angV *= Math.exp(-dt * .25);
+      if (P && Math.abs(ang) < .05 && Math.abs(angV) < drive * 1.2) angV += Math.sign(angV || 1) * drive * dt * 6;
+      ang += angV * dt;
+      // keep the swing on screen: it bumps softly at the ends of its arc
+      const maxA = Math.min(.62, Math.asin(Math.min(1, (W / 2 - size * 1.1) / ropeLen())));
+      if (Math.abs(ang) > maxA) { ang = Math.sign(ang) * maxA; angV = -angV * .5; }
+    }
+    if (phase === 'play') { timeLeft -= dt; if (timeLeft <= 0) { timeLeft = 0; gameOver(); } }
+    if (phase === 'candy') { burstT += dt; if (burstT > 4.5 || (burstT > 1 && !candies.some(c => !c.chili))) stageClear(); }
+  }
+
+  // ---------- render ----------
+  function drawPinata() {
+    const pv = pivot(), pp = pinataPos(), dmg = 1 - hp / maxHp;
+    // rope
+    ctx.strokeStyle = '#8a6a3a'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(pv.x, pv.y); ctx.lineTo(pp.x, pp.y - size * .5); ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,240,200,.6)'; ctx.lineWidth = 1; ctx.setLineDash([3, 4]); ctx.beginPath(); ctx.moveTo(pv.x, pv.y); ctx.lineTo(pp.x, pp.y - size * .5); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = '#5a3a1a'; ctx.fillRect(pv.x - 40, pv.y - 6, 80, 8);
+    ctx.save(); ctx.translate(pp.x + (hitT ? (Math.random() - .5) * 8 * hitT : 0), pp.y); ctx.rotate(-ang * .6 + (hitT ? Math.sin(t * 60) * .08 * hitT : 0)); ctx.scale((P.flip ? -1 : 1) * size * (1 + hitT * .06), size * (1 - hitT * .04));
+    ctx.save(); ctx.shadowColor = 'rgba(0,0,0,.35)'; ctx.shadowBlur = 20; ctx.shadowOffsetY = 12; ctx.fillStyle = P.pal[0]; ctx.fill(PATH); ctx.restore();
+    ctx.save(); ctx.clip(PATH); ctx.drawImage(tex, -1.1, -1.1, 2.2, 2.2);
+    // shading across the body
+    const sg = ctx.createLinearGradient(-1, -1, 1, 1); sg.addColorStop(0, 'rgba(255,255,255,.25)'); sg.addColorStop(.6, 'rgba(0,0,0,0)'); sg.addColorStop(1, 'rgba(0,0,0,.3)'); ctx.fillStyle = sg; ctx.fillRect(-1.2, -1.2, 2.4, 2.4);
+    // cracks grow with damage
+    if (dmg > .2) { ctx.strokeStyle = 'rgba(60,20,10,.85)'; ctx.lineWidth = .025; ctx.lineJoin = 'round'; const n = Math.floor(dmg * 7); for (let k = 0; k < n; k++) { const a = k * 2.4, x0 = Math.cos(a) * .2, y0 = Math.sin(a) * .15; ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x0 + Math.cos(a) * .25, y0 + Math.sin(a + .5) * .2); ctx.lineTo(x0 + Math.cos(a + .3) * .45, y0 + Math.sin(a) * .35); ctx.stroke(); } }
+    ctx.restore();
+    ctx.strokeStyle = shade(P.pal[0], -.5); ctx.lineWidth = .03; ctx.stroke(PATH);
+    // a cheeky face
+    const fx = P.shape === 'star' ? 0 : P.shape === 'fish' ? -.45 : P.shape === 'cactus' ? 0 : .7, fy = P.shape === 'star' ? -.05 : P.shape === 'fish' ? -.1 : P.shape === 'cactus' ? -.55 : P.shape === 'llama' ? -1.05 : -.72;
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(fx - .1, fy, .085, 0, 7); ctx.arc(fx + .1, fy, .085, 0, 7); ctx.fill(); ctx.fillStyle = '#1a0a04';
+    if (hitT > .3) { ctx.lineWidth = .03; ctx.strokeStyle = '#1a0a04'; for (const s of [-1, 1]) { ctx.beginPath(); ctx.moveTo(fx + s * .1 - .05, fy - .05); ctx.lineTo(fx + s * .1 + .05, fy + .05); ctx.moveTo(fx + s * .1 + .05, fy - .05); ctx.lineTo(fx + s * .1 - .05, fy + .05); ctx.stroke(); } }
+    else { ctx.beginPath(); ctx.arc(fx - .09, fy + .01, .045, 0, 7); ctx.arc(fx + .11, fy + .01, .045, 0, 7); ctx.fill(); }
+    ctx.lineWidth = .03; ctx.strokeStyle = '#1a0a04'; ctx.beginPath(); ctx.arc(fx, fy + .1, .08, .2, Math.PI - .2); ctx.stroke();
+    // flower decoration
+    ctx.fillStyle = P.pal[2]; for (let k = 0; k < 5; k++) { ctx.beginPath(); ctx.arc(fx - .25 + Math.cos(k * 1.256) * .06, fy - .18 + Math.sin(k * 1.256) * .06, .045, 0, 7); ctx.fill(); } ctx.fillStyle = '#ffe24a'; ctx.beginPath(); ctx.arc(fx - .25, fy - .18, .035, 0, 7); ctx.fill();
+    ctx.restore();
+  }
+  function render() {
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    const [ox, oy] = FX.offset(); ctx.translate(ox, oy);
+    if (BG) ctx.drawImage(BG, -10, -10, W + 20, H + 20);
+    // twinkling string lights between the banners
+    for (let x = 0, k = 0; x < W; x += 30, k++) { const y = H * .14 + Math.sin(x / W * Math.PI) * 30, on = (Math.floor(t * 3) + k) % 3; const c = ['#ffe24a', '#ff4ab0', '#2ad8ff'][k % 3], gl = ctx.createRadialGradient(x, y, 0, x, y, on ? 14 : 5); gl.addColorStop(0, c); gl.addColorStop(1, 'rgba(0,0,0,0)'); ctx.fillStyle = gl; ctx.beginPath(); ctx.arc(x, y, on ? 14 : 5, 0, 7); ctx.fill(); }
+    if (!SPR || !P || phase === 'menu') { FX.draw(ctx); return; }
+    if (phase === 'play' || phase === 'over') drawPinata();
+    for (const p of pieces) { ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.rot); ctx.drawImage(tex, 0, 0, 80, 80, -p.s / 2, -p.s / 2, p.s, p.s); ctx.restore(); }
+    for (const c of candies) { const z = c.r * 2.2; ctx.save(); ctx.translate(c.x, c.y); ctx.rotate(c.rot); if (c.chili) { ctx.shadowColor = '#ff3a1a'; ctx.shadowBlur = 12; } ctx.drawImage(SPR[c.k], -z / 2, -z / 2, z, z); ctx.restore(); }
+    // the stick swings where you tapped
+    if (batT < 1) { const z = Math.min(W, H) * .32, a = -1.4 + batT * 1.8; ctx.save(); ctx.globalAlpha = 1 - Math.max(0, batT - .6) * 2.5; ctx.translate(batX + z * .35, batY + z * .55); ctx.rotate(a); ctx.drawImage(SPR.bat, -z * .25, -z, z * .5, z); ctx.restore(); }
+    FX.draw(ctx);
+    // HUD
+    const label = (txt, x, y, size, col, align = 'center') => { ctx.font = '900 ' + size + 'px "Avenir Next", sans-serif'; ctx.textAlign = align; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round'; ctx.lineWidth = Math.max(4, size * .2); ctx.strokeStyle = '#a8105a'; ctx.strokeText(txt, x, y); ctx.fillStyle = col; ctx.fillText(txt, x, y); };
+    const hy = H - 90;
+    label(Math.round(shown).toLocaleString(), W / 2, hy - 40, 40, '#ffffff');
+    label('FIESTA ' + stage, 16, 24, 17, '#ffe24a', 'left');
+    if (phase === 'play') {
+      const bw = Math.min(300, W * .7), bx = W / 2 - bw / 2, k = hp / maxHp;
+      ctx.fillStyle = 'rgba(90,10,40,.45)'; ctx.beginPath(); ctx.roundRect(bx, hy, bw, 18, 9); ctx.fill();
+      const g = ctx.createLinearGradient(bx, 0, bx + bw, 0); P.pal.forEach((c, i) => g.addColorStop(i / (P.pal.length - 1), c)); ctx.fillStyle = g; ctx.beginPath(); ctx.roundRect(bx, hy, Math.max(18, bw * k), 18, 9); ctx.fill();
+      label(hp + ' hits left', W / 2, hy + 9, 12, '#ffffff');
+      const tk = timeLeft / P.time; label(Math.ceil(timeLeft) + 's', W - 18, 24, 22, tk < .3 ? '#ff4a3a' : '#ffffff', 'right');
+      ctx.fillStyle = 'rgba(90,10,40,.45)'; ctx.fillRect(bx, hy + 24, bw, 6); ctx.fillStyle = tk < .3 ? '#ff4a3a' : '#ffe24a'; ctx.fillRect(bx, hy + 24, bw * tk, 6);
+    } else if (phase === 'candy') label('GRAB THE CANDY!', W / 2, hy + 10, 26, '#ffe24a');
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0); FX.drawFlash(ctx, W, H);
+  }
+  function art(cv, seed, mode) {
+    const g = cv.getContext('2d'), q = stageParams(seed), tx = makeTexture(q.pal), path = shapePath(['donkey', 'star', 'donkey'][mode]);
+    const glow = g.createRadialGradient(250, 250, 30, 250, 250, 250); glow.addColorStop(0, 'rgba(255,255,255,.8)'); glow.addColorStop(1, 'rgba(255,255,255,0)'); g.fillStyle = glow; g.fillRect(0, 0, 500, 500);
+    for (let k = 0; k < 12; k++) { g.save(); g.translate(250, 260); g.rotate(k * Math.PI / 6); g.fillStyle = 'rgba(255,120,160,.15)'; g.beginPath(); g.moveTo(0, 0); g.lineTo(-30, 260); g.lineTo(30, 260); g.fill(); g.restore(); }
+    g.strokeStyle = '#8a6a3a'; g.lineWidth = 4; g.beginPath(); g.moveTo(250, 0); g.lineTo(250, 130); g.stroke();
+    g.save(); g.translate(250, 270); g.rotate(mode === 2 ? .2 : -.1); g.scale(150, 150); g.fillStyle = q.pal[0]; g.fill(path); g.save(); g.clip(path); g.drawImage(tx, -1.1, -1.1, 2.2, 2.2); g.restore(); g.lineWidth = .025; g.strokeStyle = shade(q.pal[0], -.5); g.stroke(path); g.restore();
+    if (mode !== 2) for (let k = 0; k < 8; k++) g.drawImage(SPR[CANDY[k % CANDY.length]], 40 + (k * 61) % 420, 380 + (k * 37) % 90, 60, 60);
+    g.save(); g.translate(420, 330); g.rotate(-.5); g.drawImage(SPR.bat, -45, -150, 90, 144); g.restore();
+  }
+
+  resize();
+  let last = performance.now();
+  (function loop(now) {
+    const dt = Math.max(0, Math.min(0.033, (now - last) / 1000)); last = now;
+    update(dt); render(); requestAnimationFrame(loop);
+  })(last);
+})();
+</script>
+</body>
+</html>

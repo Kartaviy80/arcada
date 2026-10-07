@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#2a1408">
+<title>Juice Splash</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #2a1408;
+    font-family: "Avenir Next", "Trebuchet MS", "Segoe UI", sans-serif; color: #fff;
+    touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+  canvas { display: block; width: 100%; height: 100%; }
+  .overlay { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 24px; text-align: center;
+    background: radial-gradient(ellipse at 50% 35%, rgba(90,40,20,.94), rgba(20,8,4,.97)); transition: opacity .3s; }
+  .overlay.hidden { opacity: 0; pointer-events: none; }
+  .overlay canvas { width: 250px; height: 250px; }
+  h1 { font-size: clamp(42px, 13vw, 70px); font-weight: 900; letter-spacing: 2px; line-height: .95; color: #fff;
+    text-shadow: 0 0 8px #ff4ab0, 0 0 22px #ff4ab0, 0 0 44px #ff2a8a; }
+  p { max-width: 320px; font-size: 15px; line-height: 1.55; color: #ffd8b8; }
+  .stat { font-size: 17px; font-weight: 800; color: #ffd8b8; } .stat b { color: #7af0ff; }
+  .big { font-size: 46px; font-weight: 900; color: #ffe24a; text-shadow: 0 0 18px #ff9a2a; }
+  .btn { border: 3px solid #7af0ff; background: rgba(10,40,60,.6); color: #e8fdff; font: inherit; font-size: 21px; font-weight: 900; letter-spacing: 5px; padding: 14px 50px; border-radius: 40px; cursor: pointer;
+    box-shadow: 0 0 14px #2ad8ff, inset 0 0 14px #2ad8ff; text-shadow: 0 0 10px #2ad8ff; animation: glow 1.4s ease-in-out infinite; }
+  @keyframes glow { 50% { box-shadow: 0 0 28px #2ad8ff, inset 0 0 20px #2ad8ff; transform: scale(1.03); } }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="overlay" id="menu">
+  <canvas id="logo" width="500" height="500"></canvas>
+  <h1>JUICE<br>SPLASH</h1>
+  <p><b>Fresh juice, fast!</b> Tap the fruit as it flies to slice it. Let three fall and the bar closes. Golden pineapples are a jackpot, ice berries slow time — and never touch a bomb!</p>
+  <div class="stat" id="bestMenu"></div>
+  <button class="btn" id="startBtn">OPEN BAR</button>
+</div>
+<div class="overlay hidden" id="clear">
+  <canvas id="clearArt" width="500" height="500"></canvas>
+  <h1>ORDER<br>READY!</h1>
+  <div class="stat">Round <b id="clrStage">1</b> · bonus <b id="clrBonus">0</b></div>
+  <div class="big" id="clrScore">0</div>
+  <button class="btn" id="nextBtn">NEXT ROUND</button>
+</div>
+<div class="overlay hidden" id="over">
+  <canvas id="overArt" width="500" height="500"></canvas>
+  <h1>BAR<br>CLOSED</h1>
+  <div class="big" id="ovScore">0</div>
+  <div class="stat" id="ovBest">Best: 0</div>
+  <button class="btn" id="againBtn">REOPEN</button>
+</div>
+
+<script>
+/*AUDIO-ENGINE-START*/
+// ---------- audio: procedural background music + sound effects ----------
+// Every note is synthesized with the Web Audio API at runtime, so the music
+// needs no files, works offline and carries no copyright.
+const GameAudio = (cfg) => {
+  let ctx = null, master = null, musicBus = null, sfxBus = null;
+  let timer = null, step = 0, nextT = 0, playing = false;
+  let musicOn = true;
+  try { musicOn = localStorage.getItem('music_off') !== '1'; } catch (e) {}
+
+  const SCALES = {
+    major: [0, 2, 4, 5, 7, 9, 11], minor: [0, 2, 3, 5, 7, 8, 10],
+    dorian: [0, 2, 3, 5, 7, 9, 10], lydian: [0, 2, 4, 6, 7, 9, 11],
+    pentaMajor: [0, 2, 4, 7, 9], pentaMinor: [0, 3, 5, 7, 10],
+    japanese: [0, 1, 5, 7, 8], phrygian: [0, 1, 3, 5, 7, 8, 10]
+  };
+  const scale = SCALES[cfg.scale] || SCALES.major;
+  const root = cfg.root || 57;
+  const bpm = cfg.bpm || 110;
+  const prog = cfg.prog || [0, 5, 3, 4];
+  const sixteenth = 60 / bpm / 4;
+
+  // deterministic random so each game always plays "its" tune
+  let seed = cfg.seed || 1;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
+
+  const deg = (d, oct = 0) => {
+    const n = scale.length;
+    const o = Math.floor(d / n);
+    return root + scale[((d % n) + n) % n] + 12 * (o + oct);
+  };
+  const hz = m => 440 * Math.pow(2, (m - 69) / 12);
+
+  // melody: two 2-bar phrases (A, B) arranged A A B A
+  function phrase() {
+    const notes = [];
+    let d = 2 + Math.floor(rnd() * 3);
+    for (let i = 0; i < 32; i++) {
+      const strong = i % 4 === 0;
+      if (rnd() < (strong ? 0.85 : (cfg.leadDensity || 0.35))) {
+        d += Math.round((rnd() - 0.5) * 4);
+        d = Math.max(0, Math.min(scale.length * 2, d));
+        const len = strong && rnd() < 0.5 ? 2 : 1;
+        notes.push({ i, d, len });
+      }
+    }
+    return notes;
+  }
+  const A = phrase(), B = phrase();
+  const song = [A, A, B, A];
+
+  function init() {
+    if (ctx) return;
+    try {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      master = ctx.createGain(); master.gain.value = 0.9; master.connect(ctx.destination);
+      musicBus = ctx.createGain(); musicBus.gain.value = cfg.volume || 0.16; musicBus.connect(master);
+      sfxBus = ctx.createGain(); sfxBus.gain.value = 1; sfxBus.connect(master);
+    } catch (e) { ctx = null; }
+  }
+
+  function voice(t, freq, dur, type, vol, opts = {}) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, t);
+    if (opts.detune) o.detune.value = opts.detune;
+    let node = o;
+    if (opts.cutoff) {
+      const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = opts.cutoff; f.Q.value = opts.q || 1;
+      o.connect(f); node = f;
+    }
+    const a = opts.attack || 0.008;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(vol, t + a);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    node.connect(g); g.connect(opts.bus || musicBus);
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+
+  let noiseBuf = null;
+  function noise(t, dur, vol, hp) {
+    if (!noiseBuf) {
+      noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 0.5, ctx.sampleRate);
+      const d = noiseBuf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    }
+    const s = ctx.createBufferSource(); s.buffer = noiseBuf;
+    const f = ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = hp;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.connect(f); f.connect(g); g.connect(musicBus);
+    s.start(t); s.stop(t + dur + 0.02);
+  }
+
+  function kick(t) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.setValueAtTime(140, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+    g.gain.setValueAtTime(0.9, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+    o.connect(g); g.connect(musicBus); o.start(t); o.stop(t + 0.25);
+  }
+
+  function playStep(s, t) {
+    const bar = Math.floor(s / 16);
+    const i16 = s % 16;
+    const chordDeg = prog[bar % prog.length];
+    const w = cfg.waves || {};
+    // bass
+    const bassPat = cfg.bassPattern || [0, 8];
+    if (bassPat.includes(i16)) voice(t, hz(deg(chordDeg, -2)), sixteenth * 3.5, w.bass || 'triangle', 0.5, { cutoff: 600 });
+    // pad (chord) at bar start
+    if (cfg.pad && i16 === 0) {
+      for (const k of [0, 2, 4]) voice(t, hz(deg(chordDeg + k, -1)), sixteenth * 15, w.pad || 'sine', 0.12, { attack: 0.3, cutoff: 1400, detune: k * 3 });
+    }
+    // arpeggio
+    if (cfg.arp && i16 % (cfg.arpEvery || 2) === 0) {
+      const k = [0, 2, 4, 2][(i16 / (cfg.arpEvery || 2)) % 4];
+      voice(t, hz(deg(chordDeg + k, cfg.arpOct || 0)), sixteenth * 1.6, w.arp || 'square', 0.1, { cutoff: cfg.arpCutoff || 2200 });
+    }
+    // lead melody
+    const ph = song[Math.floor(bar / 2) % song.length];
+    const pi = (bar % 2) * 16 + i16;
+    for (const n of ph) if (n.i === pi) {
+      voice(t, hz(deg(n.d, cfg.leadOct || 0)), sixteenth * (n.len * 2 + 0.5), w.lead || 'triangle', 0.22, { cutoff: cfg.leadCutoff || 3000 });
+    }
+    // drums
+    if (cfg.drums) {
+      if (i16 % 8 === 0 || (cfg.drums === 'busy' && i16 === 10)) kick(t);
+      if (i16 % 8 === 4) noise(t, 0.14, 0.35, 1500);
+      if (i16 % 2 === 0) noise(t, 0.04, cfg.drums === 'soft' ? 0.06 : 0.12, 7000);
+    }
+  }
+
+  function scheduler() {
+    if (!ctx || !playing) return;
+    while (nextT < ctx.currentTime + 0.15) {
+      playStep(step, nextT);
+      nextT += sixteenth * (cfg.swing && step % 2 === 0 ? 1 + cfg.swing : cfg.swing ? 1 - cfg.swing : 1);
+      step++;
+    }
+  }
+
+  function startMusic() {
+    if (!ctx || playing || !musicOn) return;
+    playing = true;
+    musicBus.gain.cancelScheduledValues(ctx.currentTime);
+    musicBus.gain.setValueAtTime(0.0001, ctx.currentTime);
+    musicBus.gain.linearRampToValueAtTime(cfg.volume || 0.16, ctx.currentTime + 1.2);
+    nextT = ctx.currentTime + 0.05;
+    timer = setInterval(scheduler, 40);
+  }
+  function stopMusic() {
+    playing = false;
+    if (timer) clearInterval(timer);
+    timer = null;
+  }
+
+  // mute button
+  const btn = document.createElement('button');
+  btn.setAttribute('aria-label', 'Toggle music');
+  btn.style.cssText = 'position:fixed;z-index:50;right:max(14px,env(safe-area-inset-right));bottom:max(14px,env(safe-area-inset-bottom));' +
+    'width:42px;height:42px;border-radius:50%;border:none;cursor:pointer;font-size:20px;line-height:42px;padding:0;' +
+    'background:' + (cfg.btnBg || 'rgba(0,0,0,.35)') + ';color:' + (cfg.btnColor || '#fff') + ';backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);';
+  const paint = () => { btn.textContent = musicOn ? '♪' : '✕'; btn.style.opacity = musicOn ? '1' : '.6'; };
+  paint();
+  const toggle = e => {
+    e.stopPropagation(); e.preventDefault();
+    musicOn = !musicOn;
+    try { localStorage.setItem('music_off', musicOn ? '0' : '1'); } catch (err) {}
+    init();
+    if (ctx && ctx.state === 'suspended') ctx.resume();
+    if (musicOn) startMusic(); else stopMusic();
+    paint();
+  };
+  btn.addEventListener('pointerdown', e => e.stopPropagation());
+  btn.addEventListener('pointerup', e => e.stopPropagation());
+  btn.addEventListener('click', toggle);
+  document.addEventListener('DOMContentLoaded', () => document.body.appendChild(btn));
+  if (document.body) document.body.appendChild(btn);
+
+  document.addEventListener('visibilitychange', () => {
+    if (!ctx) return;
+    if (document.hidden) ctx.suspend(); else ctx.resume();
+  });
+
+  return {
+    // call from a user gesture (start button) — browsers only allow audio after one
+    start() {
+      init();
+      if (!ctx) return;
+      if (ctx.state === 'suspended') ctx.resume();
+      startMusic();
+    },
+    sfx(freq, dur, type = 'sine', vol = 0.07, to = 0) {
+      init();
+      if (!ctx) return;
+      try {
+        const t = ctx.currentTime;
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.type = type; o.frequency.setValueAtTime(freq, t);
+        if (to) o.frequency.exponentialRampToValueAtTime(Math.max(30, to), t + dur);
+        g.gain.setValueAtTime(vol, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+        o.connect(g); g.connect(sfxBus);
+        o.start(t); o.stop(t + dur + 0.02);
+      } catch (e) {}
+    }
+  };
+};
+/*AUDIO-ENGINE-END*/
+/*SPRITES-START*/
+// ---------- sprites: detailed SVG artwork rasterised once into canvases ----------
+// Each piece is authored as an SVG (gradients, highlights, shadows, glow) and
+// drawn into an offscreen canvas at load time, so the game loop just blits images.
+const loadSprites = (defs, px = 160) => Promise.all(Object.entries(defs).map(([name, svg]) => new Promise(done => {
+  const img = new Image();
+  const finish = ok => {
+    const c = document.createElement('canvas');
+    const w = Array.isArray(px) ? px[0] : px, h = Array.isArray(px) ? px[1] : px;
+    c.width = w; c.height = h;
+    if (ok) c.getContext('2d').drawImage(img, 0, 0, w, h);
+    done([name, c]);
+  };
+  img.onload = () => finish(true);
+  img.onerror = () => finish(false);
+  img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+}))).then(entries => Object.fromEntries(entries));
+
+// small helpers for writing SVG
+const svgDoc = (body, vb = '0 0 100 100') => '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + vb + '">' + body + '</svg>';
+const shade = (hex, amt) => {
+  const n = parseInt(hex.slice(1), 16);
+  const f = v => Math.max(0, Math.min(255, Math.round(amt < 0 ? v * (1 + amt) : v + (255 - v) * amt)));
+  return '#' + [n >> 16, (n >> 8) & 255, n & 255].map(f).map(v => v.toString(16).padStart(2, '0')).join('');
+};
+/*SPRITES-END*/
+/*FX-START*/
+// ---------- juice: particles, popping text, shock rings, screen shake and flashes ----------
+// Coordinates are screen pixels. Call FX.update(dt) every frame and FX.draw(ctx) after the scene.
+const FX = (() => {
+  let parts = [], texts = [], rings = [], shakeT = 0, shakeA = 0, flashC = '#fff', flashA = 0;
+  const TAU = Math.PI * 2;
+  function star(ctx, r) { ctx.beginPath(); for (let k = 0; k < 10; k++) { const a = -Math.PI / 2 + k * Math.PI / 5, rr = k % 2 ? r * .45 : r; ctx.lineTo(Math.cos(a) * rr, Math.sin(a) * rr); } ctx.closePath(); ctx.fill(); }
+  function heart(ctx, r) { ctx.beginPath(); ctx.moveTo(0, r * .7); ctx.bezierCurveTo(-r * 1.6, -r * .3, -r * .6, -r * 1.4, 0, -r * .4); ctx.bezierCurveTo(r * .6, -r * 1.4, r * 1.6, -r * .3, 0, r * .7); ctx.fill(); }
+  return {
+    // o: n, colors, speed, size, gravity, life, shape (circle|star|square|spark|heart|drop), dir, spread, drag
+    burst(x, y, o = {}) {
+      const n = o.n || 14;
+      for (let i = 0; i < n; i++) {
+        const a = o.dir != null ? o.dir + (Math.random() - .5) * (o.spread != null ? o.spread : TAU) : Math.random() * TAU, v = (o.speed || 240) * (.3 + Math.random() * .8), life = (o.life || .8) * (.6 + Math.random() * .6);
+        parts.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, g: o.gravity != null ? o.gravity : 600, life, max: life, size: (o.size || 6) * (.5 + Math.random() * .8), c: o.colors ? o.colors[i % o.colors.length] : '#fff', shape: o.shape || 'circle', rot: Math.random() * 6, vr: (Math.random() - .5) * 14, drag: o.drag || .985, glow: o.glow });
+      }
+    },
+    // popping score text with an elastic scale-in
+    text(x, y, str, o = {}) { texts.push({ x, y, str: String(str), c: o.color || '#fff', stroke: o.stroke || 'rgba(0,0,0,.55)', size: o.size || 28, life: o.life || .9, max: o.life || .9, rise: o.rise != null ? o.rise : 70, font: o.font || '900 ', wobble: o.wobble || 0 }); },
+    ring(x, y, o = {}) { rings.push({ x, y, r0: o.r0 || 6, r1: o.r1 || 70, c: o.color || '#fff', w: o.width || 6, life: o.life || .4, max: o.life || .4 }); },
+    shake(a = 8, t = .25) { shakeA = Math.max(shakeA, a); shakeT = Math.max(shakeT, t); },
+    flash(c = '#fff', a = .35) { flashC = c; flashA = Math.max(flashA, a); },
+    offset() { if (shakeT <= 0) return [0, 0]; const k = shakeA * Math.min(1, shakeT * 4); return [(Math.random() - .5) * 2 * k, (Math.random() - .5) * 2 * k]; },
+    clear() { parts = []; texts = []; rings = []; shakeT = 0; flashA = 0; },
+    update(dt) {
+      shakeT = Math.max(0, shakeT - dt); if (shakeT <= 0) shakeA = 0; flashA = Math.max(0, flashA - dt * 2.2);
+      for (const p of parts) { p.vx *= p.drag; p.vy *= p.drag; p.vy += p.g * dt; p.x += p.vx * dt; p.y += p.vy * dt; p.rot += p.vr * dt; p.life -= dt; }
+      parts = parts.filter(p => p.life > 0);
+      for (const t of texts) { t.life -= dt; t.y -= t.rise * dt * (t.life / t.max); } texts = texts.filter(t => t.life > 0);
+      for (const r of rings) r.life -= dt; rings = rings.filter(r => r.life > 0);
+    },
+    draw(ctx) {
+      for (const r of rings) { const k = 1 - r.life / r.max, e = 1 - (1 - k) * (1 - k); ctx.globalAlpha = 1 - k; ctx.strokeStyle = r.c; ctx.lineWidth = r.w * (1 - k) + 1; ctx.beginPath(); ctx.arc(r.x, r.y, r.r0 + (r.r1 - r.r0) * e, 0, TAU); ctx.stroke(); }
+      for (const p of parts) {
+        const k = p.life / p.max; ctx.globalAlpha = Math.min(1, k * 1.6); ctx.fillStyle = p.c;
+        if (p.glow) { ctx.shadowColor = p.c; ctx.shadowBlur = 10; }
+        ctx.save(); ctx.translate(p.x, p.y);
+        if (p.shape === 'spark') { ctx.rotate(Math.atan2(p.vy, p.vx)); ctx.fillRect(-p.size * 1.6, -p.size * .18, p.size * 3.2, p.size * .36); }
+        else if (p.shape === 'star') { ctx.rotate(p.rot); star(ctx, p.size); }
+        else if (p.shape === 'square') { ctx.rotate(p.rot); ctx.scale(1, Math.abs(Math.cos(p.rot * 1.3)) + .2); ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size * .7); }
+        else if (p.shape === 'heart') { ctx.rotate(p.rot * .2); heart(ctx, p.size); }
+        else if (p.shape === 'drop') { ctx.rotate(Math.atan2(p.vy, p.vx) - Math.PI / 2); ctx.beginPath(); ctx.moveTo(0, -p.size * 1.4); ctx.quadraticCurveTo(p.size, 0, 0, p.size); ctx.quadraticCurveTo(-p.size, 0, 0, -p.size * 1.4); ctx.fill(); }
+        else { ctx.beginPath(); ctx.arc(0, 0, p.size * (.4 + k * .6), 0, TAU); ctx.fill(); }
+        ctx.restore(); ctx.shadowBlur = 0;
+      }
+      for (const t of texts) {
+        const age = t.max - t.life, pop = age < .18 ? 1 + Math.sin(age / .18 * Math.PI) * .45 : 1, a = Math.min(1, t.life / t.max * 2.2);
+        ctx.save(); ctx.globalAlpha = a; ctx.translate(t.x, t.y); ctx.scale(pop, pop); if (t.wobble) ctx.rotate(Math.sin(age * 20) * t.wobble);
+        ctx.font = t.font + t.size + 'px "Avenir Next", "Trebuchet MS", sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.lineJoin = 'round'; ctx.lineWidth = Math.max(3, t.size * .16); ctx.strokeStyle = t.stroke; ctx.strokeText(t.str, 0, 0); ctx.fillStyle = t.c; ctx.fillText(t.str, 0, 0);
+        ctx.restore();
+      }
+      ctx.globalAlpha = 1;
+    },
+    drawFlash(ctx, W, H) { if (flashA > 0) { ctx.globalAlpha = flashA; ctx.fillStyle = flashC; ctx.fillRect(0, 0, W, H); ctx.globalAlpha = 1; } }
+  };
+})();
+/*FX-END*/
+(() => {
+  const audio = GameAudio({
+    bpm: 118, scale: 'dorian', root: 57, prog: [0, 3, 4, 6], seed: 804,
+    waves: { lead: 'sawtooth', bass: 'square', arp: 'triangle', pad: 'sawtooth' },
+    pad: true, arp: true, arpEvery: 1, arpOct: 2, arpCutoff: 2000, leadOct: 1, leadCutoff: 1600, leadDensity: 0.3, drums: 'busy', bassPattern: [0, 3, 6, 10, 12], swing: 0.12, volume: 0.15,
+    btnBg: 'rgba(122,240,255,.15)', btnColor: '#7af0ff'
+  });
+  const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+  const $ = id => document.getElementById(id);
+  const KEY = 'juice_splash';
+  let save = { stage: 1, best: 0 }; try { save = Object.assign(save, JSON.parse(localStorage.getItem(KEY)) || {}); } catch (e) {}
+  const store = () => { try { localStorage.setItem(KEY, JSON.stringify(save)); } catch (e) {} };
+  $('bestMenu').innerHTML = save.best ? 'Best score <b>' + save.best + '</b> · round <b>' + save.stage + '</b>' : '';
+
+  // ---------- endless rounds ----------
+  const rng = seed => () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  function stageParams(n) {
+    const r = rng(n * 419);
+    return {
+      goal: Math.min(48, 15 + Math.floor(n * 2.2) + Math.floor(r() * 4)),
+      every: Math.max(.55, 1.6 * Math.pow(.92, n - 1)),
+      volley: Math.min(5, 1 + Math.floor(n / 3) + (r() < .3 ? 1 : 0)),
+      bomb: n < 2 ? 0 : Math.min(.24, .06 + n * .014),
+      grav: Math.min(1.35, .9 + n * .03),
+      neon: Math.floor(r() * 3)
+    };
+  }
+
+  // ---------- fruit art: whole + cross-section ----------
+  const rg = (id, stops, cx = '40%', cy = '35%', r = '70%') => '<radialGradient id="' + id + '" cx="' + cx + '" cy="' + cy + '" r="' + r + '">' + stops.map(([o, c]) => '<stop offset="' + o + '" stop-color="' + c + '"/>').join('') + '</radialGradient>';
+  const shine = '<ellipse cx="36" cy="32" rx="12" ry="7" fill="#fff" opacity=".55" transform="rotate(-30 36 32)"/>';
+  const FRUITS = {
+    melon: { juice: '#ff3a5a', whole: svgDoc('<defs>' + rg('m', [[0, '#9ae87a'], [.6, '#2a9a2a'], [1, '#0e4a10']]) + '<clipPath id="c"><circle cx="50" cy="50" r="44"/></clipPath></defs><circle cx="50" cy="50" r="44" fill="url(#m)" stroke="#0a3a0a" stroke-width="2.4"/><g clip-path="url(#c)" stroke="#0e4a10" stroke-width="6" fill="none">' + [-28, -12, 4, 20, 36].map(d => '<path d="M' + (46 + d) + ' 4Q' + (50 + d * 1.5) + ' 50 ' + (46 + d) + ' 96"/>').join('') + '</g>' + shine),
+      cut: svgDoc('<defs>' + rg('f', [[0, '#ff8a9a'], [.85, '#f0203a'], [.88, '#fff0e0'], [.93, '#9ae87a'], [1, '#1a6a1a']], '50%', '50%', '50%') + '</defs><circle cx="50" cy="50" r="44" fill="url(#f)"/>' + Array.from({ length: 12 }, (_, i) => { const a = i / 12 * 6.28; return '<ellipse cx="' + (50 + Math.cos(a) * 22) + '" cy="' + (50 + Math.sin(a) * 22) + '" rx="2.2" ry="3.6" fill="#1a0a04" transform="rotate(' + (a * 57) + ' ' + (50 + Math.cos(a) * 22) + ' ' + (50 + Math.sin(a) * 22) + ')"/>'; }).join('')) },
+    orange: { juice: '#ff9a1a', whole: svgDoc('<defs>' + rg('o', [[0, '#ffd08a'], [.6, '#ff8a10'], [1, '#c8500a']]) + '</defs><circle cx="50" cy="50" r="42" fill="url(#o)" stroke="#a8400a" stroke-width="2.4"/>' + Array.from({ length: 30 }, (_, i) => '<circle cx="' + (22 + (i * 37) % 56) + '" cy="' + (22 + (i * 23) % 56) + '" r="1" fill="#c8600a" opacity=".5"/>').join('') + '<path d="M50 9Q54 2 60 4" stroke="#4a8a2a" stroke-width="3" fill="none"/><path d="M54 8Q66 0 72 10Q62 14 54 8Z" fill="#4aa83a"/>' + shine),
+      cut: svgDoc('<defs>' + rg('f', [[0, '#fff0b0'], [.75, '#ffa01a'], [.82, '#fff6e0'], [1, '#ff8a10']], '50%', '50%', '50%') + '</defs><circle cx="50" cy="50" r="42" fill="url(#f)"/>' + Array.from({ length: 10 }, (_, i) => '<path d="M50 50L' + (50 + Math.cos(i / 10 * 6.28) * 32) + ' ' + (50 + Math.sin(i / 10 * 6.28) * 32) + '" stroke="#fff6e0" stroke-width="2.4"/>').join('') + '<circle cx="50" cy="50" r="4" fill="#fff6e0"/>') },
+    kiwi: { juice: '#8ad83a', whole: svgDoc('<defs>' + rg('k', [[0, '#c8a070'], [.6, '#8a6030'], [1, '#4a3010']]) + '</defs><ellipse cx="50" cy="50" rx="44" ry="36" fill="url(#k)" stroke="#3a2008" stroke-width="2.4"/>' + Array.from({ length: 40 }, (_, i) => '<path d="M' + (14 + (i * 37) % 72) + ' ' + (22 + (i * 23) % 56) + 'l2 2" stroke="#5a3a14" stroke-width="1"/>').join('') + shine),
+      cut: svgDoc('<defs>' + rg('f', [[0, '#fffbe0'], [.2, '#e8f0a0'], [.25, '#8ad83a'], [.9, '#5aa81a'], [1, '#8a6030']], '50%', '50%', '50%') + '</defs><ellipse cx="50" cy="50" rx="44" ry="36" fill="url(#f)"/>' + Array.from({ length: 16 }, (_, i) => { const a = i / 16 * 6.28; return '<ellipse cx="' + (50 + Math.cos(a) * 16) + '" cy="' + (50 + Math.sin(a) * 13) + '" rx="1.6" ry="2.8" fill="#1a1a0a" transform="rotate(' + (a * 57 + 90) + ' ' + (50 + Math.cos(a) * 16) + ' ' + (50 + Math.sin(a) * 13) + ')"/>'; }).join('')) },
+    apple: { juice: '#ffe08a', whole: svgDoc('<defs>' + rg('a', [[0, '#ffb070'], [.5, '#e8302a'], [1, '#7a0a08']]) + '</defs><path d="M50 26Q28 12 14 34Q6 62 28 86Q40 96 50 88Q60 96 72 86Q94 62 86 34Q72 12 50 26Z" fill="url(#a)" stroke="#5a0a04" stroke-width="2.4"/><path d="M50 28Q52 14 58 6" stroke="#5a3010" stroke-width="4" fill="none" stroke-linecap="round"/><path d="M56 14Q72 2 82 12Q70 22 56 14Z" fill="#4aa83a"/>' + shine),
+      cut: svgDoc('<defs>' + rg('f', [[0, '#fffbe8'], [.88, '#fff0c0'], [1, '#e8302a']], '50%', '50%', '50%') + '</defs><path d="M50 26Q28 12 14 34Q6 62 28 86Q40 96 50 88Q60 96 72 86Q94 62 86 34Q72 12 50 26Z" fill="url(#f)" stroke="#c8202a" stroke-width="3"/><path d="M50 36Q40 50 50 70Q60 50 50 36Z" fill="none" stroke="#e8d0a0" stroke-width="2"/><ellipse cx="46" cy="52" rx="2.4" ry="4" fill="#5a3010"/><ellipse cx="54" cy="52" rx="2.4" ry="4" fill="#5a3010"/>') },
+    lemon: { juice: '#fff04a', whole: svgDoc('<defs>' + rg('l', [[0, '#fffbb0'], [.6, '#ffe02a'], [1, '#c8a00a']]) + '</defs><path d="M8 50Q10 22 50 14Q90 22 92 50Q90 78 50 86Q10 78 8 50Z" fill="url(#l)" stroke="#a8800a" stroke-width="2.4"/><path d="M4 50L10 46V54Z M96 50L90 46V54Z" fill="#c8a00a"/>' + shine),
+      cut: svgDoc('<defs>' + rg('f', [[0, '#ffffe0'], [.8, '#fff06a'], [.86, '#fffbe8'], [1, '#ffe02a']], '50%', '50%', '50%') + '</defs><ellipse cx="50" cy="50" rx="42" ry="36" fill="url(#f)"/>' + Array.from({ length: 9 }, (_, i) => '<path d="M50 50L' + (50 + Math.cos(i / 9 * 6.28) * 32) + ' ' + (50 + Math.sin(i / 9 * 6.28) * 27) + '" stroke="#fffbe8" stroke-width="2.4"/>').join('')) },
+    berry: { juice: '#e8203a', whole: svgDoc('<defs>' + rg('s', [[0, '#ff8a8a'], [.6, '#e8102a'], [1, '#7a0a10']]) + '</defs><path d="M50 94Q14 70 14 40Q16 22 50 22Q84 22 86 40Q86 70 50 94Z" fill="url(#s)" stroke="#5a0a0a" stroke-width="2.4"/>' + Array.from({ length: 18 }, (_, i) => '<ellipse cx="' + (28 + (i % 5) * 11 + (Math.floor(i / 5) % 2) * 5) + '" cy="' + (36 + Math.floor(i / 5) * 13) + '" rx="1.4" ry="2.4" fill="#ffe08a"/>').join('') + '<path d="M28 26Q40 10 50 22Q60 8 74 26Q60 30 50 34Q40 30 28 26Z" fill="#3a9a2a" stroke="#1a5a1a" stroke-width="1.6"/>' + shine),
+      cut: svgDoc('<defs>' + rg('f', [[0, '#ffe0e8'], [.5, '#ff6a7a'], [1, '#d8102a']], '50%', '45%', '60%') + '</defs><path d="M50 94Q14 70 14 40Q16 22 50 22Q84 22 86 40Q86 70 50 94Z" fill="url(#f)"/><path d="M50 30V84" stroke="#fff0f4" stroke-width="4" opacity=".7"/>') },
+    gold: { juice: '#ffe24a', whole: svgDoc('<defs>' + rg('g', [[0, '#fffbd0'], [.5, '#ffd21a'], [1, '#a8700a']]) + '</defs><ellipse cx="50" cy="60" rx="30" ry="36" fill="url(#g)" stroke="#8a5a04" stroke-width="2.4"/>' + Array.from({ length: 12 }, (_, i) => '<path d="M' + (28 + (i % 4) * 14) + ' ' + (36 + Math.floor(i / 4) * 16) + 'l7 7l7 -7" stroke="#a8700a" stroke-width="1.8" fill="none"/>').join('') + '<path d="M50 26L38 2L46 18L50 0L54 18L62 2Z" fill="#4ac83a" stroke="#1a6a1a" stroke-width="1.6"/>' + shine),
+      cut: svgDoc('<defs>' + rg('f', [[0, '#fffbe0'], [.25, '#fff06a'], [.9, '#ffd21a'], [1, '#a8700a']], '50%', '50%', '50%') + '</defs><ellipse cx="50" cy="60" rx="30" ry="36" fill="url(#f)"/><ellipse cx="50" cy="60" rx="8" ry="10" fill="#fff6b0"/>') },
+    ice: { juice: '#9ae8ff', whole: svgDoc('<defs>' + rg('b', [[0, '#e8fbff'], [.5, '#6ac8ff'], [1, '#1a5aa8']]) + '</defs><circle cx="50" cy="52" r="38" fill="url(#b)" stroke="#1a4a8a" stroke-width="2.4"/>' + Array.from({ length: 6 }, (_, i) => '<path d="M50 52L' + (50 + Math.cos(i / 6 * 6.28) * 28) + ' ' + (52 + Math.sin(i / 6 * 6.28) * 28) + '" stroke="#fff" stroke-width="2.4" opacity=".8"/>').join('') + '<path d="M50 14Q56 4 64 6" stroke="#2a6a4a" stroke-width="3" fill="none"/>' + shine),
+      cut: svgDoc('<defs>' + rg('f', [[0, '#ffffff'], [1, '#6ac8ff']], '50%', '50%', '55%') + '</defs><circle cx="50" cy="52" r="38" fill="url(#f)"/>') },
+  };
+  const BOMB = svgDoc('<defs>' + rg('b', [[0, '#7a7a8a'], [.5, '#2a2a34'], [1, '#08080c']]) + '</defs><circle cx="50" cy="56" r="38" fill="url(#b)" stroke="#000" stroke-width="2.4"/><rect x="40" y="12" width="20" height="12" rx="3" fill="#5a646e" stroke="#000" stroke-width="2"/><path d="M50 12Q54 2 64 4" stroke="#a8864a" stroke-width="3.4" fill="none"/>' +
+    '<path d="M34 44l10 10M44 44L34 54M56 44l10 10M66 44L56 54" stroke="#ff3a3a" stroke-width="4" stroke-linecap="round"/><path d="M38 70q12 -8 24 0" stroke="#ff3a3a" stroke-width="4" fill="none" stroke-linecap="round"/><ellipse cx="34" cy="38" rx="9" ry="5" fill="#fff" opacity=".35" transform="rotate(-30 34 38)"/>');
+  const KINDS = ['melon', 'orange', 'kiwi', 'apple', 'lemon', 'berry'];
+  let SPR = null;
+  const defs = { bomb: BOMB }; for (const [k, f] of Object.entries(FRUITS)) { defs[k] = f.whole; defs[k + 'Cut'] = f.cut; }
+  loadSprites(defs, 160).then(s => { SPR = s; art($('logo'), 0); art($('clearArt'), 1); art($('overArt'), 2); });
+
+  // ---------- state ----------
+  let W, H, DPR, BG = null, P = null, fruits = [], halves = [], stains = [], phase = 'menu', t = 0, stage = 1, score = 0, shown = 0, combo = 0, lastCut = -9, sliced = 0, misses = 0, launchT = 0, R = 40, slow = 0, flick = 1;
+  function resize() { DPR = Math.min(devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight; canvas.width = W * DPR; canvas.height = H * DPR; R = Math.min(W, H) * .07 + 14; BG = paintBG(); }
+  addEventListener('resize', resize);
+  // the juice bar: wooden wall, shelves of jars, string lights, a counter
+  function paintBG() {
+    const c = document.createElement('canvas'); c.width = W * DPR; c.height = H * DPR; const g = c.getContext('2d'); g.scale(DPR, DPR);
+    const wall = g.createLinearGradient(0, 0, 0, H); wall.addColorStop(0, '#5a2e14'); wall.addColorStop(1, '#2a1408'); g.fillStyle = wall; g.fillRect(0, 0, W, H);
+    for (let x = 0; x < W; x += 54) { g.fillStyle = (x / 54) % 2 ? 'rgba(0,0,0,.12)' : 'rgba(255,200,140,.05)'; g.fillRect(x, 0, 54, H); g.fillStyle = 'rgba(0,0,0,.35)'; g.fillRect(x, 0, 2, H); for (let k = 0; k < 6; k++) { g.strokeStyle = 'rgba(30,12,4,.25)'; g.lineWidth = 1; g.beginPath(); const yy = (x * 3 + k * 140) % H; g.moveTo(x + 6, yy); g.quadraticCurveTo(x + 27, yy + 30, x + 48, yy + 4); g.stroke(); } }
+    // shelves with jars
+    for (const sy of [H * .3, H * .5]) {
+      g.fillStyle = '#8a5a2a'; g.fillRect(0, sy, W, 10); g.fillStyle = '#5a3414'; g.fillRect(0, sy + 10, W, 5);
+      for (let x = 20; x < W - 30; x += 46) { const jh = 30 + (x * 7) % 18, cols = ['#ff7a3a', '#ffe24a', '#8ad83a', '#ff3a6a', '#b07aff']; g.fillStyle = 'rgba(255,255,255,.18)'; g.fillRect(x, sy - jh, 30, jh); g.fillStyle = cols[(x / 46 | 0) % 5]; g.globalAlpha = .55; g.fillRect(x + 3, sy - jh * .7, 24, jh * .7); g.globalAlpha = 1; g.fillStyle = '#c8a070'; g.fillRect(x - 2, sy - jh - 6, 34, 7); g.fillStyle = 'rgba(255,255,255,.35)'; g.fillRect(x + 4, sy - jh + 3, 4, jh - 6); }
+    }
+    // counter at the bottom
+    const cy = H * .9, ct = g.createLinearGradient(0, cy, 0, H); ct.addColorStop(0, '#c8864a'); ct.addColorStop(.15, '#8a5424'); ct.addColorStop(1, '#3a1a08'); g.fillStyle = ct; g.fillRect(0, cy, W, H - cy); g.fillStyle = '#e8b070'; g.fillRect(0, cy, W, 3);
+    const vg = g.createRadialGradient(W / 2, H * .45, Math.min(W, H) * .2, W / 2, H * .45, Math.max(W, H) * .75); vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,0,.55)'); g.fillStyle = vg; g.fillRect(0, 0, W, H);
+    return c;
+  }
+
+  // ---------- flow ----------
+  function startStage(n) {
+    stage = n; P = stageParams(n); fruits = []; halves = []; sliced = 0; misses = 0; launchT = .6; combo = 0; slow = 0; FX.clear(); phase = 'play';
+    resize(); for (const o of ['menu', 'clear', 'over']) $(o).classList.add('hidden');
+  }
+  $('startBtn').onclick = () => { if (!SPR) return; score = 0; shown = 0; stains = []; audio.start(); startStage(save.stage); };
+  $('againBtn').onclick = () => { score = 0; shown = 0; stains = []; startStage(save.stage); };
+  $('nextBtn').onclick = () => startStage(stage + 1);
+  addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && phase === 'menu') { e.preventDefault(); $('startBtn').click(); } });
+  const G = () => H * 1.05 * P.grav;
+  function launch() {
+    const n = 1 + Math.floor(Math.random() * P.volley);
+    for (let i = 0; i < n; i++) {
+      const r = Math.random(), kind = r < P.bomb ? 'bomb' : r < P.bomb + .05 ? 'gold' : r < P.bomb + .09 ? 'ice' : KINDS[Math.floor(Math.random() * KINDS.length)];
+      const x = W * (.15 + Math.random() * .7), apex = H * (.18 + Math.random() * .3), vy = -Math.sqrt(2 * G() * (H + R - apex)), tx = W * (.2 + Math.random() * .6), tFlight = -2 * vy / G();
+      fruits.push({ kind, x, y: H + R, vx: (tx - x) / tFlight * 1.6, vy, rot: Math.random() * 6, vr: (Math.random() - .5) * 6, r: R * (kind === 'melon' ? 1.2 : kind === 'berry' ? .8 : 1), delay: i * .15 });
+    }
+    audio.sfx(200, .15, 'sine', .04, 400);
+  }
+  canvas.addEventListener('pointerdown', e => {
+    if (phase !== 'play') return;
+    const x = e.clientX, y = e.clientY;
+    // a neon blade flash
+    FX.burst(x, y, { n: 6, colors: ['#7af0ff', '#ffffff'], shape: 'spark', speed: 300, size: 6, gravity: 0, life: .25, glow: 1 });
+    let hit = null, bd = 1e9; for (const f of fruits) { const d = Math.hypot(x - f.x, y - f.y); if (!f.delay && d < f.r * 1.15 && d < bd) { bd = d; hit = f; } }
+    if (!hit) { combo = 0; audio.sfx(1800, .04, 'triangle', .02, 900); return; }
+    cut(hit, Math.atan2(y - hit.y, x - hit.x) + Math.PI / 2 + (Math.random() - .5) * .6);
+  });
+  function cut(f, ang) {
+    f.dead = true;
+    if (f.kind === 'bomb') {
+      misses = 3; FX.burst(f.x, f.y, { n: 50, colors: ['#ffe24a', '#ff7a1a', '#ffffff', '#3a3a3a'], speed: 600, size: 10, gravity: 200, glow: 1 }); FX.ring(f.x, f.y, { color: '#ffffff', r1: Math.max(W, H), width: 30, life: .6 }); FX.flash('#ffffff', .9); FX.shake(22, .6);
+      audio.sfx(60, 1, 'sawtooth', .12, 25); audio.sfx(200, .5, 'square', .06, 40); return gameOver();
+    }
+    if (t - lastCut < .6) combo++; else combo = 1; lastCut = t;
+    const mult = Math.min(6, 1 + Math.floor(combo / 3)), pts = (f.kind === 'gold' ? 100 : 10) * mult; score += pts; sliced++;
+    const J = FRUITS[f.kind].juice;
+    for (const s of [-1, 1]) halves.push({ kind: f.kind, x: f.x, y: f.y, vx: f.vx + Math.cos(ang) * s * 120, vy: f.vy * .4 - 60 + Math.sin(ang) * s * 120, rot: f.rot, vr: f.vr + s * 4, rel: ang - f.rot, side: s, r: f.r, life: 2.5 });
+    stains.push({ x: f.x, y: f.y, r: f.r * (1.1 + Math.random() * .5), c: J, life: 7, seed: Math.random() * 10 }); if (stains.length > 28) stains.shift();
+    FX.burst(f.x, f.y, { n: 22, colors: [J, '#ffffff'], shape: 'drop', speed: 420, size: 6, gravity: 900 });
+    FX.burst(f.x, f.y, { n: 10, colors: [J], speed: 140, size: 10, gravity: 400 });
+    FX.text(f.x, f.y - f.r, '+' + pts, { color: f.kind === 'gold' ? '#ffe24a' : '#ffffff', size: 26 + mult * 3, stroke: '#3a0a2a' });
+    if (combo >= 3 && combo % 3 === 0) { FX.text(W / 2, H * .22, ['JUICY!', 'FRESH!', 'SMOOTHIE!', 'FRUIT FRENZY!'][Math.min(3, combo / 3 - 1)] + ' x' + mult, { color: '#ffe24a', size: 42, stroke: '#ff2a8a', wobble: .08, life: 1.1 }); FX.flash('#ff4ab0', .12); }
+    if (f.kind === 'gold') { FX.burst(f.x, f.y, { n: 30, colors: ['#ffe24a', '#fff6b0'], shape: 'star', speed: 400, size: 10, gravity: 200, glow: 1 }); [988, 1318, 1568, 1976].forEach((fq, k) => setTimeout(() => audio.sfx(fq, .15, 'square', .04), k * 60)); }
+    if (f.kind === 'ice') { slow = 4; FX.flash('#9ae8ff', .4); FX.text(W / 2, H * .3, 'FREEZE!', { color: '#bff6ff', size: 44, stroke: '#1a4a8a', life: 1.2 }); audio.sfx(1800, .5, 'sine', .05, 600); }
+    FX.shake(3 + Math.min(6, combo * .4), .1);
+    audio.sfx(900 + Math.min(10, combo) * 70, .06, 'sawtooth', .04, 300); audio.sfx(300, .12, 'sine', .06, 120);
+    if (sliced >= P.goal) stageClear();
+  }
+  function stageClear() {
+    if (phase !== 'play') return; phase = 'clearing'; const bonus = (3 - misses) * 120; score += bonus;
+    save.stage = stage + 1; save.best = Math.max(save.best, score); store();
+    FX.burst(W / 2, H * .45, { n: 90, colors: ['#ff4ab0', '#ffe24a', '#7af0ff', '#8ad83a', '#ff9a1a'], shape: 'square', speed: 620, size: 10, gravity: 300, life: 1.6 });
+    [523, 659, 784, 1046, 1318].forEach((f, k) => setTimeout(() => audio.sfx(f, .3, 'square', .05), k * 110));
+    setTimeout(() => { $('clrStage').textContent = stage; $('clrBonus').textContent = '+' + bonus; $('clrScore').textContent = score; $('clear').classList.remove('hidden'); }, 1100);
+  }
+  function gameOver() {
+    phase = 'over'; save.best = Math.max(save.best, score); store(); audio.sfx(300, .9, 'sawtooth', .06, 80);
+    setTimeout(() => { $('ovScore').textContent = score; $('ovBest').textContent = 'Best: ' + save.best + ' · you reached round ' + stage; $('over').classList.remove('hidden'); }, 1100);
+  }
+  window.__js = { phase: () => phase, stage: () => stage, score: () => score, fruits: () => fruits.filter(f => !f.dead && !f.delay && f.y < innerHeight - 10).map(f => ({ x: f.x, y: f.y, kind: f.kind })), params: stageParams };
+
+  // ---------- update ----------
+  function update(dt) {
+    t += dt; FX.update(dt); shown += (score - shown) * Math.min(1, dt * 10); if (Math.abs(score - shown) < .5) shown = score;
+    if (Math.random() < dt * .6) flick = Math.random() < .5 ? .4 : 1; else flick += (1 - flick) * dt * 6;
+    for (const s of stains) s.life -= dt; stains = stains.filter(s => s.life > 0);
+    if (phase !== 'play' && phase !== 'clearing') return;
+    slow = Math.max(0, slow - dt); const k = slow > 0 ? .45 : 1, h = dt * k;
+    if (phase === 'play') { launchT -= h; if (launchT <= 0) { launch(); launchT = P.every * (.8 + Math.random() * .4); } }
+    for (const f of fruits) {
+      if (f.dead) continue;
+      if (f.delay) { f.delay = Math.max(0, f.delay - h); continue; }
+      f.vy += G() * h; f.x += f.vx * h; f.y += f.vy * h; f.rot += f.vr * h;
+      if (f.kind === 'bomb' && Math.random() < .6) FX.burst(f.x + Math.cos(f.rot - 1.4) * f.r, f.y + Math.sin(f.rot - 1.4) * f.r, { n: 1, colors: ['#ffe24a', '#ff7a1a'], speed: 80, size: 3, gravity: 0, life: .3 });
+      if (f.vy > 0 && f.y > H + f.r * 1.5) { f.dead = true; if (f.kind !== 'bomb' && phase === 'play') { misses++; combo = 0; FX.text(f.x < 40 ? 40 : f.x > W - 40 ? W - 40 : f.x, H - 50, '✗', { color: '#ff4a4a', size: 46, stroke: '#3a0a0a' }); audio.sfx(200, .25, 'square', .05, 90); if (misses >= 3) gameOver(); } }
+    }
+    fruits = fruits.filter(f => !f.dead);
+    for (const p of halves) { p.vy += G() * h; p.x += p.vx * h; p.y += p.vy * h; p.rot += p.vr * h; p.life -= h; } halves = halves.filter(p => p.life > 0 && p.y < H + 100);
+  }
+
+  // ---------- render ----------
+  function drawFruit(f) { const z = f.r * 2.2; ctx.save(); ctx.translate(f.x, f.y); ctx.rotate(f.rot); if (f.kind === 'gold') { ctx.shadowColor = '#ffe24a'; ctx.shadowBlur = 24; } if (f.kind === 'ice') { ctx.shadowColor = '#9ae8ff'; ctx.shadowBlur = 18; } ctx.drawImage(SPR[f.kind === 'bomb' ? 'bomb' : f.kind], -z / 2, -z / 2, z, z); ctx.restore(); }
+  function drawHalf(p) {
+    const z = p.r * 2.2; ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.rot);
+    ctx.save(); ctx.rotate(p.rel); ctx.beginPath(); ctx.rect(p.side < 0 ? -z : 0, -z, z, z * 2); ctx.restore(); ctx.clip();
+    ctx.drawImage(SPR[p.kind + 'Cut'], -z / 2, -z / 2, z, z); ctx.globalAlpha = .55; ctx.drawImage(SPR[p.kind], -z / 2, -z / 2, z, z); ctx.globalAlpha = 1;
+    ctx.restore();
+  }
+  function drawStain(s) {
+    const a = Math.min(.75, s.life / 3); ctx.save(); ctx.globalAlpha = a; ctx.translate(s.x, s.y); ctx.fillStyle = s.c;
+    ctx.beginPath(); for (let k = 0; k < 16; k++) { const ang = k / 16 * 6.283, rr = s.r * (.55 + .45 * Math.abs(Math.sin(k * 2.7 + s.seed))); ctx.lineTo(Math.cos(ang) * rr, Math.sin(ang) * rr); } ctx.fill();
+    for (let k = 0; k < 7; k++) { const ang = k * .9 + s.seed, rr = s.r * (1.15 + (k % 3) * .3); ctx.beginPath(); ctx.arc(Math.cos(ang) * rr, Math.sin(ang) * rr, s.r * .1, 0, 7); ctx.fill(); }
+    // drips running down the wall
+    for (let k = 0; k < 3; k++) { const x = (k - 1) * s.r * .5, len = s.r * (.6 + k * .3) * Math.min(1, (7 - s.life) * .6); ctx.fillRect(x - s.r * .06, 0, s.r * .12, s.r * .5 + len); ctx.beginPath(); ctx.arc(x, s.r * .5 + len, s.r * .09, 0, 7); ctx.fill(); }
+    ctx.restore();
+  }
+  function neon(txt, x, y, size, col) { ctx.save(); ctx.font = '900 ' + size + 'px "Avenir Next", sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.shadowColor = col; ctx.shadowBlur = 18; ctx.fillStyle = col; ctx.globalAlpha = flick; ctx.fillText(txt, x, y); ctx.shadowBlur = 0; ctx.fillStyle = '#fff'; ctx.globalAlpha = .9 * flick; ctx.fillText(txt, x, y); ctx.restore(); }
+  function drawHUD() {
+    const pal = [['#ff4ab0', '#7af0ff'], ['#ffe24a', '#ff4ab0'], ['#7af0ff', '#8ad83a']][P.neon];
+    neon(Math.round(shown).toLocaleString(), W / 2, 36, 38, pal[0]);
+    ctx.font = '800 15px "Avenir Next", sans-serif'; ctx.textAlign = 'left'; ctx.fillStyle = pal[1]; ctx.shadowColor = pal[1]; ctx.shadowBlur = 10; ctx.fillText('ROUND ' + stage, 16, 24); ctx.shadowBlur = 0;
+    const bw = Math.min(260, W * .62), bx = W / 2 - bw / 2;
+    ctx.strokeStyle = pal[1]; ctx.lineWidth = 2; ctx.shadowColor = pal[1]; ctx.shadowBlur = 10; ctx.beginPath(); ctx.roundRect(bx, 64, bw, 12, 6); ctx.stroke(); ctx.fillStyle = pal[1]; ctx.beginPath(); ctx.roundRect(bx + 2, 66, Math.max(8, (bw - 4) * sliced / P.goal), 8, 4); ctx.fill(); ctx.shadowBlur = 0;
+    ctx.font = '800 11px "Avenir Next", sans-serif'; ctx.textAlign = 'center'; ctx.fillStyle = '#fff'; ctx.fillText(sliced + ' / ' + P.goal, W / 2, 86);
+    for (let i = 0; i < 3; i++) { ctx.font = '900 22px sans-serif'; ctx.textAlign = 'center'; const on = i < misses; ctx.fillStyle = on ? '#ff3a3a' : 'rgba(255,255,255,.25)'; if (on) { ctx.shadowColor = '#ff3a3a'; ctx.shadowBlur = 12; } ctx.fillText('✗', W - 20 - i * 24, 26); ctx.shadowBlur = 0; }
+    if (combo >= 3) { ctx.font = '900 16px sans-serif'; ctx.textAlign = 'right'; ctx.fillStyle = '#ffb04a'; ctx.fillText('COMBO x' + Math.min(6, 1 + Math.floor(combo / 3)), W - 16, 52); }
+    if (slow > 0) { ctx.fillStyle = 'rgba(150,230,255,' + Math.min(.18, slow * .06) + ')'; ctx.fillRect(0, 0, W, H); }
+  }
+  function render() {
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    const [ox, oy] = FX.offset(); ctx.translate(ox, oy);
+    if (BG) ctx.drawImage(BG, -10, -10, W + 20, H + 20);
+    // neon sign and string lights
+    ctx.save(); ctx.font = '900 ' + Math.min(54, W * .11) + 'px "Avenir Next", sans-serif'; ctx.textAlign = 'center'; ctx.globalAlpha = .9 * flick; ctx.shadowColor = '#ff4ab0'; ctx.shadowBlur = 24; ctx.fillStyle = '#ff7ac8'; ctx.fillText('JUICE BAR', W / 2, H * .17); ctx.shadowBlur = 0; ctx.globalAlpha = .6 * flick; ctx.fillStyle = '#fff'; ctx.fillText('JUICE BAR', W / 2, H * .17); ctx.restore();
+    for (let x = 0, k = 0; x < W + 30; x += 34, k++) { const y = 110 + Math.sin(x * .02) * 10, col = ['#ffe24a', '#ff4ab0', '#7af0ff', '#8ad83a'][k % 4], on = (Math.floor(t * 2) + k) % 4 !== 0; ctx.strokeStyle = 'rgba(0,0,0,.6)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(x, y - 6); ctx.lineTo(x + 34, 110 + Math.sin((x + 34) * .02) * 10 - 6); ctx.stroke(); const gl = ctx.createRadialGradient(x, y, 0, x, y, on ? 16 : 6); gl.addColorStop(0, col); gl.addColorStop(1, 'rgba(0,0,0,0)'); ctx.fillStyle = gl; ctx.beginPath(); ctx.arc(x, y, on ? 16 : 6, 0, 7); ctx.fill(); ctx.fillStyle = on ? '#fff' : col; ctx.beginPath(); ctx.ellipse(x, y, 3.4, 5, 0, 0, 7); ctx.fill(); }
+    if (!SPR || !P || phase === 'menu') { FX.draw(ctx); return; }
+    for (const s of stains) drawStain(s);
+    for (const p of halves) drawHalf(p);
+    for (const f of fruits) if (!f.delay) drawFruit(f);
+    FX.draw(ctx);
+    drawHUD();
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0); FX.drawFlash(ctx, W, H);
+  }
+  function art(cv, mode) {
+    const g = cv.getContext('2d'), glow = g.createRadialGradient(250, 250, 20, 250, 250, 250); glow.addColorStop(0, mode === 2 ? 'rgba(255,90,90,.5)' : 'rgba(255,74,176,.45)'); glow.addColorStop(1, 'rgba(255,74,176,0)'); g.fillStyle = glow; g.fillRect(0, 0, 500, 500);
+    const put = (k, x, y, z, r) => { g.save(); g.translate(x, y); g.rotate(r); g.drawImage(SPR[k], -z / 2, -z / 2, z, z); g.restore(); };
+    if (mode === 2) { put('bomb', 250, 250, 260, .2); return; }
+    put('melonCut', 180, 240, 200, -.4); put('melon', 300, 230, 200, .3); put(mode ? 'gold' : 'orange', 380, 110, 120, .4); put('kiwiCut', 110, 120, 110, -.2); put('berry', 120, 380, 100, .3); put('lemonCut', 390, 380, 110, .5);
+    for (let k = 0; k < 20; k++) { g.fillStyle = ['#ff3a5a', '#ff9a1a', '#fff04a'][k % 3]; g.beginPath(); g.arc(250 + Math.cos(k) * (120 + k * 5), 250 + Math.sin(k * 1.7) * (110 + k * 4), 6 + k % 4, 0, 7); g.fill(); }
+  }
+
+  resize();
+  let last = performance.now();
+  (function loop(now) {
+    const dt = Math.max(0, Math.min(0.033, (now - last) / 1000)); last = now;
+    update(dt); render(); requestAnimationFrame(loop);
+  })(last);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,759 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#8fd3f4">
+<title>Save the Doge</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #8fd3f4;
+    font-family: "Avenir Next", "Trebuchet MS", "Segoe UI", sans-serif; color: #3a2a12;
+    touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+  canvas { display: block; width: 100%; height: 100%; }
+  .hud { position: fixed; top: max(10px, env(safe-area-inset-top)); left: 0; right: 0; text-align: center; pointer-events: none; }
+  .hud b { font-size: 24px; font-weight: 900; letter-spacing: 3px; color: #fff; text-shadow: 0 2px 0 #c77a12, 0 4px 10px #0003; }
+  .hud div { font-size: 14px; font-weight: 700; color: #fff; margin-top: 2px; text-shadow: 0 1px 3px #0006; }
+  .tools { position: fixed; bottom: max(14px, env(safe-area-inset-bottom)); left: 10px; right: 64px; display: flex; gap: 8px; justify-content: center; }
+  .tools button { padding: 11px 18px; border-radius: 16px; border: 3px solid #fff; background: #ffb52e; color: #fff; font: inherit; font-size: 15px; font-weight: 800; cursor: pointer; box-shadow: 0 4px 0 #c77a12, 0 8px 14px #0003; text-shadow: 0 1px 0 #c77a12; }
+  .tools button:active { transform: translateY(3px); box-shadow: 0 1px 0 #c77a12; }
+  .overlay { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 24px; text-align: center;
+    background: radial-gradient(ellipse at 50% 40%, #fff8e4f2, #ffd98af2); transition: opacity .3s; }
+  .overlay.hidden { opacity: 0; pointer-events: none; }
+  .overlay canvas { width: 220px; height: 220px; }
+  h1 { font-size: clamp(36px, 10.5vw, 58px); font-weight: 900; letter-spacing: 3px; color: #ff9a1f; line-height: 1; text-shadow: 0 3px 0 #fff, 0 6px 0 #c77a12, 0 10px 16px #0003; }
+  p { max-width: 310px; font-size: 15px; line-height: 1.6; color: #6a4a1c; }
+  .stat { font-size: 16px; color: #6a4a1c; font-weight: 700; } .stat b { color: #e2702a; }
+  .stars { font-size: 42px; letter-spacing: 6px; color: #ffc21a; text-shadow: 0 3px 0 #c77a12; } .stars i { color: #e8d6ae; text-shadow: none; font-style: normal; }
+  .btn { border: 4px solid #fff; background: linear-gradient(#ffc84a, #ff9a1f); color: #fff; font: inherit; font-size: 19px; font-weight: 900; letter-spacing: 4px; padding: 13px 46px; border-radius: 40px; cursor: pointer; box-shadow: 0 5px 0 #c77a12, 0 10px 20px #c77a1255; text-shadow: 0 2px 0 #c77a12; }
+  .btn:active { transform: translateY(4px); box-shadow: 0 1px 0 #c77a12; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud"><b id="level">LEVEL 1</b><div id="sub">Draw a wall to protect the doge!</div></div>
+<div class="tools"><button id="reset">⟳ Restart</button></div>
+
+<div class="overlay" id="menu">
+  <canvas id="logo" width="440" height="440"></canvas>
+  <h1>SAVE THE<br>DOGE</h1>
+  <p><b>The bees are angry!</b> Draw a wall with one stroke to shield the doge. When you lift your finger the hive wakes up — hold out for 8 seconds without a single sting.</p>
+  <div class="stat" id="bestMenu"></div>
+  <button class="btn" id="startBtn">PLAY</button>
+</div>
+<div class="overlay hidden" id="win">
+  <canvas id="winArt" width="440" height="440"></canvas>
+  <h1>SAVED!</h1>
+  <div class="stars" id="stars">★★★</div>
+  <div class="stat">Level <b id="winLevel">1</b> · ink left <b id="winInk">0%</b></div>
+  <button class="btn" id="nextBtn">NEXT</button>
+</div>
+<div class="overlay hidden" id="fail">
+  <canvas id="failArt" width="440" height="440"></canvas>
+  <h1>OUCH!</h1>
+  <p>A bee got through. Close every gap — bees squeeze through the tiniest hole!</p>
+  <button class="btn" id="retryBtn">RETRY</button>
+</div>
+
+<script>
+/*AUDIO-ENGINE-START*/
+// ---------- audio: procedural background music + sound effects ----------
+// Every note is synthesized with the Web Audio API at runtime, so the music
+// needs no files, works offline and carries no copyright.
+const GameAudio = (cfg) => {
+  let ctx = null, master = null, musicBus = null, sfxBus = null;
+  let timer = null, step = 0, nextT = 0, playing = false;
+  let musicOn = true;
+  try { musicOn = localStorage.getItem('music_off') !== '1'; } catch (e) {}
+
+  const SCALES = {
+    major: [0, 2, 4, 5, 7, 9, 11], minor: [0, 2, 3, 5, 7, 8, 10],
+    dorian: [0, 2, 3, 5, 7, 9, 10], lydian: [0, 2, 4, 6, 7, 9, 11],
+    pentaMajor: [0, 2, 4, 7, 9], pentaMinor: [0, 3, 5, 7, 10],
+    japanese: [0, 1, 5, 7, 8], phrygian: [0, 1, 3, 5, 7, 8, 10]
+  };
+  const scale = SCALES[cfg.scale] || SCALES.major;
+  const root = cfg.root || 57;
+  const bpm = cfg.bpm || 110;
+  const prog = cfg.prog || [0, 5, 3, 4];
+  const sixteenth = 60 / bpm / 4;
+
+  // deterministic random so each game always plays "its" tune
+  let seed = cfg.seed || 1;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
+
+  const deg = (d, oct = 0) => {
+    const n = scale.length;
+    const o = Math.floor(d / n);
+    return root + scale[((d % n) + n) % n] + 12 * (o + oct);
+  };
+  const hz = m => 440 * Math.pow(2, (m - 69) / 12);
+
+  // melody: two 2-bar phrases (A, B) arranged A A B A
+  function phrase() {
+    const notes = [];
+    let d = 2 + Math.floor(rnd() * 3);
+    for (let i = 0; i < 32; i++) {
+      const strong = i % 4 === 0;
+      if (rnd() < (strong ? 0.85 : (cfg.leadDensity || 0.35))) {
+        d += Math.round((rnd() - 0.5) * 4);
+        d = Math.max(0, Math.min(scale.length * 2, d));
+        const len = strong && rnd() < 0.5 ? 2 : 1;
+        notes.push({ i, d, len });
+      }
+    }
+    return notes;
+  }
+  const A = phrase(), B = phrase();
+  const song = [A, A, B, A];
+
+  function init() {
+    if (ctx) return;
+    try {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      master = ctx.createGain(); master.gain.value = 0.9; master.connect(ctx.destination);
+      musicBus = ctx.createGain(); musicBus.gain.value = cfg.volume || 0.16; musicBus.connect(master);
+      sfxBus = ctx.createGain(); sfxBus.gain.value = 1; sfxBus.connect(master);
+    } catch (e) { ctx = null; }
+  }
+
+  function voice(t, freq, dur, type, vol, opts = {}) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, t);
+    if (opts.detune) o.detune.value = opts.detune;
+    let node = o;
+    if (opts.cutoff) {
+      const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = opts.cutoff; f.Q.value = opts.q || 1;
+      o.connect(f); node = f;
+    }
+    const a = opts.attack || 0.008;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(vol, t + a);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    node.connect(g); g.connect(opts.bus || musicBus);
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+
+  let noiseBuf = null;
+  function noise(t, dur, vol, hp) {
+    if (!noiseBuf) {
+      noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 0.5, ctx.sampleRate);
+      const d = noiseBuf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    }
+    const s = ctx.createBufferSource(); s.buffer = noiseBuf;
+    const f = ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = hp;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.connect(f); f.connect(g); g.connect(musicBus);
+    s.start(t); s.stop(t + dur + 0.02);
+  }
+
+  function kick(t) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.setValueAtTime(140, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+    g.gain.setValueAtTime(0.9, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+    o.connect(g); g.connect(musicBus); o.start(t); o.stop(t + 0.25);
+  }
+
+  function playStep(s, t) {
+    const bar = Math.floor(s / 16);
+    const i16 = s % 16;
+    const chordDeg = prog[bar % prog.length];
+    const w = cfg.waves || {};
+    // bass
+    const bassPat = cfg.bassPattern || [0, 8];
+    if (bassPat.includes(i16)) voice(t, hz(deg(chordDeg, -2)), sixteenth * 3.5, w.bass || 'triangle', 0.5, { cutoff: 600 });
+    // pad (chord) at bar start
+    if (cfg.pad && i16 === 0) {
+      for (const k of [0, 2, 4]) voice(t, hz(deg(chordDeg + k, -1)), sixteenth * 15, w.pad || 'sine', 0.12, { attack: 0.3, cutoff: 1400, detune: k * 3 });
+    }
+    // arpeggio
+    if (cfg.arp && i16 % (cfg.arpEvery || 2) === 0) {
+      const k = [0, 2, 4, 2][(i16 / (cfg.arpEvery || 2)) % 4];
+      voice(t, hz(deg(chordDeg + k, cfg.arpOct || 0)), sixteenth * 1.6, w.arp || 'square', 0.1, { cutoff: cfg.arpCutoff || 2200 });
+    }
+    // lead melody
+    const ph = song[Math.floor(bar / 2) % song.length];
+    const pi = (bar % 2) * 16 + i16;
+    for (const n of ph) if (n.i === pi) {
+      voice(t, hz(deg(n.d, cfg.leadOct || 0)), sixteenth * (n.len * 2 + 0.5), w.lead || 'triangle', 0.22, { cutoff: cfg.leadCutoff || 3000 });
+    }
+    // drums
+    if (cfg.drums) {
+      if (i16 % 8 === 0 || (cfg.drums === 'busy' && i16 === 10)) kick(t);
+      if (i16 % 8 === 4) noise(t, 0.14, 0.35, 1500);
+      if (i16 % 2 === 0) noise(t, 0.04, cfg.drums === 'soft' ? 0.06 : 0.12, 7000);
+    }
+  }
+
+  function scheduler() {
+    if (!ctx || !playing) return;
+    while (nextT < ctx.currentTime + 0.15) {
+      playStep(step, nextT);
+      nextT += sixteenth * (cfg.swing && step % 2 === 0 ? 1 + cfg.swing : cfg.swing ? 1 - cfg.swing : 1);
+      step++;
+    }
+  }
+
+  function startMusic() {
+    if (!ctx || playing || !musicOn) return;
+    playing = true;
+    musicBus.gain.cancelScheduledValues(ctx.currentTime);
+    musicBus.gain.setValueAtTime(0.0001, ctx.currentTime);
+    musicBus.gain.linearRampToValueAtTime(cfg.volume || 0.16, ctx.currentTime + 1.2);
+    nextT = ctx.currentTime + 0.05;
+    timer = setInterval(scheduler, 40);
+  }
+  function stopMusic() {
+    playing = false;
+    if (timer) clearInterval(timer);
+    timer = null;
+  }
+
+  // mute button
+  const btn = document.createElement('button');
+  btn.setAttribute('aria-label', 'Toggle music');
+  btn.style.cssText = 'position:fixed;z-index:50;right:max(14px,env(safe-area-inset-right));bottom:max(14px,env(safe-area-inset-bottom));' +
+    'width:42px;height:42px;border-radius:50%;border:none;cursor:pointer;font-size:20px;line-height:42px;padding:0;' +
+    'background:' + (cfg.btnBg || 'rgba(0,0,0,.35)') + ';color:' + (cfg.btnColor || '#fff') + ';backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);';
+  const paint = () => { btn.textContent = musicOn ? '♪' : '✕'; btn.style.opacity = musicOn ? '1' : '.6'; };
+  paint();
+  const toggle = e => {
+    e.stopPropagation(); e.preventDefault();
+    musicOn = !musicOn;
+    try { localStorage.setItem('music_off', musicOn ? '0' : '1'); } catch (err) {}
+    init();
+    if (ctx && ctx.state === 'suspended') ctx.resume();
+    if (musicOn) startMusic(); else stopMusic();
+    paint();
+  };
+  btn.addEventListener('pointerdown', e => e.stopPropagation());
+  btn.addEventListener('pointerup', e => e.stopPropagation());
+  btn.addEventListener('click', toggle);
+  document.addEventListener('DOMContentLoaded', () => document.body.appendChild(btn));
+  if (document.body) document.body.appendChild(btn);
+
+  document.addEventListener('visibilitychange', () => {
+    if (!ctx) return;
+    if (document.hidden) ctx.suspend(); else ctx.resume();
+  });
+
+  return {
+    // call from a user gesture (start button) — browsers only allow audio after one
+    start() {
+      init();
+      if (!ctx) return;
+      if (ctx.state === 'suspended') ctx.resume();
+      startMusic();
+    },
+    sfx(freq, dur, type = 'sine', vol = 0.07, to = 0) {
+      init();
+      if (!ctx) return;
+      try {
+        const t = ctx.currentTime;
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.type = type; o.frequency.setValueAtTime(freq, t);
+        if (to) o.frequency.exponentialRampToValueAtTime(Math.max(30, to), t + dur);
+        g.gain.setValueAtTime(vol, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+        o.connect(g); g.connect(sfxBus);
+        o.start(t); o.stop(t + dur + 0.02);
+      } catch (e) {}
+    }
+  };
+};
+/*AUDIO-ENGINE-END*/
+/*SPRITES-START*/
+// ---------- sprites: detailed SVG artwork rasterised once into canvases ----------
+// Each piece is authored as an SVG (gradients, highlights, shadows, glow) and
+// drawn into an offscreen canvas at load time, so the game loop just blits images.
+const loadSprites = (defs, px = 160) => Promise.all(Object.entries(defs).map(([name, svg]) => new Promise(done => {
+  const img = new Image();
+  const finish = ok => {
+    const c = document.createElement('canvas');
+    const w = Array.isArray(px) ? px[0] : px, h = Array.isArray(px) ? px[1] : px;
+    c.width = w; c.height = h;
+    if (ok) c.getContext('2d').drawImage(img, 0, 0, w, h);
+    done([name, c]);
+  };
+  img.onload = () => finish(true);
+  img.onerror = () => finish(false);
+  img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+}))).then(entries => Object.fromEntries(entries));
+
+// small helpers for writing SVG
+const svgDoc = (body, vb = '0 0 100 100') => '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + vb + '">' + body + '</svg>';
+const shade = (hex, amt) => {
+  const n = parseInt(hex.slice(1), 16);
+  const f = v => Math.max(0, Math.min(255, Math.round(amt < 0 ? v * (1 + amt) : v + (255 - v) * amt)));
+  return '#' + [n >> 16, (n >> 8) & 255, n & 255].map(f).map(v => v.toString(16).padStart(2, '0')).join('');
+};
+/*SPRITES-END*/
+/*INK-START*/
+// ---------- ink: freehand strokes that become solid walls ----------
+// A stroke is a list of points; consecutive points form segments that circles bounce off.
+const Ink = {
+  // append a point only once the finger has moved far enough (keeps strokes light)
+  add(stroke, x, y, minD = 6) {
+    const p = stroke[stroke.length - 1];
+    if (!p || Math.hypot(x - p.x, y - p.y) >= minD) { stroke.push({ x, y }); return true; }
+    return false;
+  },
+  length(stroke) { let L = 0; for (let i = 1; i < stroke.length; i++) L += Math.hypot(stroke[i].x - stroke[i - 1].x, stroke[i].y - stroke[i - 1].y); return L; },
+  segments(strokes) {
+    const out = [];
+    for (const s of strokes) for (let i = 1; i < s.length; i++) out.push({ ax: s[i - 1].x, ay: s[i - 1].y, bx: s[i].x, by: s[i].y });
+    return out;
+  },
+  closest(px, py, ax, ay, bx, by) {
+    const dx = bx - ax, dy = by - ay, L = dx * dx + dy * dy;
+    const k = L ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / L)) : 0;
+    const x = ax + dx * k, y = ay + dy * k;
+    return { x, y, d: Math.hypot(px - x, py - y) };
+  },
+  // push a circle out of every segment it overlaps; reflect its velocity with some bounce and friction
+  collide(b, segs, r, bounce = 0.3, friction = 0.995, thick = 3) {
+    let hit = false;
+    for (const s of segs) {
+      const c = Ink.closest(b.x, b.y, s.ax, s.ay, s.bx, s.by), min = r + thick;
+      if (c.d < min) {
+        let nx = b.x - c.x, ny = b.y - c.y, d = c.d;
+        if (d < 1e-6) { nx = -(s.by - s.ay); ny = s.bx - s.ax; d = Math.hypot(nx, ny) || 1; }
+        nx /= d; ny /= d;
+        b.x = c.x + nx * min; b.y = c.y + ny * min;
+        const vn = b.vx * nx + b.vy * ny;
+        if (vn < 0) { b.vx -= (1 + bounce) * vn * nx; b.vy -= (1 + bounce) * vn * ny; }
+        b.vx *= friction; b.vy *= friction;
+        hit = true;
+      }
+    }
+    return hit;
+  },
+  // does segment p1-p2 cross segment p3-p4?
+  cross(p1, p2, p3, p4) {
+    const d = (a, b, c) => (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+    const d1 = d(p3, p4, p1), d2 = d(p3, p4, p2), d3 = d(p1, p2, p3), d4 = d(p1, p2, p4);
+    return ((d1 > 0) !== (d2 > 0)) && ((d3 > 0) !== (d4 > 0));
+  },
+  // a smooth, tapered pen line
+  draw(ctx, stroke, color, width, glow) {
+    if (stroke.length < 2) return;
+    ctx.save(); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    if (glow) { ctx.shadowColor = glow; ctx.shadowBlur = 12; }
+    ctx.strokeStyle = color; ctx.lineWidth = width;
+    ctx.beginPath(); ctx.moveTo(stroke[0].x, stroke[0].y);
+    for (let i = 1; i < stroke.length - 1; i++) { const mx = (stroke[i].x + stroke[i + 1].x) / 2, my = (stroke[i].y + stroke[i + 1].y) / 2; ctx.quadraticCurveTo(stroke[i].x, stroke[i].y, mx, my); }
+    const l = stroke[stroke.length - 1]; ctx.lineTo(l.x, l.y); ctx.stroke();
+    ctx.restore();
+  }
+};
+/*INK-END*/
+(() => {
+  const audio = GameAudio({
+    bpm: 112, scale: 'pentaMajor', root: 60, prog: [0, 3, 4, 0], seed: 604,
+    waves: { lead: 'triangle', bass: 'triangle', arp: 'square', pad: 'sine' },
+    pad: true, arp: true, arpEvery: 2, arpOct: 1, arpCutoff: 1500, leadOct: 1, leadDensity: 0.38, drums: 'soft', bassPattern: [0, 6, 8, 14], swing: 0.12, volume: 0.17,
+    btnBg: 'rgba(255,255,255,.75)', btnColor: '#ff9a1f'
+  });
+  const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+  const $ = id => document.getElementById(id);
+  const KEY = 'save_doge_level';
+  let level = 1; try { level = +localStorage.getItem(KEY) || 1; } catch (e) {}
+  $('bestMenu').innerHTML = level > 1 ? 'Continue from level <b>' + level + '</b>' : '';
+
+  // ---------- levels: world is 100 x 160, ground at y = 150 ----------
+  // dog: feet position; hives: hanging hive centres; rocks: solid boxes [x, y, w, h]
+  const LEVELS = [
+    { name: 'First Buzz', dog: [50, 150], hives: [[22, 34]], ink: 95, bees: 10, rocks: [] },
+    { name: 'Other Side', dog: [32, 150], hives: [[78, 30]], ink: 85, bees: 12, rocks: [] },
+    { name: 'Double Trouble', dog: [50, 150], hives: [[16, 34], [84, 34]], ink: 80, bees: 14, rocks: [] },
+    { name: 'On the Rock', dog: [50, 112], hives: [[50, 26]], ink: 80, bees: 14, rocks: [[34, 112, 32, 38]] },
+    { name: 'Corner', dog: [11, 150], hives: [[78, 40]], ink: 58, bees: 14, rocks: [] },
+    { name: 'Garden Fence', dog: [52, 150], hives: [[86, 44]], ink: 72, bees: 15, rocks: [[30, 118, 5, 32]] },
+    { name: 'Low Flyers', dog: [36, 150], hives: [[88, 118]], ink: 72, bees: 15, rocks: [] },
+    { name: 'The Pit', dog: [50, 150], hives: [[16, 40], [84, 40]], ink: 44, bees: 16, rocks: [[24, 124, 16, 26], [60, 124, 16, 26]] },
+    { name: 'Hive Party', dog: [50, 150], hives: [[12, 34], [50, 22], [88, 34]], ink: 80, bees: 18, rocks: [] },
+    { name: 'High Ledge', dog: [84, 104], hives: [[22, 120]], ink: 74, bees: 16, rocks: [[62, 104, 38, 46]] },
+    { name: 'Tight Squeeze', dog: [70, 150], hives: [[20, 30], [50, 60]], ink: 68, bees: 18, rocks: [[84, 112, 16, 38]] },
+    { name: 'Swarm', dog: [50, 150], hives: [[50, 24]], ink: 72, bees: 24, rocks: [] }
+  ];
+  const DOG_R = 8, BEE_R = 1.7, INK_T = 0.9, HIVE_R = 7, SURVIVE = 8;
+
+  // ---------- art ----------
+  const lg = (id, stops, x2 = 0, y2 = 1) => '<linearGradient id="' + id + '" x1="0" y1="0" x2="' + x2 + '" y2="' + y2 + '">' + stops.map(([o, c]) => '<stop offset="' + o + '" stop-color="' + c + '"/>').join('') + '</linearGradient>';
+  const rg = (id, stops, cx = '40%', cy = '35%', r = '70%') => '<radialGradient id="' + id + '" cx="' + cx + '" cy="' + cy + '" r="' + r + '">' + stops.map(([o, c]) => '<stop offset="' + o + '" stop-color="' + c + '"/>').join('') + '</radialGradient>';
+  // a sitting shiba inu; mood changes the face
+  function dogSVG(mood) {
+    const fur = rg('fur', [[0, '#ffc173'], [.6, '#f0952e'], [1, '#c96a14']], '45%', '30%', '75%');
+    const furB = rg('furB', [[0, '#ffb35c'], [1, '#c4620f']], '40%', '30%', '80%');
+    const cream = rg('cr', [[0, '#fffaf0'], [1, '#f3dcb8']], '50%', '35%', '70%');
+    let eyes, mouth, extra = '';
+    if (mood === 'happy') {
+      eyes = '<path d="M38 34Q42 29 46 34" stroke="#2a1a0c" stroke-width="2.6" fill="none" stroke-linecap="round"/><path d="M54 34Q58 29 62 34" stroke="#2a1a0c" stroke-width="2.6" fill="none" stroke-linecap="round"/>';
+      mouth = '<path d="M43 46Q50 57 57 46Q50 49 43 46Z" fill="#7a1f1f"/><path d="M46.5 50Q50 56 53.5 50Q50 51 46.5 50Z" fill="#ff7b8a"/>';
+      extra = '<path d="M78 14l2 4 4 .5-3 3 .8 4-3.8-2-3.8 2 .8-4-3-3 4-.5Z" fill="#ffd23a" stroke="#e8a010" stroke-width=".8"/>';
+    } else if (mood === 'scared') {
+      eyes = '<ellipse cx="42" cy="33" rx="4.6" ry="5.4" fill="#fff" stroke="#2a1a0c" stroke-width="1"/><ellipse cx="58" cy="33" rx="4.6" ry="5.4" fill="#fff" stroke="#2a1a0c" stroke-width="1"/>' +
+        '<circle cx="42.6" cy="34" r="2.2" fill="#2a1a0c"/><circle cx="57.4" cy="34" r="2.2" fill="#2a1a0c"/><circle cx="43.3" cy="33.2" r=".8" fill="#fff"/><circle cx="58.1" cy="33.2" r=".8" fill="#fff"/>' +
+        '<path d="M36 24l9 3M64 24l-9 3" stroke="#a85a12" stroke-width="2" stroke-linecap="round"/>';
+      mouth = '<path d="M44 49q2-2 4 0t4 0 4 0" stroke="#2a1a0c" stroke-width="1.6" fill="none" stroke-linecap="round"/>';
+      extra = '<path d="M72 22q4 6 0 9q-4-3 0-9Z" fill="#8fd8ff" stroke="#4aa8e0" stroke-width=".8"/>';
+    } else if (mood === 'stung') {
+      eyes = '<path d="M38 30l7 6M45 30l-7 6M55 30l7 6M62 30l-7 6" stroke="#2a1a0c" stroke-width="2.4" stroke-linecap="round"/>' +
+        '<path d="M40 38q-2 8 0 14M60 38q2 8 0 14" stroke="#7fd0ff" stroke-width="3" stroke-linecap="round" opacity=".9"/>';
+      mouth = '<path d="M43 52Q50 44 57 52Q50 50 43 52Z" fill="#7a1f1f"/>';
+      extra = '<ellipse cx="62" cy="16" rx="6" ry="5" fill="#ff6b6b" stroke="#c43b3b" stroke-width="1"/><ellipse cx="60.5" cy="14.5" rx="2" ry="1.4" fill="#fff" opacity=".6"/>';
+    } else {
+      eyes = '<ellipse cx="42" cy="34" rx="3.4" ry="4" fill="#2a1a0c"/><ellipse cx="58" cy="34" rx="3.4" ry="4" fill="#2a1a0c"/><circle cx="43.2" cy="32.6" r="1.3" fill="#fff"/><circle cx="59.2" cy="32.6" r="1.3" fill="#fff"/>';
+      mouth = '<path d="M44 47Q47 50 50 47Q53 50 56 47" stroke="#2a1a0c" stroke-width="1.6" fill="none" stroke-linecap="round"/>';
+    }
+    return svgDoc('<defs>' + fur + furB + cream + lg('col', [[0, '#ff5a5a'], [1, '#b81f2c']]) + rg('tag', [[0, '#fff3b0'], [1, '#d99a0a']]) + '</defs>' +
+      // tail curling over the back
+      '<path d="M66 74Q88 72 86 54Q84 42 74 46Q80 52 76 60Q72 66 64 66Z" fill="url(#furB)" stroke="#a8550e" stroke-width="1"/><path d="M76 50Q81 54 78 60" stroke="#fff4e0" stroke-width="3" fill="none" stroke-linecap="round"/>' +
+      // body and haunches
+      '<path d="M30 95Q24 66 37 52L63 52Q76 66 70 95Z" fill="url(#fur)" stroke="#a8550e" stroke-width="1.2"/>' +
+      '<ellipse cx="29" cy="87" rx="10" ry="9" fill="url(#furB)" stroke="#a8550e" stroke-width="1"/><ellipse cx="71" cy="87" rx="10" ry="9" fill="url(#furB)" stroke="#a8550e" stroke-width="1"/>' +
+      '<ellipse cx="50" cy="72" rx="12.5" ry="17" fill="url(#cr)"/>' +
+      // front legs and paws
+      '<rect x="37" y="72" width="10" height="22" rx="5" fill="url(#fur)" stroke="#a8550e" stroke-width="1"/><rect x="53" y="72" width="10" height="22" rx="5" fill="url(#fur)" stroke="#a8550e" stroke-width="1"/>' +
+      '<ellipse cx="42" cy="94" rx="6.4" ry="3.6" fill="url(#cr)" stroke="#c9a77a" stroke-width=".8"/><ellipse cx="58" cy="94" rx="6.4" ry="3.6" fill="url(#cr)" stroke="#c9a77a" stroke-width=".8"/>' +
+      '<path d="M40 94v-2M44 94v-2M56 94v-2M60 94v-2" stroke="#b8946a" stroke-width=".8"/>' +
+      '<ellipse cx="22" cy="95" rx="6" ry="3" fill="url(#cr)" stroke="#c9a77a" stroke-width=".8"/><ellipse cx="78" cy="95" rx="6" ry="3" fill="url(#cr)" stroke="#c9a77a" stroke-width=".8"/>' +
+      // collar with tag
+      '<path d="M34 52Q50 60 66 52L65 57Q50 65 35 57Z" fill="url(#col)" stroke="#8a1420" stroke-width=".8"/><circle cx="50" cy="63" r="4" fill="url(#tag)" stroke="#a87408" stroke-width=".8"/><path d="M48.5 62.5h3" stroke="#a87408" stroke-width=".8"/>' +
+      // ears
+      '<path d="M28 30L31 3L48 17Z" fill="url(#fur)" stroke="#a8550e" stroke-width="1.2" stroke-linejoin="round"/><path d="M72 30L69 3L52 17Z" fill="url(#fur)" stroke="#a8550e" stroke-width="1.2" stroke-linejoin="round"/>' +
+      '<path d="M32 23L33 9L43 18Z" fill="#ffb3a8"/><path d="M68 23L67 9L57 18Z" fill="#ffb3a8"/>' +
+      // head with cream mask
+      '<ellipse cx="50" cy="35" rx="25" ry="20" fill="url(#fur)" stroke="#a8550e" stroke-width="1.2"/>' +
+      '<path d="M27 40Q30 52 42 54Q50 56 58 54Q70 52 73 40Q66 46 58 42Q50 38 42 42Q34 46 27 40Z" fill="url(#cr)"/>' +
+      '<ellipse cx="50" cy="45" rx="11" ry="8" fill="url(#cr)"/><ellipse cx="41" cy="26" rx="3" ry="2" fill="#fff4e0"/><ellipse cx="59" cy="26" rx="3" ry="2" fill="#fff4e0"/>' +
+      '<ellipse cx="34" cy="44" rx="4.5" ry="2.6" fill="#ff8a8a" opacity=".45"/><ellipse cx="66" cy="44" rx="4.5" ry="2.6" fill="#ff8a8a" opacity=".45"/>' +
+      eyes + '<path d="M46 41Q50 38.5 54 41Q52 45 50 45Q48 45 46 41Z" fill="#2a1a0c"/><ellipse cx="48.6" cy="40.8" rx="1.4" ry=".7" fill="#fff" opacity=".7"/>' + mouth +
+      '<path d="M36 22Q42 18 48 20" stroke="#fff" stroke-width="1.6" fill="none" opacity=".5" stroke-linecap="round"/>' + extra);
+  }
+  // a woven straw skep with honey drips
+  function hiveSVG() {
+    let bands = '';
+    const rows = [[18, 82, 76], [22, 78, 64], [25, 75, 52], [29, 71, 41], [34, 66, 31], [40, 60, 22]];
+    rows.slice().reverse().forEach(([x0, x1, y]) => {
+      bands += '<rect x="' + x0 + '" y="' + (y - 7) + '" width="' + (x1 - x0) + '" height="13" rx="6.5" fill="url(#straw)" stroke="#9a6410" stroke-width="1"/>';
+      for (let x = x0 + 4; x < x1 - 3; x += 4.2) bands += '<path d="M' + x + ' ' + (y - 5) + 'l2.4 9" stroke="#b97a18" stroke-width=".9" opacity=".7"/>';
+      bands += '<path d="M' + (x0 + 5) + ' ' + (y - 4) + 'H' + (x1 - 8) + '" stroke="#fff2b8" stroke-width="1.4" opacity=".55" stroke-linecap="round"/>';
+    });
+    return svgDoc('<defs>' + lg('straw', [[0, '#ffe08a'], [.5, '#f0b43a'], [1, '#c8861c']]) + rg('hole', [[0, '#1a0c02'], [1, '#4a2808']], '50%', '40%', '60%') + lg('honey', [[0, '#ffcf3a'], [1, '#e88a00']]) + '</defs>' +
+      '<rect x="46" y="4" width="8" height="12" rx="3" fill="url(#straw)" stroke="#9a6410" stroke-width="1"/>' + bands +
+      '<rect x="14" y="80" width="72" height="10" rx="5" fill="url(#straw)" stroke="#9a6410" stroke-width="1"/>' +
+      '<path d="M40 82Q40 68 50 68Q60 68 60 82Z" fill="url(#hole)" stroke="#6a3c08" stroke-width="1.2"/>' +
+      '<path d="M24 84q0 9 3 9t3-9M70 80q0 12 3.5 12T77 80" fill="url(#honey)" stroke="#c87a00" stroke-width=".6"/><circle cx="26.6" cy="88" r="1" fill="#fff" opacity=".8"/><circle cx="73" cy="88" r="1.1" fill="#fff" opacity=".8"/>');
+  }
+  const BEE = svgDoc('<defs>' + rg('by', [[0, '#fff3a0'], [.55, '#ffc51a'], [1, '#d88a00']], '45%', '30%', '75%') + '<clipPath id="bc"><ellipse cx="54" cy="55" rx="30" ry="23"/></clipPath></defs>' +
+    '<path d="M83 55l12-3-12 9Z" fill="#2a1a0c"/>' +
+    '<ellipse cx="54" cy="55" rx="30" ry="23" fill="url(#by)" stroke="#2a1a0c" stroke-width="2.4"/>' +
+    '<g clip-path="url(#bc)" fill="#2a1a0c"><rect x="46" y="28" width="9" height="56"/><rect x="63" y="28" width="9" height="56"/><rect x="79" y="28" width="12" height="56"/></g>' +
+    '<ellipse cx="50" cy="44" rx="16" ry="6" fill="#fff" opacity=".4"/>' +
+    '<circle cx="26" cy="52" r="15" fill="#3a2810" stroke="#1a0c02" stroke-width="2"/><circle cx="21" cy="48" r="5.4" fill="#fff"/><circle cx="19.6" cy="48.6" r="3" fill="#1a0c02"/><circle cx="20.6" cy="47.4" r="1.1" fill="#fff"/>' +
+    '<path d="M14 58q5 4 10 0" stroke="#ff8a8a" stroke-width="2" fill="none" stroke-linecap="round"/>' +
+    '<path d="M22 38q-6-14-14-16M30 38q0-14 6-20" stroke="#1a0c02" stroke-width="2.2" fill="none" stroke-linecap="round"/><circle cx="8" cy="22" r="3" fill="#1a0c02"/><circle cx="36" cy="18" r="3" fill="#1a0c02"/>' +
+    '<path d="M70 50q4-3 8 0" stroke="#fff" stroke-width="1.6" opacity=".5" fill="none"/>');
+  const FLOWER = (petal, mid) => svgDoc('<defs>' + rg('p', [[0, '#fff'], [1, petal]], '50%', '50%', '60%') + '</defs>' +
+    [0, 72, 144, 216, 288].map(a => '<ellipse cx="50" cy="28" rx="13" ry="22" fill="url(#p)" stroke="' + shade(petal, -0.3) + '" stroke-width="1.4" transform="rotate(' + a + ' 50 50)"/>').join('') +
+    '<circle cx="50" cy="50" r="12" fill="' + mid + '" stroke="' + shade(mid, -0.35) + '" stroke-width="1.6"/><circle cx="46" cy="46" r="4" fill="#fff" opacity=".5"/>');
+  let SPR = null;
+  loadSprites({ dog: dogSVG('calm'), dogScared: dogSVG('scared'), dogHappy: dogSVG('happy'), dogStung: dogSVG('stung'), hive: hiveSVG(), bee: BEE,
+    fPink: FLOWER('#ff8fc0', '#ffd23a'), fWhite: FLOWER('#ffffff', '#ffb52e'), fBlue: FLOWER('#8ab8ff', '#fff0a0') }, 200).then(s => { SPR = s; art($('logo'), 'dogScared', true); art($('winArt'), 'dogHappy'); art($('failArt'), 'dogStung', true); });
+
+  // ---------- state ----------
+  let W, H, DPR, S = 3.5, OX = 0, OY = 0, BG = null;
+  let L, stroke = null, strokeDone = false, inkUsed = 0, bees = [], spawned = 0, spawnT = 0, phase = 'menu', t = 0, timer = 0, simAcc = 0, mood = 'dog', stungAt = null, endT = 0, buzzT = 0;
+  let staticSegs = [], inkSegs = [], puffs = [];
+  function resize() {
+    DPR = Math.min(devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight; canvas.width = W * DPR; canvas.height = H * DPR; ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    const top = 64, bottom = 74;
+    S = Math.min((W - 8) / 100, (H - top - bottom) / 160);
+    OX = (W - 100 * S) / 2; OY = top + (H - top - bottom - 160 * S) / 2;
+    BG = paintBG();
+  }
+  const sx = x => OX + x * S, sy = y => OY + y * S;
+  addEventListener('resize', resize);
+
+  // meadow backdrop, cached: sky, sun, hills, grass and flowers
+  function paintBG() {
+    const c = document.createElement('canvas'); c.width = W * DPR; c.height = H * DPR; const g = c.getContext('2d'); g.scale(DPR, DPR);
+    const gy = sy(150);
+    const sky = g.createLinearGradient(0, 0, 0, gy); sky.addColorStop(0, '#5ec2f2'); sky.addColorStop(.7, '#bfe8fb'); sky.addColorStop(1, '#e8f8ff'); g.fillStyle = sky; g.fillRect(0, 0, W, gy);
+    const sun = g.createRadialGradient(W * .82, gy * .16, 0, W * .82, gy * .16, Math.max(80, S * 26)); sun.addColorStop(0, 'rgba(255,250,210,1)'); sun.addColorStop(.25, 'rgba(255,240,160,.9)'); sun.addColorStop(1, 'rgba(255,240,160,0)');
+    g.fillStyle = sun; g.fillRect(0, 0, W, gy);
+    const cloud = (x, y, s) => { g.fillStyle = 'rgba(255,255,255,.92)'; g.beginPath(); for (const [dx, dy, r] of [[0, 0, 1], [1.1, -.35, .8], [2, .1, .9], [-.9, .2, .7], [.9, .35, .9]]) { g.moveTo(x + dx * s + r * s, y + dy * s); g.arc(x + dx * s, y + dy * s, r * s, 0, 7); } g.fill(); };
+    cloud(W * .18, gy * .2, Math.max(14, S * 5)); cloud(W * .62, gy * .34, Math.max(11, S * 4)); cloud(W * .9, gy * .55, Math.max(9, S * 3));
+    // two layers of rolling hills
+    const hill = (base, amp, col1, col2, ph) => {
+      const hg = g.createLinearGradient(0, base - amp, 0, gy); hg.addColorStop(0, col1); hg.addColorStop(1, col2); g.fillStyle = hg;
+      g.beginPath(); g.moveTo(0, gy); for (let x = 0; x <= W; x += 8) g.lineTo(x, base - amp * (0.5 + 0.5 * Math.sin(x / (W * .22) + ph))); g.lineTo(W, gy); g.fill();
+    };
+    hill(gy - S * 24, S * 12, '#9fd98a', '#7cc06a', 1.2); hill(gy - S * 10, S * 9, '#7ccf5e', '#5cae46', 3.1);
+    // trees framing the play area on wide screens
+    const tree = (x, s) => {
+      g.fillStyle = '#7a4a22'; g.fillRect(x - s * .12, gy - s * 1.2, s * .24, s * 1.2);
+      for (const [dx, dy, r, col] of [[0, -1.5, .62, '#3f9a3a'], [-.38, -1.2, .45, '#4aaa42'], [.4, -1.15, .48, '#358a32'], [0, -1.9, .42, '#56b84c']]) { g.fillStyle = col; g.beginPath(); g.arc(x + dx * s, gy + dy * s, r * s, 0, 7); g.fill(); }
+    };
+    if (OX > 40) { tree(OX - S * 4, S * 30); tree(OX + S * 104, S * 30); tree(OX - S * 30, S * 22); tree(OX + S * 130, S * 24); }
+    // soil and grass
+    const soil = g.createLinearGradient(0, gy, 0, H); soil.addColorStop(0, '#8a5a2e'); soil.addColorStop(.25, '#6e4420'); soil.addColorStop(1, '#4a2c12'); g.fillStyle = soil; g.fillRect(0, gy, W, H - gy);
+    g.fillStyle = 'rgba(40,20,5,.35)'; for (let i = 0; i < 70; i++) { const x = (i * 97.3) % W, y = gy + 10 + (i * 41.7) % Math.max(10, H - gy - 14); g.beginPath(); g.ellipse(x, y, 3 + i % 4, 1.6 + i % 2, 0, 0, 7); g.fill(); }
+    const grass = g.createLinearGradient(0, gy - 6, 0, gy + 8); grass.addColorStop(0, '#8ee05a'); grass.addColorStop(1, '#4a9a2e'); g.fillStyle = grass; g.fillRect(0, gy - 2, W, 9);
+    for (let x = 0; x < W; x += 3) { const h = 5 + ((x * 7.3) % 7); g.strokeStyle = x % 2 ? '#5cb83a' : '#76d04a'; g.lineWidth = 1.6; g.beginPath(); g.moveTo(x, gy + 2); g.quadraticCurveTo(x + 1, gy - h * .6, x + ((x * 3) % 5) - 2, gy - h); g.stroke(); }
+    return c;
+  }
+
+  // ---------- level setup ----------
+  const rockSegs = r => { const [x, y, w, h] = r, p = [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]; return p.map((a, i) => { const b = p[(i + 1) % 4]; return { ax: a[0], ay: a[1], bx: b[0], by: b[1] }; }); };
+  const dogC = () => ({ x: L.dog[0], y: L.dog[1] - 9 });
+  function load() {
+    L = LEVELS[(level - 1) % LEVELS.length];
+    stroke = null; strokeDone = false; inkUsed = 0; inkSegs = []; bees = []; spawned = 0; spawnT = 0; timer = SURVIVE; simAcc = 0; mood = 'dog'; stungAt = null; endT = 0; puffs = [];
+    staticSegs = [{ ax: -50, ay: 150, bx: 150, by: 150 }, { ax: 0, ay: -40, bx: 0, by: 150 }, { ax: 100, ay: -40, bx: 100, by: 150 }, { ax: -50, ay: -6, bx: 150, by: -6 }];
+    for (const r of L.rocks) staticSegs.push(...rockSegs(r));
+    hud();
+  }
+  function hud() {
+    $('level').textContent = 'LEVEL ' + level;
+    $('sub').textContent = phase === 'defend' ? 'Hold on! ' + Math.max(0, timer).toFixed(1) + 's' : phase === 'draw' ? (stroke ? 'Keep drawing…' : 'Draw a wall to protect the doge!') : L ? L.name : '';
+  }
+  function start() {
+    if (!SPR) return;
+    phase = 'draw'; load(); audio.start();
+    for (const o of ['menu', 'win', 'fail']) $(o).classList.add('hidden');
+  }
+  $('startBtn').onclick = start;
+  $('nextBtn').onclick = () => { level++; try { localStorage.setItem(KEY, level); } catch (e) {} start(); };
+  $('retryBtn').onclick = start;
+  $('reset').onclick = () => { if (phase !== 'menu') start(); };
+  addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && phase === 'menu') { e.preventDefault(); start(); } });
+
+  // ---------- drawing: one stroke, stopped by the doge and the hives ----------
+  const toWorld = e => ({ x: (e.clientX - OX) / S, y: (e.clientY - OY) / S });
+  const forbidden = p => {
+    const d = dogC(); if (Math.hypot(p.x - d.x, p.y - d.y) < DOG_R + 2.5) return true;
+    for (const [hx, hy] of L.hives) if (Math.hypot(p.x - hx, p.y - hy) < HIVE_R + 2) return true;
+    return false;
+  };
+  canvas.addEventListener('pointerdown', e => {
+    if (phase !== 'draw' || stroke) return;
+    const p = toWorld(e); if (p.y > 150 && p.y < 155) p.y = 150; if (p.x < 0 && p.x > -4) p.x = 0; if (p.x > 100 && p.x < 104) p.x = 100;
+    if (p.x < 0 || p.x > 100 || p.y < 0 || p.y > 150 || forbidden(p)) return;
+    stroke = [{ x: p.x, y: p.y }]; audio.sfx(700, .05, 'triangle', .03); hud();
+  });
+  addEventListener('pointermove', e => {
+    if (!stroke || strokeDone || phase !== 'draw') return;
+    const p = toWorld(e), last = stroke[stroke.length - 1];
+    let x = Math.max(0, Math.min(100, p.x)), y = Math.max(0, Math.min(150, p.y)), d = Math.hypot(x - last.x, y - last.y);
+    if (d < 1.2) return;
+    const left = L.ink - inkUsed; if (left <= 0) return release();
+    if (d > left) { x = last.x + (x - last.x) * left / d; y = last.y + (y - last.y) * left / d; d = left; }
+    // walk towards the finger in small steps so the line can't jump over the doge
+    const n = Math.ceil(d / 1); let px = last.x, py = last.y;
+    for (let i = 1; i <= n; i++) { const q = { x: last.x + (x - last.x) * i / n, y: last.y + (y - last.y) * i / n }; if (forbidden(q)) { if (Math.hypot(px - last.x, py - last.y) > .2) { stroke.push({ x: px, y: py }); inkUsed += Math.hypot(px - last.x, py - last.y); } inkSegs = Ink.segments([stroke]); return release(); } px = q.x; py = q.y; }
+    stroke.push({ x, y }); inkUsed += d; inkSegs = Ink.segments([stroke]);
+    if (Math.random() < .25) audio.sfx(800 + Math.random() * 400, .03, 'triangle', .012);
+    if (inkUsed >= L.ink - .01) release();
+  });
+  const release = () => {
+    if (!stroke || strokeDone || phase !== 'draw') return;
+    strokeDone = true;
+    if (stroke.length < 2) { stroke = null; strokeDone = false; hud(); return; }
+    inkSegs = Ink.segments([stroke]);
+    phase = 'defend'; mood = 'dogScared'; spawnT = 0;
+    audio.sfx(220, .3, 'sawtooth', .04, 330);
+    hud();
+  };
+  addEventListener('pointerup', release); addEventListener('pointercancel', release);
+  window.__doge = { world: (x, y) => ({ x: sx(x), y: sy(y) }), phase: () => phase, level: () => level, ink: () => [inkUsed, L.ink] };
+
+  // ---------- bees ----------
+  function spawnBee() {
+    const [hx, hy] = L.hives[spawned % L.hives.length];
+    bees.push({ x: hx + (Math.random() - .5) * 3, y: hy + 5, vx: (Math.random() - .5) * 20, vy: 10 + Math.random() * 10, ph: Math.random() * 6, wob: Math.random() * 6, face: -1 });
+    spawned++;
+  }
+  function step(h) {
+    const d = dogC(), maxV = 34 + Math.min(14, level), acc = 120;
+    for (const b of bees) {
+      if (phase === 'won') { b.vy -= 160 * h; b.vx += (b.x < 50 ? -1 : 1) * 40 * h; }
+      else {
+        b.wob += h * (3 + b.ph * .3);
+        const dx = d.x - b.x, dy = d.y - b.y, dl = Math.hypot(dx, dy) || 1;
+        // seek the doge, with a lazy figure-eight wander so the swarm probes every gap
+        b.vx += (dx / dl * acc + Math.cos(b.wob) * 70) * h;
+        b.vy += (dy / dl * acc + Math.sin(b.wob * 1.3) * 70) * h;
+      }
+      const sp = Math.hypot(b.vx, b.vy), cap = phase === 'won' ? 90 : maxV; if (sp > cap) { b.vx *= cap / sp; b.vy *= cap / sp; }
+      b.x += b.vx * h; b.y += b.vy * h;
+    }
+    // bees keep a little personal space (small nudges, so a crowd can't shove one through a wall)
+    for (let i = 0; i < bees.length; i++) for (let j = i + 1; j < bees.length; j++) {
+      const a = bees[i], c = bees[j], dx = c.x - a.x, dy = c.y - a.y, dd = dx * dx + dy * dy, m = BEE_R * 2.2;
+      if (dd < m * m && dd > 1e-6) { const l = Math.sqrt(dd), push = Math.min(.25, (m - l) / 2), nx = dx / l, ny = dy / l; a.x -= nx * push; a.y -= ny * push; c.x += nx * push; c.y += ny * push; }
+    }
+    // walls are resolved last so they always win
+    for (const b of bees) {
+      if (phase !== 'won') { Ink.collide(b, staticSegs, BEE_R, .4, .999, .4); Ink.collide(b, inkSegs, BEE_R, .4, .999, INK_T); }
+      if (Math.abs(b.vx) > 4) b.face = b.vx < 0 ? -1 : 1;
+    }
+    if (phase === 'defend') for (const b of bees) if (Math.hypot(b.x - d.x, b.y - d.y) < DOG_R + BEE_R) { sting(b); break; }
+  }
+  function sting(b) {
+    phase = 'lost'; mood = 'dogStung'; stungAt = { x: b.x, y: b.y };
+    audio.sfx(900, .15, 'square', .06, 300); setTimeout(() => audio.sfx(260, .5, 'sawtooth', .05, 120), 120);
+    for (let k = 0; k < 14; k++) puffs.push({ x: b.x, y: b.y, vx: (Math.random() - .5) * 50, vy: (Math.random() - .5) * 50, life: .6, c: '#ff6b6b' });
+    setTimeout(() => { if (phase === 'lost') $('fail').classList.remove('hidden'); }, 1300);
+    hud();
+  }
+  function win() {
+    phase = 'won'; mood = 'dogHappy';
+    const left = 1 - inkUsed / L.ink, stars = left > .35 ? 3 : left > .12 ? 2 : 1;
+    $('stars').innerHTML = '★'.repeat(stars) + '<i>' + '★'.repeat(3 - stars) + '</i>';
+    $('winLevel').textContent = level; $('winInk').textContent = Math.round(left * 100) + '%';
+    const d = dogC(); for (let k = 0; k < 10; k++) puffs.push({ x: d.x + (Math.random() - .5) * 16, y: d.y - 6, vx: (Math.random() - .5) * 20, vy: -20 - Math.random() * 20, life: 1.4, heart: 1 });
+    [523, 659, 784, 1046].forEach((f, k) => setTimeout(() => audio.sfx(f, .3, 'triangle', .06), k * 110));
+    setTimeout(() => audio.sfx(1318, .5, 'sine', .05), 480);
+    setTimeout(() => { if (phase === 'won') $('win').classList.remove('hidden'); }, 1600);
+    hud();
+  }
+  function update(dt) {
+    t += dt;
+    for (const p of puffs) { p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; } puffs = puffs.filter(p => p.life > 0);
+    if (phase === 'defend') {
+      spawnT += dt;
+      while (spawned < L.bees && spawnT > spawned * (1.6 / L.bees)) spawnBee();
+      timer -= dt; if (timer <= 0) { win(); }
+      buzzT -= dt; if (buzzT <= 0) { buzzT = .22; audio.sfx(150 + Math.random() * 40, .2, 'sawtooth', Math.min(.02, .004 + bees.length * .0008), 140); }
+      hud();
+    }
+    if (phase === 'defend' || phase === 'won' || phase === 'lost') {
+      simAcc += dt; while (simAcc >= 1 / 180) { simAcc -= 1 / 180; if (phase !== 'lost') step(1 / 180); }
+    }
+  }
+
+  // ---------- rendering ----------
+  function drawRock([x, y, w, h]) {
+    const X = sx(x), Y = sy(y), Wd = w * S, Hd = h * S;
+    ctx.save(); ctx.shadowColor = 'rgba(0,0,0,.3)'; ctx.shadowBlur = 8; ctx.shadowOffsetY = 3;
+    const g = ctx.createLinearGradient(X, Y, X + Wd, Y + Hd); g.addColorStop(0, '#c4c9cc'); g.addColorStop(1, '#7d868c');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.roundRect(X, Y, Wd, Hd, Math.min(8, S * 2)); ctx.fill(); ctx.restore();
+    ctx.save(); ctx.beginPath(); ctx.roundRect(X, Y, Wd, Hd, Math.min(8, S * 2)); ctx.clip();
+    const bh = Math.max(8, S * 5), bw = bh * 1.7;
+    for (let yy = Y, r = 0; yy < Y + Hd; yy += bh, r++) for (let xx = X - (r % 2) * bw / 2; xx < X + Wd; xx += bw) {
+      const sg = ctx.createLinearGradient(xx, yy, xx, yy + bh); sg.addColorStop(0, 'rgba(255,255,255,.25)'); sg.addColorStop(1, 'rgba(0,0,0,.14)');
+      ctx.fillStyle = sg; ctx.beginPath(); ctx.roundRect(xx + 1, yy + 1, bw - 2, bh - 2, 2); ctx.fill();
+    }
+    // moss cap
+    ctx.fillStyle = '#6cc04a'; ctx.fillRect(X, Y, Wd, Math.max(3, S * 1.2));
+    for (let xx = X; xx < X + Wd; xx += 4) { ctx.fillStyle = (xx / 4) % 2 ? '#5aa83c' : '#84d45a'; ctx.beginPath(); ctx.arc(xx + 2, Y + S * 1.2, 2.2, 0, 7); ctx.fill(); }
+    ctx.restore();
+  }
+  function drawHive([hx, hy]) {
+    const s = HIVE_R * 2.4 * S, X = sx(hx), Y = sy(hy);
+    if (hy < 135) {
+      // a leafy branch reaching in from the nearest side
+      const from = hx < 50 ? sx(-6) : sx(106), by = Y - s * .5;
+      ctx.strokeStyle = '#6b3f1a'; ctx.lineWidth = Math.max(4, S * 1.8); ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(from, by - S * 3); ctx.quadraticCurveTo((from + X) / 2, by + S * 2, X, by); ctx.stroke();
+      ctx.strokeStyle = '#8a5a2e'; ctx.lineWidth = Math.max(1.4, S * .5); ctx.beginPath(); ctx.moveTo(from, by - S * 3.6); ctx.quadraticCurveTo((from + X) / 2, by + S * 1.2, X, by - S * .6); ctx.stroke();
+      for (let k = 0; k < 5; k++) {
+        const u = .15 + k * .17, lx = from + (X - from) * u, ly = by - S * 2.4 + Math.sin(u * 3) * S, a = k % 2 ? -.6 : .6;
+        ctx.save(); ctx.translate(lx, ly); ctx.rotate(a); const lgd = ctx.createLinearGradient(0, -S * 3, 0, S * 3); lgd.addColorStop(0, '#7fd45a'); lgd.addColorStop(1, '#3f9a32');
+        ctx.fillStyle = lgd; ctx.beginPath(); ctx.ellipse(0, k % 2 ? -S * 2.2 : S * 2.2, S * 1.4, S * 2.6, 0, 0, 7); ctx.fill(); ctx.restore();
+      }
+      ctx.strokeStyle = '#8a6a3a'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(X, by); ctx.lineTo(X, Y - s * .42); ctx.stroke();
+    }
+    const wob = phase === 'defend' ? Math.sin(t * 30) * .04 : 0;
+    ctx.save(); ctx.translate(X, Y); ctx.rotate(wob); ctx.shadowColor = 'rgba(0,0,0,.25)'; ctx.shadowBlur = 8; ctx.shadowOffsetY = 3;
+    ctx.drawImage(SPR.hive, -s / 2, -s / 2, s, s); ctx.restore();
+  }
+  function drawDog() {
+    const d = dogC(), s = 22 * S, X = sx(L.dog[0]), Y = sy(L.dog[1]);
+    const bob = phase === 'won' ? Math.abs(Math.sin(t * 8)) * S * 1.5 : mood === 'dogScared' ? Math.sin(t * 40) * S * .25 : Math.sin(t * 2) * S * .2;
+    ctx.fillStyle = 'rgba(40,30,10,.25)'; ctx.beginPath(); ctx.ellipse(X, Y, s * .36, S * 1.2, 0, 0, 7); ctx.fill();
+    const img = SPR[mood === 'dog' ? 'dog' : mood] || SPR.dog;
+    ctx.drawImage(img, X - s / 2 + (mood === 'dogScared' ? bob : 0), Y - s * .98 - (phase === 'won' ? bob : 0), s, s);
+  }
+  function drawBee(b) {
+    const s = BEE_R * 3.6 * S, X = sx(b.x), Y = sy(b.y), flap = Math.sin(t * 60 + b.ph * 10);
+    ctx.save(); ctx.translate(X, Y); ctx.scale(-b.face, 1);
+    ctx.fillStyle = 'rgba(220,240,255,.75)'; ctx.strokeStyle = 'rgba(120,160,200,.8)'; ctx.lineWidth = .8;
+    for (const k of [-1, 1]) { ctx.save(); ctx.translate(-s * .02, -s * .22); ctx.rotate(k * .35 + flap * .5); ctx.beginPath(); ctx.ellipse(0, -s * .22, s * .16, s * .3, 0, 0, 7); ctx.fill(); ctx.stroke(); ctx.restore(); }
+    ctx.drawImage(SPR.bee, -s / 2, -s / 2, s, s);
+    ctx.restore();
+  }
+  function drawFlowers() {
+    const list = [[6, 'fPink'], [19, 'fWhite'], [27, 'fBlue'], [64, 'fPink'], [80, 'fWhite'], [94, 'fBlue']];
+    for (const [x, k] of list) {
+      if (Math.abs(x - L.dog[0]) < 10 && L.dog[1] === 150) continue;
+      if (L.rocks.some(r => x > r[0] - 2 && x < r[0] + r[2] + 2)) continue;
+      const X = sx(x), Y = sy(150), h = S * (5 + (x % 3)), sw = Math.sin(t * 1.5 + x) * S * .5;
+      ctx.strokeStyle = '#3f8a2a'; ctx.lineWidth = Math.max(1.2, S * .4); ctx.beginPath(); ctx.moveTo(X, Y); ctx.quadraticCurveTo(X - S, Y - h / 2, X + sw, Y - h); ctx.stroke();
+      ctx.fillStyle = '#5cae46'; ctx.beginPath(); ctx.ellipse(X - S * .8, Y - h * .4, S * 1.1, S * .5, -.6, 0, 7); ctx.fill();
+      const fs = S * 3.6; ctx.drawImage(SPR[k], X + sw - fs / 2, Y - h - fs / 2, fs, fs);
+    }
+  }
+  function drawStroke() {
+    if (!stroke || stroke.length < 2) return;
+    const pts = stroke.map(p => ({ x: sx(p.x), y: sy(p.y) })), w = INK_T * 2 * S;
+    Ink.draw(ctx, pts.map(p => ({ x: p.x + 1.5, y: p.y + 3 })), 'rgba(40,20,0,.25)', w);
+    Ink.draw(ctx, pts, '#3a2410', w);
+    Ink.draw(ctx, pts.map(p => ({ x: p.x - w * .12, y: p.y - w * .18 })), 'rgba(255,220,160,.55)', w * .25);
+    if (phase === 'draw' && !strokeDone) { const l = pts[pts.length - 1]; ctx.fillStyle = '#3a2410'; ctx.beginPath(); ctx.arc(l.x, l.y, w * .9, 0, 7); ctx.fill(); }
+  }
+  function render() {
+    if (BG) ctx.drawImage(BG, 0, 0, W, H);
+    if (!SPR || phase === 'menu' || !L) return;
+    drawFlowers();
+    L.rocks.forEach(drawRock);
+    L.hives.forEach(drawHive);
+    drawDog();
+    drawStroke();
+    for (const b of bees) drawBee(b);
+    for (const p of puffs) {
+      ctx.globalAlpha = Math.min(1, p.life * 1.5);
+      if (p.heart) { const X = sx(p.x), Y = sy(p.y), r = S * 1.4; ctx.fillStyle = '#ff5a7a'; ctx.beginPath(); ctx.moveTo(X, Y + r); ctx.bezierCurveTo(X - r * 2, Y - r * .4, X - r * .8, Y - r * 1.8, X, Y - r * .5); ctx.bezierCurveTo(X + r * .8, Y - r * 1.8, X + r * 2, Y - r * .4, X, Y + r); ctx.fill(); }
+      else { ctx.fillStyle = p.c; ctx.beginPath(); ctx.arc(sx(p.x), sy(p.y), S * .7, 0, 7); ctx.fill(); }
+    }
+    ctx.globalAlpha = 1;
+    if (stungAt && phase === 'lost') { const X = sx(stungAt.x), Y = sy(stungAt.y), r = S * (4 + Math.sin(t * 20)); ctx.strokeStyle = '#ff3a3a'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(X, Y, r, 0, 7); ctx.stroke(); }
+    // ink pencil meter
+    const mw = Math.min(210, W * .55), mx = W / 2 - mw / 2, my = sy(0) - 2 < 60 ? 58 : 58, left = Math.max(0, 1 - inkUsed / L.ink);
+    if (phase === 'draw') {
+      ctx.fillStyle = 'rgba(255,255,255,.75)'; ctx.beginPath(); ctx.roundRect(mx, my, mw, 10, 5); ctx.fill();
+      const ig = ctx.createLinearGradient(mx, 0, mx + mw, 0); ig.addColorStop(0, '#5a3a1a'); ig.addColorStop(1, '#a8743a');
+      ctx.fillStyle = ig; ctx.beginPath(); ctx.roundRect(mx, my, Math.max(10, mw * left), 10, 5); ctx.fill();
+    } else if (phase === 'defend') {
+      // countdown ring
+      const cx = W / 2, cy = my + 6, r = 12;
+      ctx.fillStyle = 'rgba(255,255,255,.85)'; ctx.beginPath(); ctx.arc(cx, cy + 8, r + 4, 0, 7); ctx.fill();
+      ctx.strokeStyle = '#ff9a1f'; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(cx, cy + 8, r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * Math.max(0, timer) / SURVIVE); ctx.stroke();
+      ctx.fillStyle = '#6a4a1c'; ctx.font = '800 13px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(Math.ceil(Math.max(0, timer)), cx, cy + 9);
+    }
+  }
+  // overlay illustrations: the doge with bees or hearts
+  function art(cv, key, withBees) {
+    const g = cv.getContext('2d'); g.clearRect(0, 0, 440, 440);
+    const glow = g.createRadialGradient(220, 240, 30, 220, 240, 210); glow.addColorStop(0, 'rgba(255,220,120,.7)'); glow.addColorStop(1, 'rgba(255,220,120,0)'); g.fillStyle = glow; g.fillRect(0, 0, 440, 440);
+    g.fillStyle = 'rgba(80,50,10,.18)'; g.beginPath(); g.ellipse(220, 392, 110, 16, 0, 0, 7); g.fill();
+    g.drawImage(SPR[key], 90, 130, 260, 260);
+    if (key !== 'dogStung') { g.strokeStyle = '#3a2410'; g.lineWidth = 12; g.lineCap = 'round'; g.beginPath(); g.arc(220, 300, 150, Math.PI * 1.06, Math.PI * 1.94); g.stroke(); g.strokeStyle = 'rgba(255,220,160,.6)'; g.lineWidth = 3; g.beginPath(); g.arc(220, 297, 150, Math.PI * 1.1, Math.PI * 1.5); g.stroke(); }
+    if (withBees) for (const [x, y, r, f] of [[70, 90, -.3, 1], [330, 70, .2, -1], [380, 170, .4, -1], [50, 200, -.2, 1], [200, 40, 0, 1]]) { g.save(); g.translate(x, y); g.rotate(r); g.scale(f, 1); g.fillStyle = 'rgba(220,240,255,.8)'; g.beginPath(); g.ellipse(-2, -26, 10, 18, -.3, 0, 7); g.fill(); g.drawImage(SPR.bee, -32, -32, 64, 64); g.restore(); }
+    else for (const [x, y, s] of [[90, 120, 1], [350, 100, .8], [380, 220, .6]]) { g.fillStyle = '#ff5a7a'; g.beginPath(); const r = 16 * s; g.moveTo(x, y + r); g.bezierCurveTo(x - r * 2, y - r * .4, x - r * .8, y - r * 1.8, x, y - r * .5); g.bezierCurveTo(x + r * .8, y - r * 1.8, x + r * 2, y - r * .4, x, y + r); g.fill(); }
+  }
+
+  resize();
+  let last = performance.now();
+  (function loop(now) {
+    const dt = Math.max(0, Math.min(0.033, (now - last) / 1000)); last = now;
+    update(dt); render(); requestAnimationFrame(loop);
+  })(last);
+})();
+</script>
+</body>
+</html>

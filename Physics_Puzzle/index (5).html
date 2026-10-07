@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#1e1610">
+<title>Gear Works</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #1e1610;
+    font-family: Georgia, "Times New Roman", serif; color: #f0d8a8;
+    touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+  canvas { display: block; width: 100%; height: 100%; }
+  .hud { position: fixed; top: max(10px, env(safe-area-inset-top)); left: 0; right: 0; text-align: center; pointer-events: none; }
+  .hud b { font-size: 23px; font-weight: 700; letter-spacing: 5px; color: #f6d48a; text-shadow: 0 2px 0 #3a2008, 0 0 12px #c8862a66; }
+  .hud div { font-size: 14px; letter-spacing: 2px; color: #c8a878; margin-top: 2px; font-style: italic; }
+  .tools { position: fixed; bottom: max(10px, env(safe-area-inset-bottom)); left: 10px; right: 64px; display: flex; justify-content: center; }
+  .tools button { padding: 8px 16px; border-radius: 6px; border: 2px solid #b8863a; background: linear-gradient(#5a3a1a, #2a1a0a); color: #f6d48a; font: inherit; font-size: 14px; letter-spacing: 2px; cursor: pointer; }
+  .overlay { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 24px; text-align: center;
+    background: radial-gradient(ellipse at 50% 40%, #3a2a18f2, #0e0a06f6); transition: opacity .3s; }
+  .overlay.hidden { opacity: 0; pointer-events: none; }
+  .overlay canvas { width: 230px; height: 230px; }
+  h1 { font-size: clamp(36px, 10.5vw, 58px); font-weight: 700; letter-spacing: 6px; color: #f6d48a; line-height: 1.1; text-shadow: 0 3px 0 #5a3410, 0 0 24px #c8862a88; }
+  p { max-width: 310px; font-size: 16px; line-height: 1.6; color: #c8a878; }
+  .stat { font-size: 16px; color: #c8a878; } .stat b { color: #f6d48a; }
+  .stars { font-size: 40px; letter-spacing: 8px; color: #ffd23a; text-shadow: 0 0 12px #c8862a; } .stars i { color: #4a3a28; text-shadow: none; font-style: normal; }
+  .btn { border: 2px solid #f6d48a; background: linear-gradient(#b8762a, #6a3e10); color: #fff2d0; font: inherit; font-size: 18px; letter-spacing: 6px; padding: 14px 42px; border-radius: 6px; cursor: pointer; box-shadow: 0 4px 0 #2a1606, 0 0 20px #c8862a55; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud"><b id="level">MECHANISM 1</b><div id="sub">Connect the engine to the machines</div></div>
+<div class="tools"><button id="reset">⟳ Clear gears</button></div>
+
+<div class="overlay" id="menu">
+  <canvas id="logo" width="460" height="460"></canvas>
+  <h1>GEAR<br>WORKS</h1>
+  <p><b>Make every machine turn.</b> Drag gears from the drawer onto the pegs so their teeth mesh with the steam engine. Meshing gears spin the opposite way — and a loop of gears jams solid.</p>
+  <div class="stat" id="bestMenu"></div>
+  <button class="btn" id="startBtn">STOKE</button>
+</div>
+<div class="overlay hidden" id="win">
+  <canvas id="winArt" width="460" height="460"></canvas>
+  <h1>IT WORKS!</h1>
+  <div class="stars" id="stars">★★★</div>
+  <div class="stat">Mechanism <b id="winLevel">1</b> · <b id="winMoves">0</b> moves</div>
+  <button class="btn" id="nextBtn">NEXT</button>
+</div>
+
+<script>
+/*AUDIO-ENGINE-START*/
+// ---------- audio: procedural background music + sound effects ----------
+// Every note is synthesized with the Web Audio API at runtime, so the music
+// needs no files, works offline and carries no copyright.
+const GameAudio = (cfg) => {
+  let ctx = null, master = null, musicBus = null, sfxBus = null;
+  let timer = null, step = 0, nextT = 0, playing = false;
+  let musicOn = true;
+  try { musicOn = localStorage.getItem('music_off') !== '1'; } catch (e) {}
+
+  const SCALES = {
+    major: [0, 2, 4, 5, 7, 9, 11], minor: [0, 2, 3, 5, 7, 8, 10],
+    dorian: [0, 2, 3, 5, 7, 9, 10], lydian: [0, 2, 4, 6, 7, 9, 11],
+    pentaMajor: [0, 2, 4, 7, 9], pentaMinor: [0, 3, 5, 7, 10],
+    japanese: [0, 1, 5, 7, 8], phrygian: [0, 1, 3, 5, 7, 8, 10]
+  };
+  const scale = SCALES[cfg.scale] || SCALES.major;
+  const root = cfg.root || 57;
+  const bpm = cfg.bpm || 110;
+  const prog = cfg.prog || [0, 5, 3, 4];
+  const sixteenth = 60 / bpm / 4;
+
+  // deterministic random so each game always plays "its" tune
+  let seed = cfg.seed || 1;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
+
+  const deg = (d, oct = 0) => {
+    const n = scale.length;
+    const o = Math.floor(d / n);
+    return root + scale[((d % n) + n) % n] + 12 * (o + oct);
+  };
+  const hz = m => 440 * Math.pow(2, (m - 69) / 12);
+
+  // melody: two 2-bar phrases (A, B) arranged A A B A
+  function phrase() {
+    const notes = [];
+    let d = 2 + Math.floor(rnd() * 3);
+    for (let i = 0; i < 32; i++) {
+      const strong = i % 4 === 0;
+      if (rnd() < (strong ? 0.85 : (cfg.leadDensity || 0.35))) {
+        d += Math.round((rnd() - 0.5) * 4);
+        d = Math.max(0, Math.min(scale.length * 2, d));
+        const len = strong && rnd() < 0.5 ? 2 : 1;
+        notes.push({ i, d, len });
+      }
+    }
+    return notes;
+  }
+  const A = phrase(), B = phrase();
+  const song = [A, A, B, A];
+
+  function init() {
+    if (ctx) return;
+    try {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      master = ctx.createGain(); master.gain.value = 0.9; master.connect(ctx.destination);
+      musicBus = ctx.createGain(); musicBus.gain.value = cfg.volume || 0.16; musicBus.connect(master);
+      sfxBus = ctx.createGain(); sfxBus.gain.value = 1; sfxBus.connect(master);
+    } catch (e) { ctx = null; }
+  }
+
+  function voice(t, freq, dur, type, vol, opts = {}) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, t);
+    if (opts.detune) o.detune.value = opts.detune;
+    let node = o;
+    if (opts.cutoff) {
+      const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = opts.cutoff; f.Q.value = opts.q || 1;
+      o.connect(f); node = f;
+    }
+    const a = opts.attack || 0.008;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(vol, t + a);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    node.connect(g); g.connect(opts.bus || musicBus);
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+
+  let noiseBuf = null;
+  function noise(t, dur, vol, hp) {
+    if (!noiseBuf) {
+      noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 0.5, ctx.sampleRate);
+      const d = noiseBuf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    }
+    const s = ctx.createBufferSource(); s.buffer = noiseBuf;
+    const f = ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = hp;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.connect(f); f.connect(g); g.connect(musicBus);
+    s.start(t); s.stop(t + dur + 0.02);
+  }
+
+  function kick(t) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.setValueAtTime(140, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+    g.gain.setValueAtTime(0.9, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+    o.connect(g); g.connect(musicBus); o.start(t); o.stop(t + 0.25);
+  }
+
+  function playStep(s, t) {
+    const bar = Math.floor(s / 16);
+    const i16 = s % 16;
+    const chordDeg = prog[bar % prog.length];
+    const w = cfg.waves || {};
+    // bass
+    const bassPat = cfg.bassPattern || [0, 8];
+    if (bassPat.includes(i16)) voice(t, hz(deg(chordDeg, -2)), sixteenth * 3.5, w.bass || 'triangle', 0.5, { cutoff: 600 });
+    // pad (chord) at bar start
+    if (cfg.pad && i16 === 0) {
+      for (const k of [0, 2, 4]) voice(t, hz(deg(chordDeg + k, -1)), sixteenth * 15, w.pad || 'sine', 0.12, { attack: 0.3, cutoff: 1400, detune: k * 3 });
+    }
+    // arpeggio
+    if (cfg.arp && i16 % (cfg.arpEvery || 2) === 0) {
+      const k = [0, 2, 4, 2][(i16 / (cfg.arpEvery || 2)) % 4];
+      voice(t, hz(deg(chordDeg + k, cfg.arpOct || 0)), sixteenth * 1.6, w.arp || 'square', 0.1, { cutoff: cfg.arpCutoff || 2200 });
+    }
+    // lead melody
+    const ph = song[Math.floor(bar / 2) % song.length];
+    const pi = (bar % 2) * 16 + i16;
+    for (const n of ph) if (n.i === pi) {
+      voice(t, hz(deg(n.d, cfg.leadOct || 0)), sixteenth * (n.len * 2 + 0.5), w.lead || 'triangle', 0.22, { cutoff: cfg.leadCutoff || 3000 });
+    }
+    // drums
+    if (cfg.drums) {
+      if (i16 % 8 === 0 || (cfg.drums === 'busy' && i16 === 10)) kick(t);
+      if (i16 % 8 === 4) noise(t, 0.14, 0.35, 1500);
+      if (i16 % 2 === 0) noise(t, 0.04, cfg.drums === 'soft' ? 0.06 : 0.12, 7000);
+    }
+  }
+
+  function scheduler() {
+    if (!ctx || !playing) return;
+    while (nextT < ctx.currentTime + 0.15) {
+      playStep(step, nextT);
+      nextT += sixteenth * (cfg.swing && step % 2 === 0 ? 1 + cfg.swing : cfg.swing ? 1 - cfg.swing : 1);
+      step++;
+    }
+  }
+
+  function startMusic() {
+    if (!ctx || playing || !musicOn) return;
+    playing = true;
+    musicBus.gain.cancelScheduledValues(ctx.currentTime);
+    musicBus.gain.setValueAtTime(0.0001, ctx.currentTime);
+    musicBus.gain.linearRampToValueAtTime(cfg.volume || 0.16, ctx.currentTime + 1.2);
+    nextT = ctx.currentTime + 0.05;
+    timer = setInterval(scheduler, 40);
+  }
+  function stopMusic() {
+    playing = false;
+    if (timer) clearInterval(timer);
+    timer = null;
+  }
+
+  // mute button
+  const btn = document.createElement('button');
+  btn.setAttribute('aria-label', 'Toggle music');
+  btn.style.cssText = 'position:fixed;z-index:50;right:max(14px,env(safe-area-inset-right));bottom:max(14px,env(safe-area-inset-bottom));' +
+    'width:42px;height:42px;border-radius:50%;border:none;cursor:pointer;font-size:20px;line-height:42px;padding:0;' +
+    'background:' + (cfg.btnBg || 'rgba(0,0,0,.35)') + ';color:' + (cfg.btnColor || '#fff') + ';backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);';
+  const paint = () => { btn.textContent = musicOn ? '♪' : '✕'; btn.style.opacity = musicOn ? '1' : '.6'; };
+  paint();
+  const toggle = e => {
+    e.stopPropagation(); e.preventDefault();
+    musicOn = !musicOn;
+    try { localStorage.setItem('music_off', musicOn ? '0' : '1'); } catch (err) {}
+    init();
+    if (ctx && ctx.state === 'suspended') ctx.resume();
+    if (musicOn) startMusic(); else stopMusic();
+    paint();
+  };
+  btn.addEventListener('pointerdown', e => e.stopPropagation());
+  btn.addEventListener('pointerup', e => e.stopPropagation());
+  btn.addEventListener('click', toggle);
+  document.addEventListener('DOMContentLoaded', () => document.body.appendChild(btn));
+  if (document.body) document.body.appendChild(btn);
+
+  document.addEventListener('visibilitychange', () => {
+    if (!ctx) return;
+    if (document.hidden) ctx.suspend(); else ctx.resume();
+  });
+
+  return {
+    // call from a user gesture (start button) — browsers only allow audio after one
+    start() {
+      init();
+      if (!ctx) return;
+      if (ctx.state === 'suspended') ctx.resume();
+      startMusic();
+    },
+    sfx(freq, dur, type = 'sine', vol = 0.07, to = 0) {
+      init();
+      if (!ctx) return;
+      try {
+        const t = ctx.currentTime;
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.type = type; o.frequency.setValueAtTime(freq, t);
+        if (to) o.frequency.exponentialRampToValueAtTime(Math.max(30, to), t + dur);
+        g.gain.setValueAtTime(vol, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+        o.connect(g); g.connect(sfxBus);
+        o.start(t); o.stop(t + dur + 0.02);
+      } catch (e) {}
+    }
+  };
+};
+/*AUDIO-ENGINE-END*/
+/*SPRITES-START*/
+// ---------- sprites: detailed SVG artwork rasterised once into canvases ----------
+// Each piece is authored as an SVG (gradients, highlights, shadows, glow) and
+// drawn into an offscreen canvas at load time, so the game loop just blits images.
+const loadSprites = (defs, px = 160) => Promise.all(Object.entries(defs).map(([name, svg]) => new Promise(done => {
+  const img = new Image();
+  const finish = ok => {
+    const c = document.createElement('canvas');
+    const w = Array.isArray(px) ? px[0] : px, h = Array.isArray(px) ? px[1] : px;
+    c.width = w; c.height = h;
+    if (ok) c.getContext('2d').drawImage(img, 0, 0, w, h);
+    done([name, c]);
+  };
+  img.onload = () => finish(true);
+  img.onerror = () => finish(false);
+  img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+}))).then(entries => Object.fromEntries(entries));
+
+// small helpers for writing SVG
+const svgDoc = (body, vb = '0 0 100 100') => '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + vb + '">' + body + '</svg>';
+const shade = (hex, amt) => {
+  const n = parseInt(hex.slice(1), 16);
+  const f = v => Math.max(0, Math.min(255, Math.round(amt < 0 ? v * (1 + amt) : v + (255 - v) * amt)));
+  return '#' + [n >> 16, (n >> 8) & 255, n & 255].map(f).map(v => v.toString(16).padStart(2, '0')).join('');
+};
+/*SPRITES-END*/
+(() => {
+  const audio = GameAudio({
+    bpm: 100, scale: 'minor', root: 48, prog: [0, 5, 3, 4], seed: 706,
+    waves: { lead: 'square', bass: 'sawtooth', arp: 'triangle', pad: 'sine' },
+    pad: true, arp: true, arpEvery: 1, arpOct: 2, arpCutoff: 1300, leadOct: 1, leadCutoff: 1200, leadDensity: 0.22, drums: 'soft', bassPattern: [0, 4, 8, 12], volume: 0.15,
+    btnBg: 'rgba(246,212,138,.15)', btnColor: '#f6d48a'
+  });
+  const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+  const $ = id => document.getElementById(id);
+  const KEY = 'gear_works_level';
+  let level = 1; try { level = +localStorage.getItem(KEY) || 1; } catch (e) {}
+  $('bestMenu').innerHTML = level > 1 ? 'Continue from mechanism <b>' + level + '</b>' : '';
+
+  // ---------- rules: gears of radius 1..3 sit on integer pegs and mesh when centre distance = r1 + r2 ----------
+  const GC = 12, GR = 15, TOL = .2, TEETH = r => 10 * r;
+  const meshes = (a, b) => Math.abs(Math.hypot(a.x - b.x, a.y - b.y) - (a.r + b.r)) < TOL;
+  const overlaps = (a, b) => Math.hypot(a.x - b.x, a.y - b.y) < a.r + b.r - TOL;
+  const OFFS = {}; for (let s = 2; s <= 6; s++) { OFFS[s] = []; for (let dx = -s; dx <= s; dx++) for (let dy = -s; dy <= s; dy++) if (Math.abs(Math.hypot(dx, dy) - s) < TOL) OFFS[s].push([dx, dy]); }
+  const rng = seed => () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  const MACHINES = ['clock', 'fan', 'lamp'];
+  function generate(lv) {
+    const nT0 = lv < 3 ? 1 : lv < 9 ? 2 : 3, chain0 = Math.min(4, 1 + Math.ceil(lv / 3));
+    for (let tries = 0; tries < 6000; tries++) {
+      const rnd = rng(lv * 7717 + tries * 13), pick = a => a[Math.floor(rnd() * a.length)];
+      const chain = Math.max(1, chain0 - Math.floor(tries / 1000)), nT = tries > 4500 ? Math.max(1, nT0 - 1) : nT0;
+      const motor = { x: 2 + Math.floor(rnd() * 3), y: 9 + Math.floor(rnd() * 4), r: 2, kind: 'motor', fixed: 1 };
+      const sol = [motor], targets = [], inv = [];
+      const inside = g => g.x - g.r >= 0 && g.y - g.r >= 0 && g.x + g.r <= GC - 1 && g.y + g.r <= GR - 1;
+      const fits = (g, parent) => inside(g) && sol.every(o => o === parent ? meshes(g, o) : (!overlaps(g, o) && !meshes(g, o) && Math.hypot(g.x - o.x, g.y - o.y) > g.r + o.r + .35));
+      let ok = true;
+      for (let k = 0; k < nT && ok; k++) {
+        let prev = k === 0 ? motor : pick(sol.filter(g => g.kind !== 'target'));
+        const len = chain + (rnd() < .5 ? 0 : 1);
+        for (let i = 0; i <= len && ok; i++) {
+          const last = i === len, r = last ? 1 + Math.floor(rnd() * 2) : 1 + Math.floor(rnd() * 3), cands = [];
+          for (const [dx, dy] of OFFS[prev.r + r]) { const g = { x: prev.x + dx, y: prev.y + dy, r }; if (fits(g, prev)) cands.push(g); }
+          if (!cands.length) { ok = false; break; }
+          // prefer moving up and away from the engine
+          cands.sort((a, b) => (a.y - b.y) + (rnd() - .5) * 6);
+          const g = cands[Math.floor(rnd() * Math.min(3, cands.length))];
+          g.parent = prev;
+          if (last) { g.kind = 'target'; g.fixed = 1; g.m = MACHINES[(k + lv) % 3]; targets.push(g); } else { g.kind = 'gear'; inv.push(r); }
+          sol.push(g); prev = g;
+        }
+      }
+      if (!ok) continue;
+      // which way each target spins in the solution
+      const w = new Map([[motor, 1]]); for (const g of sol) if (g.parent) w.set(g, -w.get(g.parent) * g.parent.r / g.r);
+      if (lv >= 5) for (const tg of targets) tg.dir = Math.sign(w.get(tg));
+      // a decoy gear or two and some bolts in the way
+      const extra = lv < 3 ? 0 : lv < 7 ? 1 : 2; for (let i = 0; i < extra; i++) inv.push(1 + Math.floor(rnd() * 3));
+      const bolts = [];
+      for (let i = 0; i < Math.min(6, Math.floor(lv / 2)); i++) { const b = { x: Math.floor(rnd() * GC), y: Math.floor(rnd() * GR), r: .45 }; if (sol.every(o => Math.hypot(b.x - o.x, b.y - o.y) > o.r + 1.2)) bolts.push(b); }
+      inv.sort((a, b) => a - b);
+      return { motor, targets, inv, bolts, sol: sol.filter(g => g.kind === 'gear').map(g => ({ x: g.x, y: g.y, r: g.r })), minMoves: sol.filter(g => g.kind === 'gear').length };
+    }
+  }
+
+  // ---------- drive train ----------
+  function drive(gears) {
+    // BFS from the engine; a conflict in speeds means the train jams
+    const all = gears, w = new Map(), par = new Map(); let jam = false;
+    const motor = all.find(g => g.kind === 'motor'); w.set(motor, 1); const q = [motor];
+    while (q.length) { const a = q.shift(); for (const b of all) { if (b === a || !meshes(a, b)) continue; const wb = -w.get(a) * a.r / b.r; if (!w.has(b)) { w.set(b, wb); par.set(b, a); q.push(b); } else if (Math.abs(w.get(b) - wb) > 1e-6) jam = true; } }
+    return { w, par, jam };
+  }
+
+  // ---------- art ----------
+  function gearSVG(r, metal) {
+    const n = TEETH(r), R = 46, rt = R - 6, pal = metal === 'copper' ? ['#ffd8b0', '#d87a3a', '#7a3410'] : metal === 'steel' ? ['#f4f8fc', '#9aa6b2', '#3a444e'] : ['#fff2b8', '#d8a43a', '#6a4a0a'];
+    const hb = rt * Math.PI / n * .58, ht = R * Math.PI / n * .3;
+    let teeth = ''; for (let i = 0; i < n; i++) { const a = i / n * 360; teeth += '<path d="M' + (50 - hb) + ' ' + (50 - rt + 1) + 'L' + (50 - ht) + ' ' + (50 - R) + 'L' + (50 + ht) + ' ' + (50 - R) + 'L' + (50 + hb) + ' ' + (50 - rt + 1) + 'Z" transform="rotate(' + a + ' 50 50)"/>'; }
+    const spokes = r === 1 ? '' : Array.from({ length: r === 2 ? 5 : 6 }, (_, i) => { const a = i / (r === 2 ? 5 : 6) * 360; return '<path d="M50 50L46 ' + (50 - rt + 6) + 'H54Z" transform="rotate(' + a + ' 50 50)"/>'; }).join('');
+    const holes = r === 1 ? '<circle cx="50" cy="50" r="' + (rt - 8) + '" fill="url(#body)"/>' :
+      Array.from({ length: r === 2 ? 5 : 6 }, (_, i) => { const a = (i + .5) / (r === 2 ? 5 : 6) * Math.PI * 2, d = rt * .55; return '<circle cx="' + (50 + Math.cos(a) * d) + '" cy="' + (50 + Math.sin(a) * d) + '" r="' + rt * (r === 2 ? .26 : .24) + '" fill="#1a1008" opacity=".9"/>'; }).join('');
+    return svgDoc('<defs><radialGradient id="body" cx="40%" cy="35%" r="75%"><stop offset="0" stop-color="' + pal[0] + '"/><stop offset=".55" stop-color="' + pal[1] + '"/><stop offset="1" stop-color="' + pal[2] + '"/></radialGradient>' +
+      '<linearGradient id="hub" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fff"/><stop offset=".5" stop-color="' + pal[1] + '"/><stop offset="1" stop-color="' + pal[2] + '"/></linearGradient></defs>' +
+      '<g fill="url(#body)" stroke="' + pal[2] + '" stroke-width=".8">' + teeth + '</g>' +
+      '<circle cx="50" cy="50" r="' + rt + '" fill="url(#body)" stroke="' + pal[2] + '" stroke-width="1.2"/>' + holes +
+      '<circle cx="50" cy="50" r="' + (rt - 3) + '" fill="none" stroke="' + pal[0] + '" stroke-width="1" opacity=".5"/>' +
+      '<g fill="url(#body)">' + spokes + '</g>' +
+      '<circle cx="50" cy="50" r="' + Math.max(7, 12 / r * 1.6) + '" fill="url(#hub)" stroke="' + pal[2] + '" stroke-width="1.4"/><circle cx="50" cy="50" r="3" fill="#1a1008"/>' +
+      Array.from({ length: 6 }, (_, i) => { const a = i / 6 * Math.PI * 2, d = Math.max(7, 12 / r * 1.6) + 3.5; return r > 1 ? '<circle cx="' + (50 + Math.cos(a) * d) + '" cy="' + (50 + Math.sin(a) * d) + '" r="1.4" fill="' + pal[0] + '"/>' : ''; }).join(''));
+  }
+  const CLOCK = svgDoc('<defs><radialGradient id="f" cx="45%" cy="40%" r="70%"><stop offset="0" stop-color="#fffaf0"/><stop offset="1" stop-color="#e8d8b8"/></radialGradient></defs>' +
+    '<circle cx="50" cy="50" r="40" fill="url(#f)" stroke="#6a4a0a" stroke-width="4"/>' + Array.from({ length: 12 }, (_, i) => '<rect x="49" y="13" width="2" height="' + (i % 3 ? 4 : 8) + '" fill="#3a2a1a" transform="rotate(' + i * 30 + ' 50 50)"/>').join('') +
+    '<text x="50" y="30" font-family="Georgia" font-size="10" text-anchor="middle" fill="#3a2a1a">XII</text>');
+  const BULB = svgDoc('<defs><radialGradient id="g" cx="45%" cy="35%" r="70%"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#c8d8e0" stop-opacity=".6"/></radialGradient></defs>' +
+    '<path d="M50 6Q76 6 76 34Q76 50 62 62V72H38V62Q24 50 24 34Q24 6 50 6Z" fill="url(#g)" stroke="#8a9aa4" stroke-width="2"/>' +
+    '<path d="M42 62L46 36L50 44L54 36L58 62" stroke="#a87a3a" stroke-width="2" fill="none"/>' +
+    '<rect x="36" y="72" width="28" height="18" rx="3" fill="#b8963a" stroke="#5a3a08" stroke-width="2"/><path d="M36 78h28M36 84h28" stroke="#5a3a08" stroke-width="1.6"/>');
+  let SPR = null;
+  const defs = { bulb: BULB, clock: CLOCK };
+  for (const r of [1, 2, 3]) for (const m of ['brass', 'copper', 'steel']) defs['g' + r + m] = gearSVG(r, m);
+  loadSprites(defs, 256).then(s => { SPR = s; art($('logo')); art($('winArt'), true); });
+
+  // ---------- state ----------
+  let W, H, DPR, U = 26, BX = 0, BY = 0, BG = null, P = null, placed = [], inv = [], phase = 'menu', t = 0, moves = 0, drag = null, winT = 0, state = { w: new Map(), par: new Map(), jam: false }, ang = new Map(), steam = [], lastJam = false;
+  const TRAY_H = () => Math.max(70, U * 2.6);
+  function resize() {
+    DPR = Math.min(devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight; canvas.width = W * DPR; canvas.height = H * DPR; ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    U = Math.min((W - 16) / GC, (H - 70 - 60 - 110) / GR, 46);
+    BX = (W - (GC - 1) * U) / 2; BY = 70 + U * .5;
+    BG = paintBG();
+  }
+  addEventListener('resize', resize);
+  const px = x => BX + x * U, py = y => BY + y * U;
+  const trayY = () => BY + (GR - 1) * U + U * .5 + TRAY_H() / 2 + 6;
+  // workshop wall: riveted iron plates, pipes and a pegboard
+  function paintBG() {
+    const c = document.createElement('canvas'); c.width = W * DPR; c.height = H * DPR; const g = c.getContext('2d'); g.scale(DPR, DPR);
+    const bg = g.createLinearGradient(0, 0, 0, H); bg.addColorStop(0, '#3a2a1a'); bg.addColorStop(1, '#140e08'); g.fillStyle = bg; g.fillRect(0, 0, W, H);
+    for (let y = 0; y < H; y += 120) for (let x = 0; x < W; x += 160) { g.strokeStyle = 'rgba(0,0,0,.4)'; g.lineWidth = 2; g.strokeRect(x + 1, y + 1, 158, 118); g.fillStyle = 'rgba(200,150,90,.18)'; for (const [a, b] of [[8, 8], [150, 8], [8, 110], [150, 110]]) { g.beginPath(); g.arc(x + a, y + b, 3, 0, 7); g.fill(); } }
+    // copper pipes along the sides
+    for (const x of [8, W - 8]) { const pg = g.createLinearGradient(x - 6, 0, x + 6, 0); pg.addColorStop(0, '#6a3410'); pg.addColorStop(.5, '#e89a5a'); pg.addColorStop(1, '#5a2a08'); g.fillStyle = pg; g.fillRect(x - 6, 0, 12, H); for (let y = 60; y < H; y += 140) { g.fillStyle = '#b8863a'; g.fillRect(x - 9, y, 18, 10); } }
+    // pegboard
+    const bw = (GC - 1) * U + U, bh = (GR - 1) * U + U, x0 = BX - U / 2, y0 = BY - U / 2;
+    g.fillStyle = 'rgba(0,0,0,.5)'; g.fillRect(x0 + 6, y0 + 8, bw, bh);
+    const wood = g.createLinearGradient(x0, y0, x0 + bw, y0 + bh); wood.addColorStop(0, '#5a3a1e'); wood.addColorStop(1, '#2e1c0c'); g.fillStyle = wood; g.fillRect(x0, y0, bw, bh);
+    g.strokeStyle = 'rgba(0,0,0,.3)'; for (let i = 0; i < bh / 6; i++) { g.beginPath(); g.moveTo(x0, y0 + i * 6); for (let x = 0; x <= bw; x += 24) g.lineTo(x0 + x, y0 + i * 6 + Math.sin(x * .04 + i) * 1.5); g.stroke(); }
+    g.strokeStyle = '#b8863a'; g.lineWidth = 3; g.strokeRect(x0 + 1.5, y0 + 1.5, bw - 3, bh - 3);
+    for (let y = 0; y < GR; y++) for (let x = 0; x < GC; x++) { g.fillStyle = 'rgba(0,0,0,.6)'; g.beginPath(); g.arc(px(x) + .8, py(y) + 1, U * .09, 0, 7); g.fill(); g.fillStyle = '#c89a4a'; g.beginPath(); g.arc(px(x), py(y), U * .07, 0, 7); g.fill(); }
+    // gear drawer
+    const ty = trayY(), th = TRAY_H(); const dg = g.createLinearGradient(0, ty - th / 2, 0, ty + th / 2); dg.addColorStop(0, '#4a2e14'); dg.addColorStop(1, '#2a180a');
+    g.fillStyle = dg; g.beginPath(); g.roundRect(14, ty - th / 2, W - 28 - 50, th, 10); g.fill(); g.strokeStyle = '#b8863a'; g.lineWidth = 2; g.stroke();
+    return c;
+  }
+
+  // ---------- flow ----------
+  const gearsNow = () => [P.motor, ...P.targets, ...placed];
+  function recompute() {
+    state = drive(gearsNow());
+    if (state.jam && !lastJam) audio.sfx(90, .3, 'square', .06, 60);
+    lastJam = state.jam; hud();
+    const ok = !state.jam && P.targets.every(tg => state.w.has(tg) && (!tg.dir || Math.sign(state.w.get(tg)) === tg.dir));
+    if (ok && phase === 'play') { phase = 'won'; winT = 0; [392, 523, 659, 784, 1046].forEach((f, k) => setTimeout(() => audio.sfx(f, .3, 'triangle', .06), k * 110)); }
+  }
+  function hud() {
+    $('level').textContent = 'MECHANISM ' + level;
+    const on = P.targets.filter(tg => state.w.has(tg) && !state.jam && (!tg.dir || Math.sign(state.w.get(tg)) === tg.dir)).length;
+    $('sub').textContent = state.jam ? 'Jammed! Two gears fight each other' : 'machines running ' + on + ' / ' + P.targets.length;
+  }
+  function start() {
+    if (!SPR) return;
+    P = generate(level); placed = []; inv = P.inv.slice(); moves = 0; winT = 0; drag = null; steam = []; ang = new Map(); lastJam = false;
+    phase = 'play'; resize(); recompute(); audio.start();
+    for (const o of ['menu', 'win']) $(o).classList.add('hidden');
+  }
+  $('startBtn').onclick = start;
+  $('nextBtn').onclick = () => { level++; try { localStorage.setItem(KEY, level); } catch (e) {} start(); };
+  $('reset').onclick = () => { if (phase !== 'play') return; inv = P.inv.slice(); placed = []; recompute(); };
+  addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && phase === 'menu') { e.preventDefault(); start(); } });
+
+  // ---------- input ----------
+  function invSlots() { const sizes = [1, 2, 3].filter(r => inv.includes(r)), w = W - 28 - 50, out = []; sizes.forEach((r, i) => out.push({ r, x: 14 + w * (i + .5) / sizes.length, y: trayY(), n: inv.filter(q => q === r).length })); return out; }
+  function canPlace(g) {
+    if (g.x - g.r < -.01 || g.y - g.r < -.01 || g.x + g.r > GC - .99 || g.y + g.r > GR - .99) return false;
+    for (const o of gearsNow()) if (o !== g && overlaps(g, o)) return false;
+    for (const b of P.bolts) if (Math.hypot(g.x - b.x, g.y - b.y) < g.r + b.r - .05) return false;
+    return true;
+  }
+  canvas.addEventListener('pointerdown', e => {
+    if (phase !== 'play') return;
+    for (const s of invSlots()) if (Math.hypot(e.clientX - s.x, e.clientY - s.y) < Math.max(U * 1.1, 28)) { inv.splice(inv.indexOf(s.r), 1); drag = { r: s.r, x: e.clientX, y: e.clientY, from: null }; audio.sfx(600, .05, 'triangle', .04); return; }
+    for (let i = placed.length - 1; i >= 0; i--) { const g = placed[i]; if (Math.hypot(e.clientX - px(g.x), e.clientY - py(g.y)) < g.r * U) { placed.splice(i, 1); drag = { r: g.r, x: e.clientX, y: e.clientY, from: g }; recompute(); audio.sfx(500, .05, 'triangle', .04); return; } }
+  });
+  addEventListener('pointermove', e => { if (drag) { drag.x = e.clientX; drag.y = e.clientY; } });
+  const dropSpot = () => { if (!drag) return null; const x = Math.round((drag.x - BX) / U), y = Math.round((drag.y - BY) / U), g = { x, y, r: drag.r, kind: 'gear' }; return canPlace(g) ? g : null; };
+  addEventListener('pointerup', () => {
+    if (!drag) return;
+    const g = dropSpot();
+    if (g) { placed.push(g); if (!drag.from || drag.from.x !== g.x || drag.from.y !== g.y) moves++; audio.sfx(220, .08, 'square', .05, 160); setTimeout(() => audio.sfx(330, .05, 'triangle', .04), 60); }
+    else inv.push(drag.r);
+    inv.sort((a, b) => a - b); drag = null; recompute();
+  });
+  window.__gw = { gen: generate, level: () => level, phase: () => phase, puzzle: () => P, slots: () => invSlots(), peg: (x, y) => ({ x: px(x), y: py(y) }), jam: () => state.jam };
+
+  // ---------- update / render ----------
+  function update(dt) {
+    t += dt;
+    for (const s of steam) { s.x += s.vx * dt; s.y += s.vy * dt; s.r += dt * 14; s.life -= dt; } steam = steam.filter(s => s.life > 0);
+    if (!P) return;
+    // engine angle drives everything through the meshing tree
+    const mA = (ang.get(P.motor) || 0) + (state.jam ? 0 : dt * 1.3); ang.set(P.motor, mA);
+    if (Math.random() < dt * 4) steam.push({ x: px(P.motor.x) - U * 1.6, y: py(P.motor.y) - U * 2.2, vx: -10 + Math.random() * 20, vy: -30 - Math.random() * 20, r: 6, life: 1.4 });
+    if (!state.jam) {
+      const order = [...state.par.keys()];
+      for (const g of order) { const p = state.par.get(g), phi = Math.atan2(g.y - p.y, g.x - p.x); ang.set(g, phi + Math.PI - (p.r / g.r) * ((ang.get(p) || 0) - phi) + Math.PI / TEETH(g.r)); }
+    }
+    if (phase === 'won') { winT += dt; if (winT > 1.6 && winT - dt <= 1.6) { const st = moves <= P.minMoves ? 3 : moves <= P.minMoves + 3 ? 2 : 1; $('stars').innerHTML = '★'.repeat(st) + '<i>' + '★'.repeat(3 - st) + '</i>'; $('winLevel').textContent = level; $('winMoves').textContent = moves; $('win').classList.remove('hidden'); } }
+  }
+  function drawGear(g, metal, a, alpha = 1, tint) {
+    const R = g.r * U + U * .16, X = px(g.x), Y = py(g.y), jamShake = state.jam && state.w.has(g) ? Math.sin(t * 50) * 1.5 : 0;
+    ctx.save(); ctx.globalAlpha = alpha; ctx.translate(X + jamShake, Y);
+    ctx.save(); ctx.rotate(a || 0); ctx.shadowColor = 'rgba(0,0,0,.6)'; ctx.shadowBlur = 8; ctx.shadowOffsetX = 3; ctx.shadowOffsetY = 5;
+    ctx.drawImage(SPR['g' + g.r + metal], -R * 1.087, -R * 1.087, R * 2.174, R * 2.174); ctx.restore();
+    if (tint) { ctx.fillStyle = tint; ctx.beginPath(); ctx.arc(0, 0, R, 0, 7); ctx.fill(); }
+    ctx.restore();
+  }
+  function drawMachine(tg) {
+    const X = px(tg.x), Y = py(tg.y), on = state.w.has(tg) && !state.jam && (!tg.dir || Math.sign(state.w.get(tg)) === tg.dir), a = ang.get(tg) || 0, s = tg.r * U * 1.25;
+    if (tg.m === 'clock') {
+      ctx.drawImage(SPR.clock, X - s / 2, Y - s / 2, s, s);
+      ctx.strokeStyle = '#2a1a0a'; ctx.lineCap = 'round';
+      ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(X, Y); ctx.lineTo(X + Math.cos(a * .2 - 1.5) * s * .22, Y + Math.sin(a * .2 - 1.5) * s * .22); ctx.stroke();
+      ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(X, Y); ctx.lineTo(X + Math.cos(a - 1.5) * s * .33, Y + Math.sin(a - 1.5) * s * .33); ctx.stroke();
+      ctx.fillStyle = '#c8962a'; ctx.beginPath(); ctx.arc(X, Y, 3, 0, 7); ctx.fill();
+    } else if (tg.m === 'fan') {
+      ctx.save(); ctx.translate(X, Y); ctx.rotate(a * 2.5);
+      for (let i = 0; i < 4; i++) { ctx.rotate(Math.PI / 2); const fg = ctx.createLinearGradient(0, 0, s * .5, 0); fg.addColorStop(0, '#e8eef4'); fg.addColorStop(1, '#8a9aa8'); ctx.fillStyle = fg; ctx.beginPath(); ctx.ellipse(s * .26, 0, s * .26, s * .1, .25, 0, 7); ctx.fill(); ctx.strokeStyle = '#3a444e'; ctx.lineWidth = 1; ctx.stroke(); }
+      ctx.fillStyle = '#c8962a'; ctx.beginPath(); ctx.arc(0, 0, s * .08, 0, 7); ctx.fill(); ctx.restore();
+    } else {
+      if (on) { const gl = ctx.createRadialGradient(X, Y - s * .2, 0, X, Y - s * .2, s * 1.6); gl.addColorStop(0, 'rgba(255,220,120,.75)'); gl.addColorStop(1, 'rgba(255,220,120,0)'); ctx.fillStyle = gl; ctx.fillRect(X - s * 2, Y - s * 2, s * 4, s * 4); }
+      ctx.drawImage(SPR.bulb, X - s * .4, Y - s * .62, s * .8, s * .8);
+      if (on) { ctx.fillStyle = 'rgba(255,240,170,.85)'; ctx.beginPath(); ctx.arc(X, Y - s * .32, s * .12, 0, 7); ctx.fill(); }
+    }
+    if (tg.dir) {
+      // the required direction, as an arrow around the rim
+      const R = tg.r * U + U * .45; ctx.strokeStyle = on ? '#6ad87a' : '#f6d48a'; ctx.lineWidth = 2.5; ctx.beginPath();
+      const a0 = -2.2, a1 = -.9; ctx.arc(X, Y, R, a0, a1); ctx.stroke();
+      const ea = tg.dir > 0 ? a1 : a0, ex = X + Math.cos(ea) * R, ey = Y + Math.sin(ea) * R, ta = ea + (tg.dir > 0 ? Math.PI / 2 : -Math.PI / 2);
+      ctx.fillStyle = ctx.strokeStyle; ctx.beginPath(); ctx.moveTo(ex + Math.cos(ta) * 7, ey + Math.sin(ta) * 7); ctx.lineTo(ex + Math.cos(ta + 2.5) * 7, ey + Math.sin(ta + 2.5) * 7); ctx.lineTo(ex + Math.cos(ta - 2.5) * 7, ey + Math.sin(ta - 2.5) * 7); ctx.fill();
+    }
+    if (on) { ctx.fillStyle = '#6ad87a'; ctx.beginPath(); ctx.arc(X + tg.r * U * .75, Y - tg.r * U * .75, 5, 0, 7); ctx.fill(); }
+  }
+  function render() {
+    if (BG) ctx.drawImage(BG, 0, 0, W, H);
+    if (!SPR || !P || phase === 'menu') return;
+    for (const b of P.bolts) { const X = px(b.x), Y = py(b.y), r = U * .45; const bg = ctx.createRadialGradient(X - r * .3, Y - r * .3, 1, X, Y, r); bg.addColorStop(0, '#e8eef4'); bg.addColorStop(1, '#3a444e'); ctx.fillStyle = 'rgba(0,0,0,.5)'; ctx.beginPath(); ctx.arc(X + 2, Y + 3, r, 0, 7); ctx.fill(); ctx.fillStyle = bg; ctx.beginPath(); for (let k = 0; k < 6; k++) { const a = k / 6 * Math.PI * 2; ctx.lineTo(X + Math.cos(a) * r, Y + Math.sin(a) * r); } ctx.fill(); ctx.strokeStyle = '#2a343e'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(X - r * .5, Y); ctx.lineTo(X + r * .5, Y); ctx.stroke(); }
+    // steam engine body behind the motor gear
+    const mx = px(P.motor.x), my = py(P.motor.y), eg = ctx.createLinearGradient(mx - U * 2.6, 0, mx - U * .6, 0); eg.addColorStop(0, '#3a2210'); eg.addColorStop(.5, '#b8762a'); eg.addColorStop(1, '#3a2210');
+    ctx.fillStyle = eg; ctx.beginPath(); ctx.roundRect(mx - U * 2.4, my - U * 2.2, U * 1.6, U * 2.6, 8); ctx.fill(); ctx.strokeStyle = '#f6d48a'; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.fillStyle = '#2a1a0a'; ctx.beginPath(); ctx.arc(mx - U * 1.6, my - U * 1.3, U * .4, 0, 7); ctx.fill(); ctx.strokeStyle = '#d8b06a'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(mx - U * 1.6, my - U * 1.3); const na = -2.4 + Math.sin(t * 3) * .3; ctx.lineTo(mx - U * 1.6 + Math.cos(na) * U * .32, my - U * 1.3 + Math.sin(na) * U * .32); ctx.stroke();
+    for (const s of steam) { ctx.fillStyle = 'rgba(230,230,230,' + s.life * .25 + ')'; ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, 7); ctx.fill(); }
+    drawGear(P.motor, 'steel', ang.get(P.motor));
+    for (const tg of P.targets) { drawGear(tg, 'copper', state.w.has(tg) && !state.jam ? ang.get(tg) : 0); drawMachine(tg); }
+    for (const g of placed) drawGear(g, 'brass', state.w.has(g) && !state.jam ? ang.get(g) : (g.a0 || 0), 1, state.jam && state.w.has(g) ? 'rgba(255,60,40,.25)' : null);
+    // drawer
+    for (const s of invSlots()) { const R = s.r * U * .5 + U * .16; ctx.save(); ctx.translate(s.x, s.y); ctx.rotate(t * .2); ctx.drawImage(SPR['g' + s.r + 'brass'], -R * 1.087, -R * 1.087, R * 2.174, R * 2.174); ctx.restore(); ctx.fillStyle = '#f6d48a'; ctx.font = '700 15px Georgia'; ctx.textAlign = 'left'; ctx.fillText('×' + s.n, s.x + R + 4, s.y + 5); }
+    if (drag) {
+      const g = dropSpot();
+      if (g) { ctx.strokeStyle = 'rgba(106,216,122,.8)'; ctx.setLineDash([5, 4]); ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(px(g.x), py(g.y), g.r * U, 0, 7); ctx.stroke(); ctx.setLineDash([]); }
+      const R = drag.r * U + U * .16; ctx.save(); ctx.globalAlpha = .85; ctx.translate(drag.x, drag.y); ctx.drawImage(SPR['g' + drag.r + 'brass'], -R * 1.087, -R * 1.087, R * 2.174, R * 2.174); ctx.restore();
+    }
+    if (phase === 'won') { ctx.fillStyle = 'rgba(255,220,140,' + Math.min(.18, winT * .15) + ')'; ctx.fillRect(0, 0, W, H); }
+  }
+  function art(cv, win) {
+    const g = cv.getContext('2d'), glow = g.createRadialGradient(230, 230, 20, 230, 230, 230); glow.addColorStop(0, 'rgba(200,140,60,.45)'); glow.addColorStop(1, 'rgba(200,140,60,0)'); g.fillStyle = glow; g.fillRect(0, 0, 460, 460);
+    const put = (k, x, y, R, a) => { g.save(); g.translate(x, y); g.rotate(a); g.drawImage(SPR[k], -R * 1.087, -R * 1.087, R * 2.174, R * 2.174); g.restore(); };
+    put('g3brass', 170, 250, 120, .1); put('g2copper', 330, 150, 80, .3); put('g1steel', 345, 300, 40, .2);
+    if (win) { g.drawImage(SPR.bulb, 300, 60, 120, 120); } else g.drawImage(SPR.clock, 290, 100, 100, 100);
+  }
+
+  resize();
+  let last = performance.now();
+  (function loop(now) {
+    const dt = Math.max(0, Math.min(0.033, (now - last) / 1000)); last = now;
+    update(dt); render(); requestAnimationFrame(loop);
+  })(last);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#2a1a10">
+<title>Tilt Maze</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #2a1a10;
+    font-family: "Avenir Next", "Trebuchet MS", "Segoe UI", sans-serif; color: #f4e2c4;
+    touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+  canvas { display: block; width: 100%; height: 100%; }
+  .hud { position: fixed; top: max(10px, env(safe-area-inset-top)); left: 0; right: 0; text-align: center; pointer-events: none; }
+  .hud b { font-size: 24px; font-weight: 800; letter-spacing: 4px; color: #ffe2a8; text-shadow: 0 2px 0 #1a0e06; }
+  .hud div { font-size: 14px; font-weight: 600; color: #d8b88a; margin-top: 2px; letter-spacing: 1px; }
+  .tools { position: fixed; bottom: max(14px, env(safe-area-inset-bottom)); left: 10px; right: 64px; display: flex; justify-content: center; }
+  .tools button { padding: 11px 20px; border-radius: 10px; border: 2px solid #e8b878; background: linear-gradient(#a8743a, #6a4420); color: #fff2d8; font: inherit; font-size: 15px; font-weight: 700; cursor: pointer; box-shadow: 0 4px 0 #3a2210; }
+  .overlay { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 24px; text-align: center;
+    background: radial-gradient(ellipse at 50% 40%, #5a3a20f2, #1a0e06f6); transition: opacity .3s; }
+  .overlay.hidden { opacity: 0; pointer-events: none; }
+  .overlay canvas { width: 220px; height: 220px; }
+  h1 { font-size: clamp(38px, 11vw, 60px); font-weight: 900; letter-spacing: 5px; color: #ffe2a8; line-height: 1.05; text-shadow: 0 3px 0 #8a5a24, 0 8px 18px #000a; }
+  p { max-width: 310px; font-size: 15px; line-height: 1.6; color: #d8b88a; }
+  .stat { font-size: 16px; color: #d8b88a; font-weight: 600; } .stat b { color: #ffe2a8; }
+  .stars { font-size: 42px; letter-spacing: 6px; color: #ffd23a; text-shadow: 0 3px 0 #8a5a14; } .stars i { color: #5a4028; text-shadow: none; font-style: normal; }
+  .btn { border: 3px solid #ffe2a8; background: linear-gradient(#d89a4a, #9a6024); color: #fff6e4; font: inherit; font-size: 18px; font-weight: 800; letter-spacing: 5px; padding: 14px 44px; border-radius: 12px; cursor: pointer; box-shadow: 0 5px 0 #4a2a10, 0 10px 22px #0008; }
+  .btn:active { transform: translateY(4px); box-shadow: 0 1px 0 #4a2a10; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud"><b id="level">MAZE 1</b><div id="sub">Drag to tilt the board</div></div>
+<div class="tools"><button id="reset">⟳ Restart</button></div>
+
+<div class="overlay" id="menu">
+  <canvas id="logo" width="440" height="440"></canvas>
+  <h1>TILT<br>MAZE</h1>
+  <p><b>Roll the steel ball to the golden hole.</b> Drag anywhere to tilt the wooden labyrinth (or tilt your phone, or use the arrow keys). Mind the holes — the ball drops right through!</p>
+  <div class="stat" id="bestMenu"></div>
+  <button class="btn" id="startBtn">ROLL</button>
+</div>
+<div class="overlay hidden" id="win">
+  <canvas id="winArt" width="440" height="440"></canvas>
+  <h1>FINISH!</h1>
+  <div class="stars" id="stars">★★★</div>
+  <div class="stat">Maze <b id="winLevel">1</b> · <b id="winTime">0</b>s · falls <b id="winFalls">0</b></div>
+  <button class="btn" id="nextBtn">NEXT</button>
+</div>
+
+<script>
+/*AUDIO-ENGINE-START*/
+// ---------- audio: procedural background music + sound effects ----------
+// Every note is synthesized with the Web Audio API at runtime, so the music
+// needs no files, works offline and carries no copyright.
+const GameAudio = (cfg) => {
+  let ctx = null, master = null, musicBus = null, sfxBus = null;
+  let timer = null, step = 0, nextT = 0, playing = false;
+  let musicOn = true;
+  try { musicOn = localStorage.getItem('music_off') !== '1'; } catch (e) {}
+
+  const SCALES = {
+    major: [0, 2, 4, 5, 7, 9, 11], minor: [0, 2, 3, 5, 7, 8, 10],
+    dorian: [0, 2, 3, 5, 7, 9, 10], lydian: [0, 2, 4, 6, 7, 9, 11],
+    pentaMajor: [0, 2, 4, 7, 9], pentaMinor: [0, 3, 5, 7, 10],
+    japanese: [0, 1, 5, 7, 8], phrygian: [0, 1, 3, 5, 7, 8, 10]
+  };
+  const scale = SCALES[cfg.scale] || SCALES.major;
+  const root = cfg.root || 57;
+  const bpm = cfg.bpm || 110;
+  const prog = cfg.prog || [0, 5, 3, 4];
+  const sixteenth = 60 / bpm / 4;
+
+  // deterministic random so each game always plays "its" tune
+  let seed = cfg.seed || 1;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
+
+  const deg = (d, oct = 0) => {
+    const n = scale.length;
+    const o = Math.floor(d / n);
+    return root + scale[((d % n) + n) % n] + 12 * (o + oct);
+  };
+  const hz = m => 440 * Math.pow(2, (m - 69) / 12);
+
+  // melody: two 2-bar phrases (A, B) arranged A A B A
+  function phrase() {
+    const notes = [];
+    let d = 2 + Math.floor(rnd() * 3);
+    for (let i = 0; i < 32; i++) {
+      const strong = i % 4 === 0;
+      if (rnd() < (strong ? 0.85 : (cfg.leadDensity || 0.35))) {
+        d += Math.round((rnd() - 0.5) * 4);
+        d = Math.max(0, Math.min(scale.length * 2, d));
+        const len = strong && rnd() < 0.5 ? 2 : 1;
+        notes.push({ i, d, len });
+      }
+    }
+    return notes;
+  }
+  const A = phrase(), B = phrase();
+  const song = [A, A, B, A];
+
+  function init() {
+    if (ctx) return;
+    try {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      master = ctx.createGain(); master.gain.value = 0.9; master.connect(ctx.destination);
+      musicBus = ctx.createGain(); musicBus.gain.value = cfg.volume || 0.16; musicBus.connect(master);
+      sfxBus = ctx.createGain(); sfxBus.gain.value = 1; sfxBus.connect(master);
+    } catch (e) { ctx = null; }
+  }
+
+  function voice(t, freq, dur, type, vol, opts = {}) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, t);
+    if (opts.detune) o.detune.value = opts.detune;
+    let node = o;
+    if (opts.cutoff) {
+      const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = opts.cutoff; f.Q.value = opts.q || 1;
+      o.connect(f); node = f;
+    }
+    const a = opts.attack || 0.008;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(vol, t + a);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    node.connect(g); g.connect(opts.bus || musicBus);
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+
+  let noiseBuf = null;
+  function noise(t, dur, vol, hp) {
+    if (!noiseBuf) {
+      noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 0.5, ctx.sampleRate);
+      const d = noiseBuf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    }
+    const s = ctx.createBufferSource(); s.buffer = noiseBuf;
+    const f = ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = hp;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.connect(f); f.connect(g); g.connect(musicBus);
+    s.start(t); s.stop(t + dur + 0.02);
+  }
+
+  function kick(t) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.setValueAtTime(140, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+    g.gain.setValueAtTime(0.9, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+    o.connect(g); g.connect(musicBus); o.start(t); o.stop(t + 0.25);
+  }
+
+  function playStep(s, t) {
+    const bar = Math.floor(s / 16);
+    const i16 = s % 16;
+    const chordDeg = prog[bar % prog.length];
+    const w = cfg.waves || {};
+    // bass
+    const bassPat = cfg.bassPattern || [0, 8];
+    if (bassPat.includes(i16)) voice(t, hz(deg(chordDeg, -2)), sixteenth * 3.5, w.bass || 'triangle', 0.5, { cutoff: 600 });
+    // pad (chord) at bar start
+    if (cfg.pad && i16 === 0) {
+      for (const k of [0, 2, 4]) voice(t, hz(deg(chordDeg + k, -1)), sixteenth * 15, w.pad || 'sine', 0.12, { attack: 0.3, cutoff: 1400, detune: k * 3 });
+    }
+    // arpeggio
+    if (cfg.arp && i16 % (cfg.arpEvery || 2) === 0) {
+      const k = [0, 2, 4, 2][(i16 / (cfg.arpEvery || 2)) % 4];
+      voice(t, hz(deg(chordDeg + k, cfg.arpOct || 0)), sixteenth * 1.6, w.arp || 'square', 0.1, { cutoff: cfg.arpCutoff || 2200 });
+    }
+    // lead melody
+    const ph = song[Math.floor(bar / 2) % song.length];
+    const pi = (bar % 2) * 16 + i16;
+    for (const n of ph) if (n.i === pi) {
+      voice(t, hz(deg(n.d, cfg.leadOct || 0)), sixteenth * (n.len * 2 + 0.5), w.lead || 'triangle', 0.22, { cutoff: cfg.leadCutoff || 3000 });
+    }
+    // drums
+    if (cfg.drums) {
+      if (i16 % 8 === 0 || (cfg.drums === 'busy' && i16 === 10)) kick(t);
+      if (i16 % 8 === 4) noise(t, 0.14, 0.35, 1500);
+      if (i16 % 2 === 0) noise(t, 0.04, cfg.drums === 'soft' ? 0.06 : 0.12, 7000);
+    }
+  }
+
+  function scheduler() {
+    if (!ctx || !playing) return;
+    while (nextT < ctx.currentTime + 0.15) {
+      playStep(step, nextT);
+      nextT += sixteenth * (cfg.swing && step % 2 === 0 ? 1 + cfg.swing : cfg.swing ? 1 - cfg.swing : 1);
+      step++;
+    }
+  }
+
+  function startMusic() {
+    if (!ctx || playing || !musicOn) return;
+    playing = true;
+    musicBus.gain.cancelScheduledValues(ctx.currentTime);
+    musicBus.gain.setValueAtTime(0.0001, ctx.currentTime);
+    musicBus.gain.linearRampToValueAtTime(cfg.volume || 0.16, ctx.currentTime + 1.2);
+    nextT = ctx.currentTime + 0.05;
+    timer = setInterval(scheduler, 40);
+  }
+  function stopMusic() {
+    playing = false;
+    if (timer) clearInterval(timer);
+    timer = null;
+  }
+
+  // mute button
+  const btn = document.createElement('button');
+  btn.setAttribute('aria-label', 'Toggle music');
+  btn.style.cssText = 'position:fixed;z-index:50;right:max(14px,env(safe-area-inset-right));bottom:max(14px,env(safe-area-inset-bottom));' +
+    'width:42px;height:42px;border-radius:50%;border:none;cursor:pointer;font-size:20px;line-height:42px;padding:0;' +
+    'background:' + (cfg.btnBg || 'rgba(0,0,0,.35)') + ';color:' + (cfg.btnColor || '#fff') + ';backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);';
+  const paint = () => { btn.textContent = musicOn ? '♪' : '✕'; btn.style.opacity = musicOn ? '1' : '.6'; };
+  paint();
+  const toggle = e => {
+    e.stopPropagation(); e.preventDefault();
+    musicOn = !musicOn;
+    try { localStorage.setItem('music_off', musicOn ? '0' : '1'); } catch (err) {}
+    init();
+    if (ctx && ctx.state === 'suspended') ctx.resume();
+    if (musicOn) startMusic(); else stopMusic();
+    paint();
+  };
+  btn.addEventListener('pointerdown', e => e.stopPropagation());
+  btn.addEventListener('pointerup', e => e.stopPropagation());
+  btn.addEventListener('click', toggle);
+  document.addEventListener('DOMContentLoaded', () => document.body.appendChild(btn));
+  if (document.body) document.body.appendChild(btn);
+
+  document.addEventListener('visibilitychange', () => {
+    if (!ctx) return;
+    if (document.hidden) ctx.suspend(); else ctx.resume();
+  });
+
+  return {
+    // call from a user gesture (start button) — browsers only allow audio after one
+    start() {
+      init();
+      if (!ctx) return;
+      if (ctx.state === 'suspended') ctx.resume();
+      startMusic();
+    },
+    sfx(freq, dur, type = 'sine', vol = 0.07, to = 0) {
+      init();
+      if (!ctx) return;
+      try {
+        const t = ctx.currentTime;
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.type = type; o.frequency.setValueAtTime(freq, t);
+        if (to) o.frequency.exponentialRampToValueAtTime(Math.max(30, to), t + dur);
+        g.gain.setValueAtTime(vol, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+        o.connect(g); g.connect(sfxBus);
+        o.start(t); o.stop(t + dur + 0.02);
+      } catch (e) {}
+    }
+  };
+};
+/*AUDIO-ENGINE-END*/
+/*SPRITES-START*/
+// ---------- sprites: detailed SVG artwork rasterised once into canvases ----------
+// Each piece is authored as an SVG (gradients, highlights, shadows, glow) and
+// drawn into an offscreen canvas at load time, so the game loop just blits images.
+const loadSprites = (defs, px = 160) => Promise.all(Object.entries(defs).map(([name, svg]) => new Promise(done => {
+  const img = new Image();
+  const finish = ok => {
+    const c = document.createElement('canvas');
+    const w = Array.isArray(px) ? px[0] : px, h = Array.isArray(px) ? px[1] : px;
+    c.width = w; c.height = h;
+    if (ok) c.getContext('2d').drawImage(img, 0, 0, w, h);
+    done([name, c]);
+  };
+  img.onload = () => finish(true);
+  img.onerror = () => finish(false);
+  img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+}))).then(entries => Object.fromEntries(entries));
+
+// small helpers for writing SVG
+const svgDoc = (body, vb = '0 0 100 100') => '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + vb + '">' + body + '</svg>';
+const shade = (hex, amt) => {
+  const n = parseInt(hex.slice(1), 16);
+  const f = v => Math.max(0, Math.min(255, Math.round(amt < 0 ? v * (1 + amt) : v + (255 - v) * amt)));
+  return '#' + [n >> 16, (n >> 8) & 255, n & 255].map(f).map(v => v.toString(16).padStart(2, '0')).join('');
+};
+/*SPRITES-END*/
+/*INK-START*/
+// ---------- ink: freehand strokes that become solid walls ----------
+// A stroke is a list of points; consecutive points form segments that circles bounce off.
+const Ink = {
+  // append a point only once the finger has moved far enough (keeps strokes light)
+  add(stroke, x, y, minD = 6) {
+    const p = stroke[stroke.length - 1];
+    if (!p || Math.hypot(x - p.x, y - p.y) >= minD) { stroke.push({ x, y }); return true; }
+    return false;
+  },
+  length(stroke) { let L = 0; for (let i = 1; i < stroke.length; i++) L += Math.hypot(stroke[i].x - stroke[i - 1].x, stroke[i].y - stroke[i - 1].y); return L; },
+  segments(strokes) {
+    const out = [];
+    for (const s of strokes) for (let i = 1; i < s.length; i++) out.push({ ax: s[i - 1].x, ay: s[i - 1].y, bx: s[i].x, by: s[i].y });
+    return out;
+  },
+  closest(px, py, ax, ay, bx, by) {
+    const dx = bx - ax, dy = by - ay, L = dx * dx + dy * dy;
+    const k = L ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / L)) : 0;
+    const x = ax + dx * k, y = ay + dy * k;
+    return { x, y, d: Math.hypot(px - x, py - y) };
+  },
+  // push a circle out of every segment it overlaps; reflect its velocity with some bounce and friction
+  collide(b, segs, r, bounce = 0.3, friction = 0.995, thick = 3) {
+    let hit = false;
+    for (const s of segs) {
+      const c = Ink.closest(b.x, b.y, s.ax, s.ay, s.bx, s.by), min = r + thick;
+      if (c.d < min) {
+        let nx = b.x - c.x, ny = b.y - c.y, d = c.d;
+        if (d < 1e-6) { nx = -(s.by - s.ay); ny = s.bx - s.ax; d = Math.hypot(nx, ny) || 1; }
+        nx /= d; ny /= d;
+        b.x = c.x + nx * min; b.y = c.y + ny * min;
+        const vn = b.vx * nx + b.vy * ny;
+        if (vn < 0) { b.vx -= (1 + bounce) * vn * nx; b.vy -= (1 + bounce) * vn * ny; }
+        b.vx *= friction; b.vy *= friction;
+        hit = true;
+      }
+    }
+    return hit;
+  },
+  // does segment p1-p2 cross segment p3-p4?
+  cross(p1, p2, p3, p4) {
+    const d = (a, b, c) => (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+    const d1 = d(p3, p4, p1), d2 = d(p3, p4, p2), d3 = d(p1, p2, p3), d4 = d(p1, p2, p4);
+    return ((d1 > 0) !== (d2 > 0)) && ((d3 > 0) !== (d4 > 0));
+  },
+  // a smooth, tapered pen line
+  draw(ctx, stroke, color, width, glow) {
+    if (stroke.length < 2) return;
+    ctx.save(); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    if (glow) { ctx.shadowColor = glow; ctx.shadowBlur = 12; }
+    ctx.strokeStyle = color; ctx.lineWidth = width;
+    ctx.beginPath(); ctx.moveTo(stroke[0].x, stroke[0].y);
+    for (let i = 1; i < stroke.length - 1; i++) { const mx = (stroke[i].x + stroke[i + 1].x) / 2, my = (stroke[i].y + stroke[i + 1].y) / 2; ctx.quadraticCurveTo(stroke[i].x, stroke[i].y, mx, my); }
+    const l = stroke[stroke.length - 1]; ctx.lineTo(l.x, l.y); ctx.stroke();
+    ctx.restore();
+  }
+};
+/*INK-END*/
+(() => {
+  const audio = GameAudio({
+    bpm: 96, scale: 'dorian', root: 55, prog: [0, 3, 4, 3], seed: 703,
+    waves: { lead: 'triangle', bass: 'sine', arp: 'sine', pad: 'triangle' },
+    pad: true, arp: true, arpEvery: 1, arpOct: 2, arpCutoff: 2400, leadOct: 1, leadDensity: 0.3, drums: 'soft', bassPattern: [0, 6, 10], swing: 0.14, volume: 0.17,
+    btnBg: 'rgba(255,226,168,.2)', btnColor: '#ffe2a8'
+  });
+  const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+  const $ = id => document.getElementById(id);
+  const KEY = 'tilt_maze_level';
+  let level = 1; try { level = +localStorage.getItem(KEY) || 1; } catch (e) {}
+  $('bestMenu').innerHTML = level > 1 ? 'Continue from maze <b>' + level + '</b>' : '';
+
+  // ---------- maze generator (seeded) ----------
+  const rng = seed => () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  const CELL = 10, BR = 2.3, HOLE = 3.3, WT = 1.4;
+  function generate(lv) {
+    const rnd = rng(lv * 3571 + 17), C = Math.min(7, 3 + Math.floor((lv + 1) / 2)), R = Math.min(10, C + 1 + Math.floor(lv / 3));
+    // walls[y][x] = [N, E, S, W]
+    const walls = Array.from({ length: R }, () => Array.from({ length: C }, () => [1, 1, 1, 1])), seen = Array.from({ length: R }, () => Array(C).fill(false));
+    const D = [[0, -1, 0, 2], [1, 0, 1, 3], [0, 1, 2, 0], [-1, 0, 3, 1]];
+    const stack = [[0, 0]]; seen[0][0] = true;
+    while (stack.length) {
+      const [x, y] = stack[stack.length - 1], opts = D.filter(([dx, dy]) => x + dx >= 0 && y + dy >= 0 && x + dx < C && y + dy < R && !seen[y + dy][x + dx]);
+      if (!opts.length) { stack.pop(); continue; }
+      const [dx, dy, a, b] = opts[Math.floor(rnd() * opts.length)];
+      walls[y][x][a] = 0; walls[y + dy][x + dx][b] = 0; seen[y + dy][x + dx] = true; stack.push([x + dx, y + dy]);
+    }
+    // a few extra openings make loops so it isn't a pure corridor
+    for (let k = 0; k < Math.floor(C * R / 8); k++) { const x = Math.floor(rnd() * (C - 1)), y = Math.floor(rnd() * R); walls[y][x][1] = 0; walls[y][x + 1][3] = 0; }
+    // the solution path from start (top-left) to goal (bottom-right), by BFS
+    const prev = new Map(), q = [[0, 0]], key = (x, y) => x + ',' + y; prev.set(key(0, 0), null);
+    while (q.length) { const [x, y] = q.shift(); D.forEach(([dx, dy, a], i) => { if (walls[y][x][a]) return; const nx = x + dx, ny = y + dy, k = key(nx, ny); if (!prev.has(k)) { prev.set(k, [x, y]); q.push([nx, ny]); } }); }
+    const path = []; for (let c = [C - 1, R - 1]; c; c = prev.get(key(c[0], c[1]))) path.unshift(c);
+    const onPath = new Set(path.map(([x, y]) => key(x, y)));
+    // holes: every off-path cell is a candidate; more holes as levels go up
+    const holes = [], off = [];
+    for (let y = 0; y < R; y++) for (let x = 0; x < C; x++) if (!onPath.has(key(x, y))) off.push([x, y]);
+    const want = Math.min(off.length, 1 + Math.floor(lv * .9));
+    for (let i = 0; i < want; i++) { const [x, y] = off.splice(Math.floor(rnd() * off.length), 1)[0]; holes.push({ x: (x + .5) * CELL + (rnd() - .5) * 2, y: (y + .5) * CELL + (rnd() - .5) * 2 }); }
+    // later levels add holes beside the path at its corners, leaving a lane to pass
+    if (lv >= 4) for (let i = 1; i < path.length - 1 && holes.length < want + Math.floor(lv / 3); i++) {
+      const [px, py] = path[i - 1], [x, y] = path[i], [nx, ny] = path[i + 1];
+      if ((px === x) === (nx === x) || rnd() < .5) continue;
+      // outer corner of the turn
+      const ox = x - Math.sign(px + nx - 2 * x), oy = y - Math.sign(py + ny - 2 * y);
+      holes.push({ x: (x + .5 + (ox - x) * .3) * CELL, y: (y + .5 + (oy - y) * .3) * CELL, corner: true });
+    }
+    // wall segments, merged into long runs
+    const segs = [];
+    for (let y = 0; y <= R; y++) { let run = null; for (let x = 0; x < C; x++) { const has = y === R ? walls[R - 1][x][2] : walls[y][x][0]; if (has) { if (!run) run = { ax: x * CELL, ay: y * CELL }; run.bx = (x + 1) * CELL; run.by = y * CELL; } else if (run) { segs.push(run); run = null; } } if (run) segs.push(run); }
+    for (let x = 0; x <= C; x++) { let run = null; for (let y = 0; y < R; y++) { const has = x === C ? walls[y][C - 1][1] : walls[y][x][3]; if (has) { if (!run) run = { ax: x * CELL, ay: y * CELL }; run.bx = x * CELL; run.by = (y + 1) * CELL; } else if (run) { segs.push(run); run = null; } } if (run) segs.push(run); }
+    return { C, R, segs, holes, path, start: { x: CELL / 2, y: CELL / 2 }, goal: { x: (C - .5) * CELL, y: (R - .5) * CELL }, par: Math.round(path.length * 1.4 + 3) };
+  }
+
+  // ---------- state ----------
+  let W, H, DPR, S = 8, OX = 0, OY = 0, BG = null, BOARD = null, M = null, phase = 'menu', t = 0, ball = null, tilt = { x: 0, y: 0 }, want = { x: 0, y: 0 }, keys = {}, drag = null, falls = 0, timeT = 0, fallT = 0, winT = 0, simAcc = 0, neutral = null, motion = null, lastHit = 0;
+  function resize() {
+    DPR = Math.min(devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight; canvas.width = W * DPR; canvas.height = H * DPR; ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    if (M) { const bw = M.C * CELL + 8, bh = M.R * CELL + 8; S = Math.min((W - 16) / bw, (H - 160) / bh, 14); OX = (W - M.C * CELL * S) / 2; OY = 78 + (H - 78 - 76 - M.R * CELL * S) / 2; }
+    BG = paintBG(); if (M) BOARD = paintBoard();
+  }
+  addEventListener('resize', resize);
+  const sx = x => OX + x * S, sy = y => OY + y * S;
+  // workbench under the game
+  function paintBG() {
+    const c = document.createElement('canvas'); c.width = W * DPR; c.height = H * DPR; const g = c.getContext('2d'); g.scale(DPR, DPR);
+    const bg = g.createLinearGradient(0, 0, W, H); bg.addColorStop(0, '#4a2e1a'); bg.addColorStop(1, '#22140a'); g.fillStyle = bg; g.fillRect(0, 0, W, H);
+    for (let y = 0; y < H; y += 56) { g.fillStyle = 'rgba(0,0,0,.25)'; g.fillRect(0, y, W, 2); g.strokeStyle = 'rgba(255,200,140,.05)'; g.lineWidth = 1; for (let k = 0; k < 6; k++) { g.beginPath(); g.moveTo(0, y + 8 + k * 8); for (let x = 0; x <= W; x += 30) g.lineTo(x, y + 8 + k * 8 + Math.sin(x * .02 + k + y) * 3); g.stroke(); } }
+    const vg = g.createRadialGradient(W / 2, H / 2, Math.min(W, H) * .3, W / 2, H / 2, Math.max(W, H) * .75); vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,0,.5)'); g.fillStyle = vg; g.fillRect(0, 0, W, H);
+    return c;
+  }
+  // the wooden board: maple floor, printed route with numbers, holes; walls are drawn live for their tilt shadows
+  function paintBoard() {
+    const bw = M.C * CELL * S, bh = M.R * CELL * S, pad = 4 * S, c = document.createElement('canvas');
+    c.width = (bw + pad * 2) * DPR; c.height = (bh + pad * 2) * DPR; const g = c.getContext('2d'); g.scale(DPR, DPR);
+    // frame
+    const fr = g.createLinearGradient(0, 0, bw + pad * 2, bh + pad * 2); fr.addColorStop(0, '#c08048'); fr.addColorStop(1, '#7a4a20');
+    g.fillStyle = fr; g.beginPath(); g.roundRect(0, 0, bw + pad * 2, bh + pad * 2, pad * .6); g.fill();
+    g.strokeStyle = 'rgba(255,220,170,.4)'; g.lineWidth = 2; g.beginPath(); g.roundRect(3, 3, bw + pad * 2 - 6, bh + pad * 2 - 6, pad * .5); g.stroke();
+    // floor
+    const fl = g.createLinearGradient(pad, pad, pad + bw, pad + bh); fl.addColorStop(0, '#f2d7a8'); fl.addColorStop(1, '#d8b47a'); g.fillStyle = fl; g.fillRect(pad, pad, bw, bh);
+    g.save(); g.beginPath(); g.rect(pad, pad, bw, bh); g.clip();
+    for (let i = 0; i < bh / 5; i++) { g.strokeStyle = 'rgba(150,100,50,' + (.06 + (i % 3) * .03) + ')'; g.lineWidth = 1; g.beginPath(); const y0 = pad + i * 5; g.moveTo(pad, y0); for (let x = 0; x <= bw; x += 20) g.lineTo(pad + x, y0 + Math.sin(x * .03 + i * .7) * 2.5); g.stroke(); }
+    for (let k = 0; k < 4; k++) { const x = pad + ((k * 97) % bw), y = pad + ((k * 61) % bh); g.strokeStyle = 'rgba(130,80,30,.18)'; g.beginPath(); g.ellipse(x, y, 10, 4, .2, 0, 7); g.stroke(); g.beginPath(); g.ellipse(x, y, 5, 2, .2, 0, 7); g.stroke(); }
+    // printed guide line with numbered dots, like the classic toy
+    g.strokeStyle = 'rgba(30,20,10,.55)'; g.lineWidth = Math.max(1.2, S * .25); g.setLineDash([S * .9, S * .7]); g.beginPath();
+    M.path.forEach(([x, y], i) => { const X = pad + (x + .5) * CELL * S, Y = pad + (y + .5) * CELL * S; i ? g.lineTo(X, Y) : g.moveTo(X, Y); }); g.stroke(); g.setLineDash([]);
+    g.font = '700 ' + Math.max(8, S * 2.2) + 'px sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+    M.path.forEach(([x, y], i) => { if (i % 2 || i === 0) return; const X = pad + (x + .5) * CELL * S, Y = pad + (y + .5) * CELL * S; g.fillStyle = 'rgba(30,20,10,.6)'; g.beginPath(); g.arc(X, Y, S * 1.6, 0, 7); g.fill(); g.fillStyle = '#f2d7a8'; g.fillText(i / 2, X, Y + .5); });
+    g.fillStyle = 'rgba(30,20,10,.65)'; g.font = '800 ' + Math.max(9, S * 2.4) + 'px sans-serif'; g.fillText('START', pad + CELL * S * .5, pad + CELL * S * .5 + S * 3.6);
+    // holes
+    for (const h of M.holes) {
+      const X = pad + h.x * S, Y = pad + h.y * S, r = HOLE * S;
+      const hg = g.createRadialGradient(X - r * .2, Y - r * .3, r * .1, X, Y, r); hg.addColorStop(0, '#000'); hg.addColorStop(.75, '#1a0e06'); hg.addColorStop(1, '#5a3618');
+      g.fillStyle = hg; g.beginPath(); g.arc(X, Y, r, 0, 7); g.fill();
+      g.strokeStyle = 'rgba(255,230,190,.55)'; g.lineWidth = 1.4; g.beginPath(); g.arc(X, Y, r, Math.PI * .1, Math.PI * .9); g.stroke();
+      g.strokeStyle = 'rgba(60,30,10,.6)'; g.beginPath(); g.arc(X, Y, r + 1, Math.PI * 1.1, Math.PI * 1.9); g.stroke();
+    }
+    // goal: gold ringed cup
+    const X = pad + M.goal.x * S, Y = pad + M.goal.y * S, r = HOLE * S * 1.1;
+    const gg = g.createRadialGradient(X, Y, r * .4, X, Y, r * 1.5); gg.addColorStop(0, 'rgba(255,220,100,.5)'); gg.addColorStop(1, 'rgba(255,220,100,0)'); g.fillStyle = gg; g.beginPath(); g.arc(X, Y, r * 1.6, 0, 7); g.fill();
+    const ring = g.createLinearGradient(X - r, Y - r, X + r, Y + r); ring.addColorStop(0, '#fff3b0'); ring.addColorStop(.5, '#d8a020'); ring.addColorStop(1, '#8a5a08');
+    g.fillStyle = ring; g.beginPath(); g.arc(X, Y, r * 1.25, 0, 7); g.fill();
+    const hg = g.createRadialGradient(X, Y - r * .2, 0, X, Y, r); hg.addColorStop(0, '#2a1a08'); hg.addColorStop(1, '#000'); g.fillStyle = hg; g.beginPath(); g.arc(X, Y, r, 0, 7); g.fill();
+    g.fillStyle = '#c03030'; g.beginPath(); g.moveTo(X + r * .1, Y - r * 2.6); g.lineTo(X + r * 1.4, Y - r * 2.2); g.lineTo(X + r * .1, Y - r * 1.8); g.fill(); g.strokeStyle = '#3a2a1a'; g.lineWidth = 1.5; g.beginPath(); g.moveTo(X + r * .1, Y - r * 2.7); g.lineTo(X + r * .1, Y - r * .2); g.stroke();
+    g.restore();
+    return c;
+  }
+
+  // ---------- flow ----------
+  function hud() { $('level').textContent = 'MAZE ' + level; $('sub').textContent = timeT.toFixed(1) + 's · par ' + M.par + 's · falls ' + falls; }
+  function placeBall() { ball = { x: M.start.x, y: M.start.y, vx: 0, vy: 0, z: 1, rot: 0 }; }
+  function start() {
+    if (!SPR) return;
+    M = generate(level); falls = 0; timeT = 0; fallT = 0; winT = 0; simAcc = 0; tilt = { x: 0, y: 0 }; neutral = null; placeBall(); phase = 'play';
+    resize(); hud(); audio.start();
+    if (window.DeviceOrientationEvent && DeviceOrientationEvent.requestPermission) DeviceOrientationEvent.requestPermission().catch(() => {});
+    for (const o of ['menu', 'win']) $(o).classList.add('hidden');
+  }
+  $('startBtn').onclick = start;
+  $('nextBtn').onclick = () => { level++; try { localStorage.setItem(KEY, level); } catch (e) {} start(); };
+  $('reset').onclick = () => { if (phase !== 'menu') start(); };
+
+  // ---------- input: drag joystick, arrow keys, device tilt ----------
+  canvas.addEventListener('pointerdown', e => { if (phase !== 'play') return; drag = { x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY }; });
+  addEventListener('pointermove', e => { if (drag) { drag.x = e.clientX; drag.y = e.clientY; } });
+  addEventListener('pointerup', () => { drag = null; }); addEventListener('pointercancel', () => { drag = null; });
+  addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && phase === 'menu') { e.preventDefault(); start(); } keys[e.key] = true; });
+  addEventListener('keyup', e => { keys[e.key] = false; });
+  addEventListener('deviceorientation', e => {
+    if (e.gamma == null || phase !== 'play') return;
+    if (!neutral) neutral = { g: e.gamma, b: e.beta };
+    motion = { x: Math.max(-1, Math.min(1, (e.gamma - neutral.g) / 18)), y: Math.max(-1, Math.min(1, (e.beta - neutral.b) / 18)), t: performance.now() };
+  });
+  window.__tm = { gen: generate, level: () => level, phase: () => phase, ball: () => ball && { ...ball }, maze: () => M, tiltTo: (x, y) => { want = { x, y }; testTilt = true; }, cell: (x, y) => ({ x: sx((x + .5) * CELL), y: sy((y + .5) * CELL) }) };
+  let testTilt = false;
+
+  // ---------- physics ----------
+  function step(h) {
+    const G = 260;
+    ball.vx += tilt.x * G * h; ball.vy += tilt.y * G * h;
+    const f = Math.exp(-.55 * h); ball.vx *= f; ball.vy *= f;
+    const sp = Math.hypot(ball.vx, ball.vy); if (sp > 110) { ball.vx *= 110 / sp; ball.vy *= 110 / sp; }
+    ball.x += ball.vx * h; ball.y += ball.vy * h; ball.rot += sp * h / BR;
+    const v0 = Math.hypot(ball.vx, ball.vy);
+    if (Ink.collide(ball, M.segs, BR, .35, .999, WT / 2)) { const loss = v0 - Math.hypot(ball.vx, ball.vy); if (loss > 12 && t - lastHit > .08) { lastHit = t; audio.sfx(900 + Math.random() * 300, .05, 'triangle', Math.min(.07, loss * .002)); } }
+    for (const hl of M.holes) if (Math.hypot(ball.x - hl.x, ball.y - hl.y) < HOLE - BR * .45) { phase = 'fall'; fallT = 0; ball.hx = hl.x; ball.hy = hl.y; falls++; audio.sfx(400, .4, 'sine', .06, 80); setTimeout(() => audio.sfx(140, .2, 'square', .04), 380); return; }
+    if (Math.hypot(ball.x - M.goal.x, ball.y - M.goal.y) < HOLE * 1.1 - BR * .35) { phase = 'won'; winT = 0; ball.hx = M.goal.x; ball.hy = M.goal.y; [523, 659, 784, 1046, 1318].forEach((fq, k) => setTimeout(() => audio.sfx(fq, .35, 'triangle', .06), k * 100)); }
+  }
+  function update(dt) {
+    t += dt;
+    if (!M) return;
+    // where the board wants to lean
+    if (!testTilt) {
+      if (drag) { const k = Math.min(W, H) * .12; want = { x: Math.max(-1, Math.min(1, (drag.x - drag.x0) / k)), y: Math.max(-1, Math.min(1, (drag.y - drag.y0) / k)) }; }
+      else if (keys.ArrowLeft || keys.ArrowRight || keys.ArrowUp || keys.ArrowDown) want = { x: (keys.ArrowRight ? 1 : 0) - (keys.ArrowLeft ? 1 : 0), y: (keys.ArrowDown ? 1 : 0) - (keys.ArrowUp ? 1 : 0) };
+      else if (motion && performance.now() - motion.t < 500) want = { x: motion.x, y: motion.y };
+      else want = { x: 0, y: 0 };
+    }
+    tilt.x += (want.x - tilt.x) * Math.min(1, dt * 10); tilt.y += (want.y - tilt.y) * Math.min(1, dt * 10);
+    if (phase === 'play') {
+      timeT += dt; simAcc += dt;
+      while (simAcc >= 1 / 240 && phase === 'play') { simAcc -= 1 / 240; step(1 / 240); }
+      if (Math.floor(timeT * 10) !== Math.floor((timeT - dt) * 10)) hud();
+    } else if (phase === 'fall') {
+      fallT += dt; ball.x += (ball.hx - ball.x) * Math.min(1, dt * 12); ball.y += (ball.hy - ball.y) * Math.min(1, dt * 12); ball.z = Math.max(0, 1 - fallT * 2.2);
+      if (fallT > .9) { placeBall(); phase = 'play'; simAcc = 0; hud(); }
+    } else if (phase === 'won') {
+      winT += dt; ball.x += (ball.hx - ball.x) * Math.min(1, dt * 10); ball.y += (ball.hy - ball.y) * Math.min(1, dt * 10); ball.z = Math.max(.55, 1 - winT * 1.5);
+      if (winT > 1.2 && winT - dt <= 1.2) {
+        const st = falls === 0 && timeT <= M.par ? 3 : falls <= 1 && timeT <= M.par * 1.6 ? 2 : 1;
+        $('stars').innerHTML = '★'.repeat(st) + '<i>' + '★'.repeat(3 - st) + '</i>'; $('winLevel').textContent = level; $('winTime').textContent = timeT.toFixed(1); $('winFalls').textContent = falls;
+        $('win').classList.remove('hidden');
+      }
+    }
+  }
+
+  // ---------- render ----------
+  let SPR = null;
+  const KNOB = svgDoc('<defs><radialGradient id="k" cx="40%" cy="35%" r="70%"><stop offset="0" stop-color="#ffe2b0"/><stop offset=".6" stop-color="#b8743a"/><stop offset="1" stop-color="#5a3014"/></radialGradient></defs>' +
+    '<circle cx="50" cy="50" r="46" fill="url(#k)" stroke="#3a1e08" stroke-width="3"/>' + Array.from({ length: 16 }, (_, i) => '<rect x="48" y="4" width="4" height="10" rx="2" fill="#3a1e08" opacity=".55" transform="rotate(' + i * 22.5 + ' 50 50)"/>').join('') +
+    '<circle cx="50" cy="50" r="22" fill="none" stroke="#ffe2b0" stroke-width="3" opacity=".5"/><rect x="47" y="18" width="6" height="22" rx="3" fill="#ffe2b0" opacity=".8"/>');
+  loadSprites({ knob: KNOB }, 120).then(s => { SPR = s; art($('logo')); art($('winArt'), true); });
+
+  function drawBall(X, Y, r, z, rot) {
+    // contact shadow leans opposite the tilt light
+    ctx.fillStyle = 'rgba(30,15,5,' + .35 * z + ')'; ctx.beginPath(); ctx.ellipse(X + r * .35, Y + r * .5, r * 1.05 * z, r * .8 * z, 0, 0, 7); ctx.fill();
+    const g = ctx.createRadialGradient(X - r * .35, Y - r * .4, r * .05, X, Y, r * z); g.addColorStop(0, '#ffffff'); g.addColorStop(.25, '#dfe6ec'); g.addColorStop(.6, '#8a96a2'); g.addColorStop(.9, '#3a444e'); g.addColorStop(1, '#1a2026');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(X, Y, r * z, 0, 7); ctx.fill();
+    // reflected window and warm floor bounce
+    ctx.save(); ctx.beginPath(); ctx.arc(X, Y, r * z, 0, 7); ctx.clip();
+    ctx.fillStyle = 'rgba(255,255,255,.75)'; ctx.beginPath(); ctx.roundRect(X - r * .55 * z, Y - r * .62 * z, r * .42 * z, r * .3 * z, 2); ctx.fill();
+    ctx.fillStyle = 'rgba(240,200,140,.35)'; ctx.beginPath(); ctx.ellipse(X + r * .1, Y + r * .75 * z, r * .7 * z, r * .3 * z, 0, 0, 7); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,.18)'; ctx.lineWidth = 1; ctx.beginPath(); ctx.ellipse(X, Y, r * z * Math.abs(Math.cos(rot)), r * z, 0, 0, 7); ctx.stroke();
+    ctx.restore();
+  }
+  function render() {
+    if (BG) ctx.drawImage(BG, 0, 0, W, H);
+    if (!M || !BOARD || phase === 'menu') return;
+    const pad = 4 * S, bw = BOARD.width / DPR, bh = BOARD.height / DPR;
+    // the board leans: shift and squash a touch toward the low side
+    const lx = tilt.x * 6, ly = tilt.y * 6;
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,.5)'; ctx.beginPath(); ctx.roundRect(OX - pad + 10 - lx, OY - pad + 14 - ly, bw, bh, pad * .6); ctx.fill();
+    ctx.drawImage(BOARD, OX - pad, OY - pad, bw, bh);
+    // tilt-aware light falloff across the floor
+    const lg = ctx.createLinearGradient(OX - tilt.x * 200, OY - tilt.y * 200, OX + M.C * CELL * S + tilt.x * 200, OY + M.R * CELL * S + tilt.y * 200);
+    lg.addColorStop(0, 'rgba(255,240,210,.12)'); lg.addColorStop(1, 'rgba(40,20,5,.14)'); ctx.fillStyle = lg; ctx.fillRect(OX, OY, M.C * CELL * S, M.R * CELL * S);
+    // raised walls: shadow, side and top
+    const th = WT * S, hgt = S * 1.1;
+    ctx.fillStyle = 'rgba(40,20,5,.35)';
+    for (const s of M.segs) { const x0 = Math.min(s.ax, s.bx), y0 = Math.min(s.ay, s.by), w = Math.abs(s.bx - s.ax), h = Math.abs(s.by - s.ay); ctx.fillRect(sx(x0) - th / 2 + hgt * .8 - tilt.x * 2, sy(y0) - th / 2 + hgt - tilt.y * 2, w * S + th, h * S + th); }
+    for (const s of M.segs) {
+      const x0 = Math.min(s.ax, s.bx), y0 = Math.min(s.ay, s.by), w = Math.abs(s.bx - s.ax) * S + th, h = Math.abs(s.by - s.ay) * S + th, X = sx(x0) - th / 2, Y = sy(y0) - th / 2;
+      ctx.fillStyle = '#7a4a20'; ctx.fillRect(X, Y + hgt * .45, w, h);
+      const tg = ctx.createLinearGradient(X, Y, X + (w > h ? 0 : w), Y + (w > h ? h : 0)); tg.addColorStop(0, '#e8b878'); tg.addColorStop(1, '#b07840');
+      ctx.fillStyle = tg; ctx.fillRect(X, Y, w, h);
+      ctx.fillStyle = 'rgba(255,240,210,.45)'; if (w > h) ctx.fillRect(X, Y, w, Math.max(1, h * .25)); else ctx.fillRect(X, Y, Math.max(1, w * .25), h);
+    }
+    // the ball
+    const r = BR * S;
+    if (ball) drawBall(sx(ball.x), sy(ball.y), r, ball.z, ball.rot);
+    ctx.restore();
+    // turning knobs on the frame show the tilt
+    if (SPR) {
+      const kz = Math.max(30, S * 5);
+      ctx.save(); ctx.translate(OX + M.C * CELL * S / 2, OY + M.R * CELL * S + pad + kz * .2); ctx.rotate(tilt.x * 1.4); ctx.drawImage(SPR.knob, -kz / 2, -kz / 2, kz, kz); ctx.restore();
+      if (OX > kz) { ctx.save(); ctx.translate(OX + M.C * CELL * S + pad + kz * .2, OY + M.R * CELL * S / 2); ctx.rotate(tilt.y * 1.4); ctx.drawImage(SPR.knob, -kz / 2, -kz / 2, kz, kz); ctx.restore(); }
+    }
+    // drag joystick hint
+    if (drag) { ctx.strokeStyle = 'rgba(255,226,168,.5)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(drag.x0, drag.y0, Math.min(W, H) * .12, 0, 7); ctx.stroke(); ctx.fillStyle = 'rgba(255,226,168,.35)'; ctx.beginPath(); ctx.arc(drag.x0 + want.x * Math.min(W, H) * .12, drag.y0 + want.y * Math.min(W, H) * .12, 14, 0, 7); ctx.fill(); }
+  }
+  function art(cv, win) {
+    const g = cv.getContext('2d');
+    g.save(); g.translate(220, 230); g.rotate(-.12);
+    g.fillStyle = 'rgba(0,0,0,.4)'; g.beginPath(); g.roundRect(-150, -140, 310, 300, 18); g.fill();
+    const fr = g.createLinearGradient(-160, -160, 160, 160); fr.addColorStop(0, '#c08048'); fr.addColorStop(1, '#7a4a20'); g.fillStyle = fr; g.beginPath(); g.roundRect(-160, -160, 310, 300, 18); g.fill();
+    g.fillStyle = '#ecd0a0'; g.fillRect(-140, -140, 270, 260);
+    g.fillStyle = '#c08a50'; for (const [x, y, w, h] of [[-140, -60, 160, 12], [-20, 20, 150, 12], [40, -140, 12, 90], [-80, 20, 12, 100]]) g.fillRect(x, y, w, h);
+    g.fillStyle = '#e8b878'; for (const [x, y, w, h] of [[-140, -64, 160, 10], [-20, 16, 150, 10], [38, -140, 10, 90], [-82, 16, 10, 100]]) g.fillRect(x, y, w, h);
+    for (const [x, y] of [[-90, -100], [70, 70]]) { const hg = g.createRadialGradient(x, y, 2, x, y, 22); hg.addColorStop(0, '#000'); hg.addColorStop(1, '#5a3618'); g.fillStyle = hg; g.beginPath(); g.arc(x, y, 22, 0, 7); g.fill(); }
+    g.fillStyle = '#d8a020'; g.beginPath(); g.arc(90, -90, 26, 0, 7); g.fill(); g.fillStyle = '#000'; g.beginPath(); g.arc(90, -90, 19, 0, 7); g.fill();
+    g.restore();
+    const X = win ? 300 : 170, Y = win ? 150 : 250, r = 34;
+    g.fillStyle = 'rgba(30,15,5,.4)'; g.beginPath(); g.ellipse(X + 12, Y + 16, 36, 26, 0, 0, 7); g.fill();
+    const bg = g.createRadialGradient(X - 12, Y - 14, 2, X, Y, r); bg.addColorStop(0, '#fff'); bg.addColorStop(.3, '#dfe6ec'); bg.addColorStop(.7, '#7a8692'); bg.addColorStop(1, '#1a2026'); g.fillStyle = bg; g.beginPath(); g.arc(X, Y, r, 0, 7); g.fill();
+    g.fillStyle = 'rgba(255,255,255,.8)'; g.fillRect(X - 20, Y - 22, 14, 10);
+  }
+
+  resize();
+  let last = performance.now();
+  (function loop(now) {
+    const dt = Math.max(0, Math.min(0.033, (now - last) / 1000)); last = now;
+    update(dt); render(); requestAnimationFrame(loop);
+  })(last);
+})();
+</script>
+</body>
+</html>

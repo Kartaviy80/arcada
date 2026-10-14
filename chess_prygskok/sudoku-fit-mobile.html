@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SUDOKU — Number Logic</title>
+<style>
+:root{--bg:#080d16;--panel:#101927;--panel2:#142235;--line:#26364b;--text:#edf5ff;--muted:#8fa3bb;--accent:#62e6c5;--accent2:#8c9cff;--bad:#ff7188;--good:#62e6c5;--cell:#111d2c;--selected:#23443f;--related:#182b3b;--same:#244c48}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(ellipse at 15% 0%,#14263a 0,transparent 38%),radial-gradient(ellipse at 90% 20%,#17233b 0,transparent 32%),var(--bg);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;display:flex;justify-content:center;padding:28px 16px 40px}
+.app{width:min(1120px,100%)}header{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:24px}.brand{display:flex;align-items:center;gap:13px}.logo{width:46px;height:46px;border-radius:14px;background:linear-gradient(135deg,var(--accent),#66a7ff);display:grid;place-items:center;color:#07131a;font-size:25px;font-weight:900;box-shadow:0 8px 28px #62e6c52a}.eyebrow{font-size:11px;letter-spacing:.22em;color:var(--accent);font-weight:800}.brand h1{font-size:25px;letter-spacing:.08em;margin:3px 0 0}.header-tag{border:1px solid var(--line);background:#101927aa;color:var(--muted);padding:9px 13px;border-radius:999px;font-size:12px;letter-spacing:.08em}
+.layout{display:grid;grid-template-columns:minmax(0,1fr) 310px;gap:22px;align-items:start}.board-card,.side-card{background:linear-gradient(145deg,#111c2bfa,#0d1521fa);border:1px solid #26364b;border-radius:24px;box-shadow:0 24px 70px #0003}.board-card{padding:clamp(14px,3vw,26px)}.board-top{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:18px}.section-label{font-size:11px;letter-spacing:.17em;color:var(--muted);font-weight:800}.status{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--accent)}.dot{width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 12px #62e6c5a0}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:18px}.stat{background:#0b1420;border:1px solid #1e2d40;border-radius:13px;padding:11px 13px}.stat span{display:block;font-size:10px;color:var(--muted);letter-spacing:.12em;text-transform:uppercase;margin-bottom:5px}.stat strong{font-size:19px;font-variant-numeric:tabular-nums}
+.board-wrap{padding:5px;border-radius:13px;background:linear-gradient(135deg,#5c7e92,#293e55 40%,#5c7e92);box-shadow:0 12px 30px #0004}.board{display:grid;grid-template-columns:repeat(9,minmax(0,1fr));aspect-ratio:1;background:#101a28;border:2px solid #91a9bd;border-radius:8px;overflow:hidden;gap:0}.cell{position:relative;min-width:0;aspect-ratio:1;border:0;border-right:1px solid #314258;border-bottom:1px solid #314258;background:#111d2c;color:#eaf3ff;display:grid;place-items:center;padding:0;font-size:clamp(16px,3.1vw,29px);font-weight:550;cursor:pointer;transition:background .12s,box-shadow .12s;outline:none;font-variant-numeric:tabular-nums}.cell:nth-child(3n){border-right:2px solid #8197aa}.cell:nth-child(9n){border-right:0}.cell:nth-child(n+19):nth-child(-n+27),.cell:nth-child(n+46):nth-child(-n+54){border-bottom:2px solid #8197aa}.cell.given{font-weight:800;color:#f4f8ff;background:#172638}.cell.related{background:#182b3b}.cell.same{background:#244c48;color:#baffef}.cell.selected{background:#28594f!important;box-shadow:inset 0 0 0 2px var(--accent);z-index:1}.cell.conflict{color:var(--bad)!important;background:#482332!important}.cell.wrong{color:var(--bad)!important}.cell:focus-visible{box-shadow:inset 0 0 0 2px var(--accent)}.cell .note-grid{position:absolute;inset:2px;display:grid;grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(3,1fr);font-size:clamp(7px,1.15vw,11px);font-weight:500;color:#91a9bd;place-items:center;pointer-events:none}
+.message{min-height:22px;margin:13px 2px 0;font-size:13px;color:var(--muted)}.message.good{color:var(--good)}.message.error{color:var(--bad)}
+.side{display:grid;gap:16px}.side-card{padding:20px}.side-card h2{font-size:14px;margin:0 0 15px;letter-spacing:.08em}.field-label{display:block;color:var(--muted);font-size:11px;letter-spacing:.1em;text-transform:uppercase;margin:0 0 8px}.select,button{font:inherit}.select{width:100%;border:1px solid #30435a;background:#0c1623;color:var(--text);padding:12px 13px;border-radius:11px;outline:none}.primary,.secondary,.tool{border:1px solid transparent;border-radius:12px;padding:12px 14px;cursor:pointer;transition:transform .15s,border-color .15s,background .15s;color:var(--text);font-weight:650}.primary{background:var(--accent);color:#071712;width:100%;margin-top:12px}.primary:hover{background:#83f4d9;transform:translateY(-1px)}.secondary{background:#172538;border-color:#2b3e54;width:100%;margin-top:9px}.secondary:hover,.tool:hover{border-color:#5a7a92;background:#1b3046}.tools{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.tool{background:#111e2e;border-color:#26384d;padding:12px 4px;display:flex;flex-direction:column;align-items:center;gap:6px;font-size:11px}.tool .ico{font-size:18px}.tool.active{border-color:var(--accent);color:var(--accent);background:#15312f}.numbers{display:grid;grid-template-columns:repeat(9,1fr);gap:6px}.num{aspect-ratio:1;border:1px solid #2a3b50;border-radius:9px;background:#152235;color:#eaf3ff;font-weight:750;font-size:16px;cursor:pointer}.num:hover{background:#23433f;border-color:var(--accent)}.num:disabled{opacity:.25;cursor:default}.side-note{font-size:12px;line-height:1.6;color:var(--muted);margin:13px 0 0}.bottom-actions{display:flex;gap:10px;margin-top:18px}.bottom-actions button{flex:1}.footer{text-align:center;color:#5e7188;font-size:11px;margin-top:22px;letter-spacing:.08em}
+@media(max-width:850px){.layout{grid-template-columns:1fr}.side{grid-template-columns:repeat(2,minmax(0,1fr))}.side-card:last-child{grid-column:1/-1}.board-card{padding:16px}.header-tag{display:none}}
+@media(max-width:520px){
+html,body{width:100%;height:100%;min-height:0;margin:0;overflow:hidden}body{padding:4px;display:block}
+.app{width:100%;height:calc(100svh - 8px);max-width:440px;margin:0 auto;display:flex;flex-direction:column;min-height:0;overflow:hidden}
+header{flex:0 0 auto;margin:0 0 4px;min-height:28px;gap:6px}.brand{gap:6px}.brand h1{font-size:16px;line-height:1.05;letter-spacing:.06em;margin-top:1px}.eyebrow{font-size:7px;letter-spacing:.14em}.logo{width:27px;height:27px;border-radius:8px;font-size:15px}.header-tag{display:none}
+.layout{flex:1;min-height:0;display:flex;flex-direction:column;gap:4px;overflow:hidden}.board-card{flex:0 0 auto;width:100%;min-height:0;padding:6px;border-radius:12px;box-shadow:none}.board-top{margin:0 1px 4px}.section-label{font-size:8px}.status{font-size:8px;gap:4px}.dot{width:5px;height:5px}
+.stats{gap:4px;margin:0 0 5px}.stat{padding:4px 6px;border-radius:7px}.stat span{font-size:7px;margin-bottom:1px;letter-spacing:.04em}.stat strong{font-size:12px;line-height:1.1}.board-wrap{padding:2px;border-radius:6px;box-shadow:none}.board{width:100%;aspect-ratio:1/1;border-width:1px;border-radius:4px}.cell{font-size:clamp(12px,4.1vw,19px);line-height:1;border-right-width:1px;border-bottom-width:1px}.cell:nth-child(3n){border-right-width:2px}.cell:nth-child(n+19):nth-child(-n+27),.cell:nth-child(n+46):nth-child(-n+54){border-bottom-width:2px}.cell .note-grid{font-size:clamp(5px,1.5vw,7px);inset:0}
+.message{min-height:12px;height:auto;font-size:9px;line-height:1.15;margin:4px 1px 0;overflow:hidden}.bottom-actions{gap:5px;margin-top:4px}.bottom-actions button{padding:5px 4px;font-size:9px;border-radius:7px;line-height:1.1}
+.side{flex:1;min-height:0;display:flex;flex-direction:column;gap:4px;width:100%;overflow:hidden}.side-card{padding:5px 7px;border-radius:9px;box-shadow:none;min-height:0}.side-card h2{font-size:8px;margin:0 0 4px;letter-spacing:.05em}
+.side-card:first-child{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:4px;align-items:center}.side-card:first-child h2{grid-column:1/-1;margin:0}.side-card:first-child .field-label{font-size:8px;margin:0;white-space:nowrap}.primary,.secondary{padding:6px 7px;font-size:9px;line-height:1.1;border-radius:7px;margin-top:0;white-space:nowrap}.side-card:first-child .primary,.side-card:first-child .secondary{grid-column:auto;width:auto}
+.side-card:nth-child(2){display:grid;grid-template-columns:auto minmax(0,1fr);gap:5px;align-items:center}.side-card:nth-child(2) h2{margin:0;white-space:nowrap}.side-card:nth-child(2) .tools{gap:4px}.tool{padding:4px 2px;border-radius:6px;font-size:8px;line-height:1.05;gap:1px}.tool .ico{font-size:11px}.side-note{display:none}.side-card:nth-child(3){padding:5px 7px}.side-card:nth-child(3) h2{margin-bottom:3px}.numbers{gap:3px}.num{min-height:0;height:clamp(23px,6.8vw,30px);font-size:12px;border-radius:5px}.footer{flex:0 0 auto;font-size:7px;line-height:1;margin-top:3px}
+}
+@media(max-width:380px){body{padding:3px}.app{height:calc(100svh - 6px)}header{margin-bottom:3px}.brand h1{font-size:14px}.logo{width:24px;height:24px}.board-card{padding:4px}.stats{gap:3px;margin-bottom:4px}.stat{padding:3px 4px}.stat strong{font-size:11px}.cell{font-size:clamp(11px,3.9vw,15px)}.side-card{padding:4px 5px}.primary,.secondary{font-size:8px;padding:5px 5px}.num{height:23px;font-size:11px}}
+@media(max-height:700px) and (max-width:520px){header{margin-bottom:2px}.board-card{padding:4px}.board-top{margin-bottom:2px}.stats{margin-bottom:3px}.stat{padding:3px 5px}.message{margin-top:2px;min-height:10px;font-size:8px}.bottom-actions{margin-top:2px}.bottom-actions button{padding:4px 3px}.side{gap:3px}.side-card{padding:3px 6px}.side-card h2{margin-bottom:2px}.num{height:21px}}
+</style>
+</head>
+<body>
+<main class="app">
+<header><div class="brand"><div class="logo">9</div><div><div class="eyebrow">NUMBER LOGIC</div><h1>SUDOKU</h1></div></div><div class="header-tag">OFFLINE · NO ADS · JUST LOGIC</div></header>
+<div class="layout">
+<section class="board-card">
+  <div class="board-top"><div class="section-label">ИГРОВОЕ ПОЛЕ</div><div class="status"><span class="dot"></span><span id="gameStatus">НОВАЯ ИГРА</span></div></div>
+  <div class="stats">
+    <div class="stat"><span>Время</span><strong id="timer">00:00</strong></div>
+    <div class="stat"><span>Ошибки</span><strong id="mistakes">0 / 3</strong></div>
+    <div class="stat"><span>Заполнено</span><strong id="progress">0 / 81</strong></div>
+  </div>
+  <div class="board-wrap"><div class="board" id="board" role="grid" aria-label="Поле судоку"></div></div>
+  <div class="message" id="message">Выберите клетку, затем число. Или нажмите число на клавиатуре.</div>
+  <div class="bottom-actions"><button class="secondary" id="undoBtn">↶ Отменить</button><button class="secondary" id="restartBtn">↻ Начать заново</button></div>
+</section>
+<aside class="side">
+  <section class="side-card"><h2>НОВАЯ ПАРТИЯ</h2><span class="field-label" id="variationLabel">Каждый раз — новое поле</span><button class="primary" id="newBtn">Новое судоку ↗</button><button class="secondary" id="checkBtn">Проверить</button></section>
+  <section class="side-card"><h2>ИНСТРУМЕНТЫ</h2><div class="tools"><button class="tool" id="notesBtn"><span class="ico">✎</span>Заметки</button><button class="tool" id="eraseBtn"><span class="ico">⌫</span>Стереть</button><button class="tool" id="hintBtn"><span class="ico">✦</span>Подсказка</button></div><p class="side-note">Включите заметки, чтобы помечать возможные числа. Подсказка заполнит одну клетку.</p></section>
+  <section class="side-card"><h2>ВЫБЕРИТЕ ЧИСЛО</h2><div class="numbers" id="numbers"></div><p class="side-note">Правило: в каждой строке, колонке и квадрате 3×3 числа от 1 до 9 должны встречаться только один раз.</p></section>
+</aside>
+</div>
+<div class="footer">SUDOKU · TRAIN YOUR MIND</div>
+</main>
+<script>
+(() => {
+const $ = id => document.getElementById(id);
+const boardEl=$('board'), numbersEl=$('numbers');
+let solution=[], puzzle=[], values=[], notes=[], selected=-1, noteMode=false, mistakes=0, seconds=0, timerId=null, history=[], finished=false;
+const clueCounts=[36,34,32,30,28,27,33,31];
+const shuffle=a=>{for(let i=a.length-1;i>0;i--){let j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];}return a};
+function candidates(grid,idx){let r=Math.floor(idx/9),c=idx%9,used=new Set();for(let i=0;i<9;i++){used.add(grid[r*9+i]);used.add(grid[i*9+c]);}let br=Math.floor(r/3)*3,bc=Math.floor(c/3)*3;for(let y=0;y<3;y++)for(let x=0;x<3;x++)used.add(grid[(br+y)*9+bc+x]);return [1,2,3,4,5,6,7,8,9].filter(n=>!used.has(n))}
+function solve(grid,randomize=false){let best=-1,bestOpts=null;for(let i=0;i<81;i++)if(!grid[i]){let opts=candidates(grid,i);if(!opts.length)return false;if(!bestOpts||opts.length<bestOpts.length){best=i;bestOpts=opts;if(opts.length===1)break;}}if(best===-1)return true;if(randomize)shuffle(bestOpts);for(const n of bestOpts){grid[best]=n;if(solve(grid,randomize))return true;grid[best]=0;}return false}
+function generate(){let s=Array(81).fill(0);solve(s,true);solution=s.slice();puzzle=s.slice();let target=clueCounts[Math.floor(Math.random()*clueCounts.length)], order=shuffle([...Array(81).keys()]);let remove=81-target;for(let i=0;i<remove;i++)puzzle[order[i]]=0;values=puzzle.slice();notes=Array.from({length:81},()=>new Set());selected=-1;mistakes=0;seconds=0;history=[];finished=false;clearInterval(timerId);timerId=setInterval(tick,1000);$('gameStatus').textContent='В ИГРЕ';setMessage('Новая партия готова. Удачи!');render();updateStats();}
+function tick(){if(finished)return;seconds++;$('timer').textContent=String(Math.floor(seconds/60)).padStart(2,'0')+':'+String(seconds%60).padStart(2,'0')}
+function setMessage(t,type=''){const el=$('message');el.textContent=t;el.className='message '+type}
+function updateStats(){let count=values.filter(Boolean).length;$('mistakes').textContent=mistakes+' / 3';$('progress').textContent=count+' / 81';$('timer').textContent=String(Math.floor(seconds/60)).padStart(2,'0')+':'+String(seconds%60).padStart(2,'0');for(let n=1;n<=9;n++){numbersEl.children[n-1].disabled=values.filter(v=>v===n).length>=9;}}
+function conflicts(){let bad=new Set();for(let i=0;i<81;i++){if(!values[i])continue;let r=Math.floor(i/9),c=i%9;for(let j=0;j<81;j++){if(j===i||values[j]!==values[i])continue;if(Math.floor(j/9)===r||j%9===c||(Math.floor(Math.floor(j/9)/3)===Math.floor(r/3)&&Math.floor((j%9)/3)===Math.floor(c/3))){bad.add(i);bad.add(j)}}}return bad}
+function render(){boardEl.innerHTML='';let bad=conflicts();for(let i=0;i<81;i++){let b=document.createElement('button');b.className='cell';b.setAttribute('role','gridcell');b.setAttribute('aria-label',`Строка ${Math.floor(i/9)+1}, столбец ${i%9+1}, ${values[i]||'пусто'}`);if(puzzle[i])b.classList.add('given');if(selected>=0){let sr=Math.floor(selected/9),sc=selected%9,r=Math.floor(i/9),c=i%9;if(r===sr||c===sc||(Math.floor(r/3)===Math.floor(sr/3)&&Math.floor(c/3)===Math.floor(sc/3)))b.classList.add('related');if(values[i]&&values[i]===values[selected])b.classList.add('same');}if(i===selected)b.classList.add('selected');if(bad.has(i))b.classList.add('conflict');if(values[i]){b.textContent=values[i];if(!puzzle[i]&&values[i]!==solution[i])b.classList.add('wrong')}else if(notes[i].size){let ng=document.createElement('span');ng.className='note-grid';for(let n=1;n<=9;n++){let s=document.createElement('span');s.textContent=notes[i].has(n)?n:'';ng.appendChild(s)}b.appendChild(ng)}b.addEventListener('click',()=>{selected=i;render()});boardEl.appendChild(b)}updateStats();}
+function put(n){if(selected<0){setMessage('Сначала выберите клетку.');return}if(finished||puzzle[selected])return;history.push({idx:selected,value:values[selected],notes:[...notes[selected]]});if(noteMode&&!values[selected]){if(notes[selected].has(n))notes[selected].delete(n);else notes[selected].add(n)}else{if(values[selected]===n)return;values[selected]=n;notes[selected].clear();if(n!==solution[selected]){mistakes++;setMessage('Это число не подходит. Попробуйте ещё раз.','error')}else setMessage('Верно!','good');if(mistakes>=3){setMessage('Три ошибки. Можно начать заново или продолжить.','error')}if(values.every((v,i)=>v===solution[i])){finished=true;clearInterval(timerId);$('gameStatus').textContent='РЕШЕНО';setMessage('Отлично! Судоку решено.','good')}}render()}
+function undo(){let h=history.pop();if(!h){setMessage('Пока нечего отменять.');return}values[h.idx]=h.value;notes[h.idx]=new Set(h.notes);selected=h.idx;render();setMessage('Последнее действие отменено.')}
+function hint(){if(finished)return;let opts=values.map((v,i)=>!v&&!puzzle[i]?i:-1).filter(i=>i>=0);if(!opts.length)return;let idx=selected>=0&&opts.includes(selected)?selected:opts[Math.floor(Math.random()*opts.length)];history.push({idx,value:values[idx],notes:[...notes[idx]]});values[idx]=solution[idx];notes[idx].clear();selected=idx;setMessage('Подсказка: заполнена одна клетка.','good');if(values.every((v,i)=>v===solution[i])){finished=true;clearInterval(timerId);$('gameStatus').textContent='РЕШЕНО'}render()}
+function check(){let bad=conflicts();if(bad.size){setMessage('Есть повторяющиеся числа в строке, столбце или квадрате.','error');render();return}let wrong=values.some((v,i)=>v&&v!==solution[i]);if(wrong){setMessage('Ошибок по правилам нет, но некоторые числа неверны.','error');return}if(values.every(Boolean)){finished=true;clearInterval(timerId);$('gameStatus').textContent='РЕШЕНО';setMessage('Идеально! Судоку решено.','good')}else setMessage('Пока всё корректно. Продолжайте!','good')}
+for(let n=1;n<=9;n++){let b=document.createElement('button');b.className='num';b.textContent=n;b.addEventListener('click',()=>put(n));numbersEl.appendChild(b)}
+$('newBtn').addEventListener('click',generate);$('restartBtn').addEventListener('click',()=>{values=puzzle.slice();notes=Array.from({length:81},()=>new Set());selected=-1;mistakes=0;seconds=0;finished=false;history=[];clearInterval(timerId);timerId=setInterval(tick,1000);$('gameStatus').textContent='В ИГРЕ';setMessage('Партия начата заново.');render()});
+$('undoBtn').addEventListener('click',undo);$('hintBtn').addEventListener('click',hint);$('checkBtn').addEventListener('click',check);$('eraseBtn').addEventListener('click',()=>{if(selected<0||puzzle[selected])return;history.push({idx:selected,value:values[selected],notes:[...notes[selected]]});values[selected]=0;notes[selected].clear();render();setMessage('Клетка очищена.')});
+$('notesBtn').addEventListener('click',()=>{noteMode=!noteMode;$('notesBtn').classList.toggle('active',noteMode);setMessage(noteMode?'Режим заметок включён.':'Режим заметок выключен.')});
+document.addEventListener('keydown',e=>{if(e.key>='1'&&e.key<='9')put(Number(e.key));else if(e.key==='Backspace'||e.key==='Delete')$('eraseBtn').click();else if(e.key==='ArrowUp'&&selected>=9){selected-=9;render()}else if(e.key==='ArrowDown'&&selected<72){selected+=9;render()}else if(e.key==='ArrowLeft'&&selected%9>0){selected--;render()}else if(e.key==='ArrowRight'&&selected>=0&&selected%9<8){selected++;render()}else if(e.key==='Escape'){selected=-1;render()}});
+generate();
+})();
+</script>
+<audio id="bgMusic" loop preload="auto">
+  <source src="./mixkit-relaxation-05-749.mp3" type="audio/mpeg">
+</audio>
+
+<script>
+(() => {
+  const music = document.getElementById('bgMusic');
+  music.volume = 0.15;
+
+  // Запуск музыки после первого действия пользователя
+  const startMusic = () => {
+    music.play().catch(() => {});
+  };
+
+  document.addEventListener('pointerdown', startMusic, { once: true });
+  document.addEventListener('keydown', startMusic, { once: true });
+})();
+</script>
+</body>
+</html>

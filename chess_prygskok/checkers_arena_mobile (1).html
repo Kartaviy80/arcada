@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#101827">
+<title>Checkers Arena — шашки</title>
+<style>
+:root{--bg:#101827;--panel:#1b2638;--panel2:#26354b;--text:#edf3ff;--muted:#9baac2;--accent:#a79aff;--light:#e8edf5;--dark:#7188a7;--gold:#ffe27a}
+*{box-sizing:border-box}html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Arial,sans-serif}
+body{min-height:100dvh}.app{width:100%;min-height:100dvh;padding:12px;display:flex;justify-content:center;align-items:flex-start}
+.game{width:min(100%,470px);display:flex;flex-direction:column;gap:10px}
+.brand{display:flex;align-items:center;justify-content:center;gap:10px;padding:3px}.logo{width:40px;height:40px;border-radius:12px;background:linear-gradient(135deg,#c1b8ff,#738ee0);display:grid;place-items:center;font-size:25px;color:#172039}.brand h1{font-size:20px;line-height:1.1;margin:0}.brand small{color:var(--muted)}
+.card{background:var(--panel);border:1px solid #ffffff0d;border-radius:15px;padding:12px}.status{font-weight:750;font-size:16px}.sub{font-size:12px;color:var(--muted);margin-top:3px}
+.board-wrap{width:min(100%, calc(100vw - 24px), 56dvh);aspect-ratio:1;align-self:center;border-radius:5px;overflow:hidden;box-shadow:0 14px 38px #0005}.board{display:grid;grid-template-columns:repeat(8,1fr);grid-template-rows:repeat(8,1fr);width:100%;height:100%;touch-action:manipulation}
+.sq{position:relative;display:flex;align-items:center;justify-content:center;padding:0;border-radius:0;min-width:0;min-height:0;border:0}.light{background:var(--light)}.dark{background:var(--dark)}.sq.selected{box-shadow:inset 0 0 0 4px var(--gold)}.sq.last{background:#e9c965}.sq.hint:after{content:"";position:absolute;width:26%;height:26%;border-radius:50%;background:#202c4266}.sq.capturehint:after{content:"";position:absolute;inset:4%;border:4px solid #eac85c;border-radius:50%}
+.checker{width:77%;height:77%;border-radius:50%;display:grid;place-items:center;position:relative;z-index:1;box-shadow:inset 0 3px 4px #ffffff35,inset 0 -5px 7px #0005,0 2px 3px #0004;border:2px solid #ffffff40;font-size:clamp(15px,5vw,30px);font-weight:900}.checker.w{background:radial-gradient(circle at 35% 28%,#fff,#c9d3e2 70%,#8a9ab1);border-color:#fff}.checker.b{background:radial-gradient(circle at 35% 28%,#586780,#202a3b 72%,#101827);border-color:#71809a}.checker.king:after{content:"♛";color:#d8bd64;text-shadow:0 1px 2px #000;font-size:clamp(16px,5vw,28px)}
+.row{display:flex;gap:8px;align-items:center}.row>*{flex:1}label{font-size:12px;color:var(--muted)}select,button{font:inherit;border:0;border-radius:10px;padding:10px;background:var(--panel2);color:var(--text)}select{width:100%;margin-top:5px}button{cursor:pointer;touch-action:manipulation}button:active{transform:scale(.98)}button.primary{background:var(--accent);color:#15172b;font-weight:750}button:disabled{opacity:.4}
+.controls{display:grid;grid-template-columns:1fr 1fr 1.3fr;gap:7px}.controls button{font-size:13px;padding:10px 4px}.moves{max-height:100px;overflow:auto;font-size:12px;color:var(--muted);line-height:1.6}.footer{text-align:center;color:#71819b;font-size:11px;padding:2px 0 8px}
+@media(min-width:700px) and (orientation:landscape){.game{width:470px}.board-wrap{width:min(450px,58dvh)}.checker{font-size:30px}}
+@media(max-width:699px){
+ .app{padding-left:max(8px,env(safe-area-inset-left));padding-right:max(8px,env(safe-area-inset-right))}
+ .game{width:100%;max-width:470px;gap:9px}
+ .brand{justify-content:flex-start;padding:2px 4px}
+ .brand h1{font-size:18px}.logo{width:36px;height:36px;font-size:23px}
+ .board-wrap{width:min(100%, calc(100vw - 16px), 54dvh);min-width:0}
+ .card{padding:10px}
+ .status{font-size:15px}.sub{font-size:12px;line-height:1.35}
+ .checker{font-size:clamp(17px,7vw,30px)}
+ .controls{grid-template-columns:1fr 1fr 1.25fr;gap:6px}
+ .controls button{font-size:12px;padding:11px 3px;min-height:42px}
+ select{min-height:42px;font-size:14px}
+ .moves{max-height:110px;overflow-wrap:anywhere}
+}
+@media(max-height:700px) and (orientation:landscape){
+ .app{padding:6px}.game{width:min(100%,calc(100vw - 16px));display:grid;grid-template-columns:minmax(0,1fr) minmax(240px, .85fr);grid-template-areas:"brand brand" "board status" "board settings" "board moves" "board controls" "footer footer";gap:6px;align-items:start}
+ .brand{grid-area:brand;justify-content:flex-start}.board-wrap{grid-area:board;width:min(calc(100vw - 280px),calc(100dvh - 65px));align-self:center}
+ #status{grid-area:status}.game>section:nth-of-type(1){grid-area:status}.game>section:nth-of-type(2){grid-area:settings}.game>section:nth-of-type(3){grid-area:moves}.controls{grid-area:controls}.footer{grid-area:footer}
+ .card{padding:8px}.moves{max-height:65px}.checker{font-size:clamp(18px,4vh,28px)}
+}
+
+/* Phone portrait: fit the complete game into the viewport without page scrolling. */
+@media(max-width:699px) and (orientation:portrait){
+ html,body{width:100%;height:100%;min-height:0;overflow:hidden;overscroll-behavior:none}
+ .app{height:100dvh;min-height:0;overflow:hidden;padding: max(5px,env(safe-area-inset-top)) max(7px,env(safe-area-inset-right)) max(5px,env(safe-area-inset-bottom)) max(7px,env(safe-area-inset-left));align-items:stretch}
+ .game{width:100%;height:100%;min-height:0;max-width:470px;margin:0 auto;gap:clamp(3px, .7dvh, 7px);justify-content:space-between;overflow:hidden}
+ .brand{flex:0 0 auto;padding:0 3px;min-height:32px}
+ .logo{width:30px;height:30px;border-radius:9px;font-size:20px}
+ .brand h1{font-size:16px}.brand small{font-size:10px}
+ .game>section.card{flex:0 0 auto;padding:clamp(6px,1dvh,9px);border-radius:11px}
+ .status{font-size:14px;line-height:1.2}.sub{font-size:10px;line-height:1.2;margin-top:2px}
+ .board-wrap{width:min(calc(100vw - 16px), 39dvh, 100%);min-width:0;max-height:calc(100dvh - 300px);flex:0 1 auto}
+ .checker{width:77%;height:77%;font-size:clamp(15px,6vw,27px)}
+ .checker.king:after{font-size:clamp(14px,5vw,24px)}
+ .row{gap:6px}.row strong{font-size:12px}
+ label{font-size:10px}select{margin-top:3px;min-height:34px;padding:6px 7px;font-size:12px}
+ .moves{max-height:28px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-size:10px;line-height:1.4}
+ .controls{flex:0 0 auto;gap:5px}.controls button{min-height:38px;padding:7px 2px;font-size:11px}
+ .footer{flex:0 0 auto;font-size:9px;padding:0 0 1px;line-height:1.1}
+}
+@media(max-width:380px) and (orientation:portrait){
+ .board-wrap{width:min(calc(100vw - 14px), 36dvh, 100%)}
+ .game>section.card{padding:6px}
+ .controls button{font-size:10px;min-height:36px}
+}
+
+</style>
+</head>
+<body>
+<div class="app"><main class="game">
+ <header class="brand"><div class="logo">●</div><div><h1>Checkers Arena</h1><small>Русские шашки против ИИ</small></div></header>
+ <section class="card"><div id="status" class="status">Ваш ход — белые</div><div id="detail" class="sub">Выберите шашку, затем клетку назначения</div></section>
+ <div class="board-wrap"><div id="board" class="board" aria-label="Шашечная доска"></div></div>
+ <section class="card">
+  <div class="row"><div><label for="level">Сила бота</label><select id="level"><option value="1">1 · Новичок</option><option value="2">2 · Любитель</option><option value="3" selected>3 · Сильный</option><option value="4">4 · Эксперт</option><option value="5">5 · Максимум</option></select></div><div><label for="color">Ваш цвет</label><select id="color"><option value="w">Белые</option><option value="b">Чёрные</option></select></div></div>
+ </section>
+ <section class="card"><div class="row" style="margin-bottom:5px"><strong>Ходы</strong><span id="count" class="sub" style="text-align:right">0 ходов</span></div><div id="moves" class="moves">Игра ещё не началась</div></section>
+ <div class="controls"><button id="undo">↶ Назад</button><button id="flip">⇅ Доска</button><button id="new" class="primary">Новая игра</button></div>
+ <div class="footer" id="thinking">Игра работает в браузере</div>
+</main></div>
+<script>
+(()=>{
+const $=id=>document.getElementById(id), N=8;
+let board,turn='w',human='w',selected=null,options=[],flipped=false,busy=false,lastPath=[],history=[],moveLog=[],quiet=0;
+const dirs=[[-1,-1],[-1,1],[1,-1],[1,1]];
+function initial(){let b=Array.from({length:8},()=>Array(8).fill(null));for(let r=0;r<3;r++)for(let c=0;c<8;c++)if((r+c)%2===1)b[r][c]={s:'b',k:false};for(let r=5;r<8;r++)for(let c=0;c<8;c++)if((r+c)%2===1)b[r][c]={s:'w',k:false};return b}
+function clone(b){return b.map(row=>row.map(p=>p?{...p}:null))}
+function inside(r,c){return r>=0&&r<8&&c>=0&&c<8}
+function other(s){return s==='w'?'b':'w'}
+function capturesFrom(b,r,c,p){
+ let out=[];
+ if(!p)return out;
+ for(const [dr,dc] of dirs){
+  if(!p.k){
+   let mr=r+dr,mc=c+dc,tr=r+2*dr,tc=c+2*dc;
+   if(inside(tr,tc)&&b[mr]?.[mc]&&b[mr][mc].s!==p.s&&!b[tr][tc])out.push({from:[r,c],to:[tr,tc],cap:[mr,mc]});
+  }else{
+   let rr=r+dr,cc=c+dc,enemy=null;
+   while(inside(rr,cc)){
+    if(b[rr][cc]){
+     if(b[rr][cc].s===p.s||enemy)break;
+     enemy=[rr,cc];
+    }else if(enemy)out.push({from:[r,c],to:[rr,cc],cap:enemy.slice()});
+    rr+=dr;cc+=dc;
+   }
+  }
+ }
+ return out;
+}
+function allCaptures(b,s){let a=[];for(let r=0;r<8;r++)for(let c=0;c<8;c++)if(b[r][c]?.s===s)a.push(...capturesFrom(b,r,c,b[r][c]));return a}
+function simpleMoves(b,r,c,p){
+ let a=[];
+ if(p.k){for(const [dr,dc] of dirs){let rr=r+dr,cc=c+dc;while(inside(rr,cc)&&!b[rr][cc]){a.push({from:[r,c],to:[rr,cc],cap:null});rr+=dr;cc+=dc}}}
+ else {let dr=p.s==='w'?-1:1;for(const dc of [-1,1]){let rr=r+dr,cc=c+dc;if(inside(rr,cc)&&!b[rr][cc])a.push({from:[r,c],to:[rr,cc],cap:null})}}
+ return a;
+}
+function legalMoves(b,s){
+ let caps=allCaptures(b,s);if(caps.length)return caps;
+ let a=[];for(let r=0;r<8;r++)for(let c=0;c<8;c++)if(b[r][c]?.s===s)a.push(...simpleMoves(b,r,c,b[r][c]));return a;
+}
+function chainCaptures(b,r,c,p,visited=[]){
+ let caps=capturesFrom(b,r,c,p),all=[];
+ for(const m of caps){
+  let nb=clone(b),piece=nb[r][c];nb[r][c]=null;nb[m.cap[0]][m.cap[1]]=null;nb[m.to[0]][m.to[1]]=piece;
+  let crowned=!piece.k&&((piece.s==='w'&&m.to[0]===0)||(piece.s==='b'&&m.to[0]===7));if(crowned)piece.k=true;
+  let next=chainCaptures(nb,m.to[0],m.to[1],piece,visited.concat([m]));
+  if(next.length)for(const tail of next)all.push({path:[m,...tail.path],final:tail.final});else all.push({path:[m],final:m.to});
+ }
+ return all;
+}
+function expandMove(b,m){
+ let nb=clone(b),p=nb[m.from[0]][m.from[1]];nb[m.from[0]][m.from[1]]=null;
+ if(m.cap)nb[m.cap[0]][m.cap[1]]=null;nb[m.to[0]][m.to[1]]=p;
+ if(!p.k&&((p.s==='w'&&m.to[0]===0)||(p.s==='b'&&m.to[0]===7)))p.k=true;
+ return nb;
+}
+function moveVariants(b,s){
+ let caps=allCaptures(b,s);
+ if(caps.length){let out=[];for(const m of caps){let nb=expandMove(b,m),p=nb[m.to[0]][m.to[1]];let tails=chainCaptures(nb,m.to[0],m.to[1],p);if(tails.length)for(const t of tails)out.push({path:[m,...t.path],final:t.final});else out.push({path:[m],final:m.to})}return out}
+ return legalMoves(b,s).map(m=>({path:[m],final:m.to}));
+}
+function applyVariant(b,v){
+ let nb=clone(b);for(const m of v.path){let p=nb[m.from[0]][m.from[1]];nb[m.from[0]][m.from[1]]=null;if(m.cap)nb[m.cap[0]][m.cap[1]]=null;nb[m.to[0]][m.to[1]]=p;if(p&&!p.k&&((p.s==='w'&&m.to[0]===0)||(p.s==='b'&&m.to[0]===7)))p.k=true;}return nb;
+}
+function legalForPiece(r,c){let all=legalMoves(board,turn);return all.filter(m=>m.from[0]===r&&m.from[1]===c)}
+function coord(a){return String.fromCharCode(97+a[1])+(8-a[0])}
+function render(){
+ const root=$('board');root.innerHTML='';
+ for(let vr=0;vr<8;vr++)for(let vc=0;vc<8;vc++){
+  let r=flipped?7-vr:vr,c=flipped?7-vc:vc,p=board[r][c],el=document.createElement('button');
+  el.className='sq '+((r+c)%2?'dark':'light');if(selected&&selected[0]===r&&selected[1]===c)el.classList.add('selected');
+  if(lastPath.some(m=>(m.from[0]===r&&m.from[1]===c)||(m.to[0]===r&&m.to[1]===c)))el.classList.add('last');
+  const dests=options.filter(m=>m.to[0]===r&&m.to[1]===c);if(dests.length)el.classList.add(dests.some(m=>m.cap)?'capturehint':'hint');
+  if(p){let piece=document.createElement('span');piece.className='checker '+p.s+(p.k?' king':'');el.appendChild(piece)}
+  el.addEventListener('click',()=>tap(r,c));root.appendChild(el);
+ }
+ updateStatus();renderLog();
+}
+function statusText(){
+ let whites=0,blacks=0;for(const row of board)for(const p of row)if(p)(p.s==='w'?whites++:blacks++);
+ if(!whites)return 'Победили чёрные';if(!blacks)return 'Победили белые';
+ if(!legalMoves(board,turn).length)return (turn==='w'?'Победили чёрные':'Победили белые');
+ return turn===human?'Ваш ход — '+(turn==='w'?'белые':'чёрные'):'Ход бота — '+(turn==='w'?'белые':'чёрные');
+}
+function gameOver(){return !legalMoves(board,turn).length||!board.some(row=>row.some(p=>p?.s==='w'))||!board.some(row=>row.some(p=>p?.s==='b'))}
+function updateStatus(){$('status').textContent=statusText();$('detail').textContent=gameOver()?'Партия завершена':(busy?'Бот оценивает позицию':(options.some(m=>m.cap)?'Обязательное взятие — выберите шашку':'Выберите шашку, затем клетку назначения'));$('thinking').textContent=busy?'Бот думает…':'Игра работает в браузере';$('undo').disabled=busy||!history.length}
+function renderLog(){$('count').textContent=moveLog.length+' ходов';$('moves').textContent=moveLog.length?moveLog.map((m,i)=>(i+1)+'. '+m).join('   '):'Игра ещё не началась'}
+function tap(r,c){
+ if(busy||gameOver()||turn!==human)return;
+ let p=board[r][c],dest=options.filter(m=>m.to[0]===r&&m.to[1]===c);
+ if(selected&&dest.length){
+  let chosen=dest[0];history.push({board:clone(board),turn,moveLog:moveLog.slice(),lastPath:lastPath.slice()});
+  let path=chosen.path||[chosen];board=applyVariant(board,chosen);lastPath=path;moveLog.push(path.map(m=>coord(m.from)+'-'+coord(m.to)).join(' × '));selected=null;options=[];turn=other(turn);render();if(!gameOver())setTimeout(botMove,80);return;
+ }
+ if(p&&p.s===human){selected=[r,c];options=legalForPiece(r,c);if(options.length&&options[0].cap){options=moveVariants(board,turn).filter(v=>v.path[0].from[0]===r&&v.path[0].from[1]===c).map(v=>({from:v.path[0].from,to:v.final,cap:v.path.some(m=>m.cap),path:v.path}))}else options=options.map(m=>({...m,path:[m]}));}
+ else{selected=null;options=[]}render();
+}
+function evaluate(b,side){
+ let s=0;for(let r=0;r<8;r++)for(let c=0;c<8;c++){let p=b[r][c];if(!p)continue;let v=p.k?185:100;let center=7-(Math.abs(3.5-r)+Math.abs(3.5-c));v+=center*2;if(!p.k)v+=(p.s==='w'?(7-r):r)*1.5;s+=(p.s===side?v:-v)}return s;
+}
+function minimax(b,side,depth,alpha,beta,maxSide){
+ if(depth===0)return evaluate(b,maxSide);
+ let variants=moveVariants(b,side);if(!variants.length)return side===maxSide?-10000:10000;
+ let maximizing=side===maxSide,best=maximizing?-Infinity:Infinity;
+ for(const v of variants){let score=minimax(applyVariant(b,v),other(side),depth-1,alpha,beta,maxSide);
+ if(maximizing){best=Math.max(best,score);alpha=Math.max(alpha,best)}else{best=Math.min(best,score);beta=Math.min(beta,best)}if(beta<=alpha)break;}
+ return best;
+}
+function botMove(){
+ if(gameOver()||turn===human)return;busy=true;render();
+ setTimeout(()=>{
+  let lv=+$('level').value,depth=[1,2,3,4,5,6][lv],moves=moveVariants(board,turn),best=-Infinity,chosen=[];
+  // Limit search depth for flying-king branching while still giving progressively stronger play.
+  for(const v of moves){let nb=applyVariant(board,v);let score=minimax(nb,other(turn),Math.max(0,depth-1),-Infinity,Infinity,turn);score+=Math.random()*(lv<=2?8:lv===3?2:0);if(score>best){best=score;chosen=[v]}else if(score===best)chosen.push(v)}
+  if(chosen.length){let v=chosen[Math.floor(Math.random()*chosen.length)];history.push({board:clone(board),turn,moveLog:moveLog.slice(),lastPath:lastPath.slice()});board=applyVariant(board,v);lastPath=v.path;moveLog.push(v.path.map(m=>coord(m.from)+'-'+coord(m.to)).join(' × '));turn=other(turn);}
+  busy=false;selected=null;options=[];render();
+ },30);
+}
+function reset(){board=initial();turn='w';human=$('color').value;flipped=human==='b';selected=null;options=[];busy=false;lastPath=[];history=[];moveLog=[];render();if(human==='b'){turn='w';setTimeout(botMove,100)}}
+$('new').addEventListener('click',reset);$('flip').addEventListener('click',()=>{flipped=!flipped;render()});$('color').addEventListener('change',reset);
+$('undo').addEventListener('click',()=>{if(busy||!history.length)return;let n=human==='w'?1:Math.min(2,history.length);while(n--&&history.length){let h=history.pop();board=h.board;turn=h.turn;moveLog=h.moveLog;lastPath=h.lastPath}selected=null;options=[];render()});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'){selected=null;options=[];render()}});
+reset();
+})();
+</script>
+<audio id="bgMusic" loop preload="auto">
+  <source src="./mixkit-finding-myself-993.mp3" type="audio/mpeg">
+</audio>
+
+<script>
+(() => {
+  const music = document.getElementById('bgMusic');
+  music.volume = 0.15;
+
+  // Запуск музыки после первого действия пользователя
+  const startMusic = () => {
+    music.play().catch(() => {});
+  };
+
+  document.addEventListener('pointerdown', startMusic, { once: true });
+  document.addEventListener('keydown', startMusic, { once: true });
+})();
+</script>
+</body></html>

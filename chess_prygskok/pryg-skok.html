@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#8bdcff">
+<title>Прыг-скок — мини-игра</title>
+<style>
+  :root { --sky:#9be3ff; --ink:#18324a; --lime:#c8f36a; --pink:#ff8fa3; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { margin:0; width:100%; height:100%; overflow:hidden; background:#8bdcff; font-family:ui-rounded,"Trebuchet MS",system-ui,sans-serif; color:var(--ink); }
+  body { display:flex; align-items:center; justify-content:center; }
+  #game-shell { position:relative; width:min(100vw, 56.25vh); height:100dvh; max-height:100dvh; overflow:hidden; background:linear-gradient(#8be0ff 0%,#d9f7ff 100%); }
+  canvas { width:100%; height:100%; display:block; touch-action:none; }
+  .hud { position:absolute; top:max(12px,env(safe-area-inset-top)); left:0; right:0; padding:0 16px; display:flex; justify-content:space-between; align-items:flex-start; pointer-events:none; z-index:2; }
+  .pill { background:rgba(255,255,255,.84); border:2px solid rgba(255,255,255,.9); border-radius:16px; padding:8px 12px; box-shadow:0 4px 0 rgba(38,112,150,.12); font-weight:900; letter-spacing:.03em; }
+  .score { font-size:clamp(18px,5vw,24px); min-width:90px; }
+  .best { font-size:12px; margin-top:4px; opacity:.72; }
+  .pause { pointer-events:auto; border:0; width:42px; height:42px; border-radius:14px; font-size:19px; font-weight:900; color:var(--ink); background:#fff; box-shadow:0 4px 0 rgba(38,112,150,.18); }
+  .overlay { position:absolute; inset:0; z-index:4; display:flex; align-items:center; justify-content:center; padding:24px; background:rgba(30,91,126,.2); backdrop-filter:blur(5px); }
+  .panel { width:min(100%,340px); padding:26px 22px 22px; border:3px solid white; border-radius:28px; background:rgba(255,255,255,.94); text-align:center; box-shadow:0 12px 0 rgba(35,106,143,.16); }
+  .mascot { font-size:64px; line-height:1.1; filter:drop-shadow(0 5px 0 rgba(0,0,0,.06)); }
+  h1 { font-size:30px; line-height:1.05; margin:12px 0 8px; letter-spacing:-.04em; }
+  .desc { font-size:14px; line-height:1.5; color:#587386; margin:0 0 18px; }
+  .start { width:100%; border:0; border-radius:16px; padding:15px 18px; background:#b9ee56; color:#234118; font:900 17px inherit; font-size:17px; box-shadow:0 5px 0 #83bd31; cursor:pointer; }
+  .start:active { transform:translateY(3px); box-shadow:0 2px 0 #83bd31; }
+  .hint { font-size:11px; color:#7892a1; margin-top:14px; }
+  .touch-hint { position:absolute; bottom:max(17px,env(safe-area-inset-bottom)); left:50%; transform:translateX(-50%); z-index:3; padding:9px 14px; border:1px solid rgba(255,255,255,.75); border-radius:999px; background:rgba(255,255,255,.48); color:#2c6b88; font-size:11px; font-weight:900; letter-spacing:.12em; pointer-events:none; white-space:nowrap; }
+  .touch-zone { position:absolute; inset:0; z-index:1; touch-action:none; }
+  .toast { position:absolute; top:23%; width:100%; text-align:center; z-index:2; pointer-events:none; font-weight:900; font-size:14px; color:#39718b; opacity:0; transition:opacity .25s; }
+  @media (min-width:700px) { #game-shell { height:min(100dvh,900px); border-radius:24px; box-shadow:0 20px 70px #267aa044; } }
+  @media (max-height:520px) { .controls { bottom:8px; } .ctrl { width:54px;height:54px;border-radius:18px; } }
+</style>
+</head>
+<body>
+<div id="game-shell">
+  <canvas id="game" aria-label="Игра Прыг-скок"></canvas>
+  <div class="hud">
+    <div class="pill score"><span id="score">0</span><div class="best">РЕКОРД: <span id="best">0</span></div></div>
+    <button class="pause" id="pause" aria-label="Пауза">Ⅱ</button>
+  </div>
+  <div class="toast" id="toast">Пружинка! 🚀</div>
+  <div class="touch-zone" id="touchZone" aria-label="Касайтесь и ведите пальцем, чтобы двигаться"></div>
+  <div class="touch-hint">← ВЕДИ ПАЛЬЦЕМ →</div>
+  <div class="overlay" id="overlay">
+    <div class="panel">
+      <div class="mascot" id="mascot">👾</div>
+      <h1 id="heading">Прыг-скок!</h1>
+      <p class="desc" id="description">Поднимайся всё выше по бесконечным платформам! Монстрик прыгает сам — веди пальцем влево или вправо, чтобы направлять его.</p>
+      <button class="start" id="start">Начать игру</button>
+      <div class="hint">УПРАВЛЕНИЕ: веди пальцем по экрану или используй ← →</div>
+    </div>
+  </div>
+</div>
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const shell = document.getElementById('game-shell');
+  const scoreEl = document.getElementById('score');
+  const bestEl = document.getElementById('best');
+  const overlay = document.getElementById('overlay');
+  const heading = document.getElementById('heading');
+  const description = document.getElementById('description');
+  const mascot = document.getElementById('mascot');
+  const startBtn = document.getElementById('start');
+  const pauseBtn = document.getElementById('pause');
+  const toast = document.getElementById('toast');
+
+  let W=360,H=640,dpr=1, running=false, paused=false, dead=false;
+  let player, platforms=[], particles=[], cameraY=0, maxHeight=0, score=0, best=0, lastTime=0, toastTimer=0;
+  let targetX=null, keys={};
+  try { best = Number(localStorage.getItem('prygskok-best')||0); } catch(e) {}
+  bestEl.textContent=best;
+
+  function resize() {
+    const r = shell.getBoundingClientRect();
+    dpr = Math.min(window.devicePixelRatio||1,2);
+    W = Math.max(280,r.width); H = Math.max(400,r.height);
+    canvas.width=Math.round(W*dpr); canvas.height=Math.round(H*dpr);
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+    if (!running && !player) draw();
+  }
+  window.addEventListener('resize',resize);
+  function rand(a,b){return a+Math.random()*(b-a);}
+  function newPlatform(x,y,w,type='normal'){return {x,y,w,h:14,type,active:true,phase:rand(0,6.28)};}
+
+  function reset() {
+    score=0; maxHeight=0; cameraY=0; particles=[]; platforms=[];
+    player={x:W/2-20,y:H-130,w:40,h:42,vx:0,vy:-620,face:1,bounce:0};
+    platforms.push(newPlatform(W/2-48,H-70,96,'normal'));
+    let y=H-145;
+    while(y>-H*1.6){ const w=rand(62,88); platforms.push(newPlatform(rand(8,W-w-8),y,w,'normal')); y-=rand(68,91); }
+    scoreEl.textContent='0'; dead=false; paused=false; pauseBtn.textContent='Ⅱ';
+  }
+  function begin(){reset();overlay.style.display='none';running=true;paused=false;lastTime=performance.now();requestAnimationFrame(loop);}
+  function endGame(){
+    if(dead)return; dead=true; running=false;
+    if(score>best){best=score;bestEl.textContent=best;try{localStorage.setItem('prygskok-best',best);}catch(e){}}
+    mascot.textContent='😵'; heading.textContent='Упс! Ты упал';
+    description.textContent=`Высота: ${score} м. Попробуешь побить свой рекорд?`;
+    startBtn.textContent='Играть снова'; overlay.style.display='flex';
+  }
+  function showToast(text){toast.textContent=text;toast.style.opacity=1;toastTimer=1;}
+  function roundedRect(x,y,w,h,r,fill,stroke){ctx.beginPath();ctx.roundRect(x,y,w,h,r);if(fill){ctx.fillStyle=fill;ctx.fill();}if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=2;ctx.stroke();}}
+  function drawBackground(){
+    const grad=ctx.createLinearGradient(0,0,0,H);grad.addColorStop(0,'#80d9ff');grad.addColorStop(1,'#e4faff');ctx.fillStyle=grad;ctx.fillRect(0,0,W,H);
+    // soft clouds
+    for(let i=0;i<8;i++){
+      const x=((i*113+30)% (W+100))-50;
+      const y=((i*137+80+cameraY*.18)%(H+100))-50;
+      ctx.fillStyle='rgba(255,255,255,.48)';
+      ctx.beginPath();ctx.ellipse(x,y,28,10,0,0,Math.PI*2);ctx.ellipse(x+18,y-5,20,13,0,0,Math.PI*2);ctx.ellipse(x+35,y,23,9,0,0,Math.PI*2);ctx.fill();
+    }
+    ctx.fillStyle='rgba(255,255,255,.3)';
+    for(let i=0;i<18;i++){let x=(i*79+23)%W,y=((i*113+cameraY*.35)%(H+30)+H+30)%(H+30)-15;ctx.beginPath();ctx.arc(x,y,2+(i%3),0,Math.PI*2);ctx.fill();}
+    // tiny twinkles
+    for(let i=0;i<8;i++){
+      const x=(i*137+51)%W, y=((i*97+cameraY*.22)%(H+40)+H+40)%(H+40)-20;
+      ctx.strokeStyle='rgba(255,255,255,.65)';ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(x-4,y);ctx.lineTo(x+4,y);ctx.moveTo(x,y-4);ctx.lineTo(x,y+4);ctx.stroke();
+    }
+  }
+  function drawPlatform(p){
+    const sy=p.y-cameraY;
+    if(sy<-36||sy>H+36)return;
+    if(p.type==='spring'){
+      ctx.save();ctx.shadowColor='#ff7397';ctx.shadowBlur=12;
+      roundedRect(p.x+p.w/2-9,sy-15,18,16,5,'#ff7397','#fff');
+      ctx.shadowBlur=0;ctx.strokeStyle='#fff';ctx.lineWidth=2.5;ctx.beginPath();ctx.moveTo(p.x+p.w/2-5,sy-11);ctx.lineTo(p.x+p.w/2+5,sy-6);ctx.lineTo(p.x+p.w/2-5,sy-2);ctx.stroke();ctx.restore();
+    }
+    const moving=p.type==='moving';
+    const top=moving?'#ffc96d':'#b9f36c', side=moving?'#e89b35':'#69b943';
+    ctx.save();ctx.shadowColor=moving?'#d98d2b55':'#4c9a3c55';ctx.shadowBlur=10;ctx.shadowOffsetY=4;
+    roundedRect(p.x,p.y-cameraY,p.w,p.h,7,top,'rgba(255,255,255,.95)');
+    ctx.shadowBlur=0;ctx.shadowOffsetY=0;
+    roundedRect(p.x+3,sy+7,p.w-6,5,3,side,null);
+    ctx.fillStyle='rgba(255,255,255,.75)';
+    for(let i=0;i<Math.floor(p.w/18);i++){ctx.beginPath();ctx.arc(p.x+10+i*18,sy+4,2,0,Math.PI*2);ctx.fill();}
+    if(moving){ctx.fillStyle='#fff8';ctx.font='bold 12px sans-serif';ctx.textAlign='center';ctx.fillText('↔',p.x+p.w/2,sy-5);}
+    ctx.restore();
+  }
+  function drawPlayer(){
+    const x=player.x,y=player.y-cameraY;
+    ctx.save();
+    // little glow and shadow
+    ctx.fillStyle='rgba(30,103,139,.15)';ctx.beginPath();ctx.ellipse(x+20,y+42,17,5,0,0,Math.PI*2);ctx.fill();
+    ctx.shadowColor='#6e55db66';ctx.shadowBlur=15;
+    // feet and tiny arms
+    roundedRect(x+4,y+31,12,10,5,'#7b5ce1','#5038aa');
+    roundedRect(x+24,y+31,12,10,5,'#7b5ce1','#5038aa');
+    roundedRect(x-2,y+20,10,15,5,'#9b83ff','#5038aa');
+    roundedRect(x+32,y+20,10,15,5,'#9b83ff','#5038aa');
+    // horn spikes
+    ctx.fillStyle='#ffcf67';ctx.strokeStyle='#5038aa';ctx.lineWidth=2;
+    ctx.beginPath();ctx.moveTo(x+7,y+11);ctx.lineTo(x+5,y-1);ctx.lineTo(x+16,y+7);ctx.closePath();ctx.fill();ctx.stroke();
+    ctx.beginPath();ctx.moveTo(x+33,y+11);ctx.lineTo(x+36,y-1);ctx.lineTo(x+25,y+7);ctx.closePath();ctx.fill();ctx.stroke();
+    // body
+    const g=ctx.createLinearGradient(x,y,x+40,y+40);g.addColorStop(0,'#b7a2ff');g.addColorStop(1,'#7454d7');
+    roundedRect(x+2,y+5,36,33,13,g,'#5038aa');
+    ctx.shadowBlur=0;
+    // belly
+    ctx.fillStyle='#d9ceff';ctx.beginPath();ctx.ellipse(x+20,y+27,10,7,0,0,Math.PI*2);ctx.fill();
+    // eyes, pupils follow direction
+    ctx.fillStyle='#fff';ctx.beginPath();ctx.ellipse(x+12,y+16,7,8,0,0,Math.PI*2);ctx.ellipse(x+28,y+16,7,8,0,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#20233f';ctx.beginPath();ctx.arc(x+12+player.face*2,y+17,3,0,Math.PI*2);ctx.arc(x+28+player.face*2,y+17,3,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(x+13+player.face*2,y+16,1,0,Math.PI*2);ctx.arc(x+29+player.face*2,y+16,1,0,Math.PI*2);ctx.fill();
+    // cheek dots and grin
+    ctx.fillStyle='#ff8fa3';ctx.beginPath();ctx.arc(x+7,y+24,2.5,0,Math.PI*2);ctx.arc(x+33,y+24,2.5,0,Math.PI*2);ctx.fill();
+    ctx.strokeStyle='#35266e';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(x+15,y+26);ctx.quadraticCurveTo(x+20,y+31,x+25,y+26);ctx.stroke();
+    if(player.bounce>0){ctx.strokeStyle='rgba(255,255,255,.9)';ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(x+3,y+41);ctx.lineTo(x-4,y+47);ctx.moveTo(x+37,y+41);ctx.lineTo(x+44,y+47);ctx.stroke();}
+    ctx.restore();
+  }
+  function drawParticles(){
+    for(const p of particles){ctx.globalAlpha=Math.max(0,p.life);ctx.fillStyle=p.color;ctx.beginPath();ctx.arc(p.x,p.y-cameraY,p.r,0,Math.PI*2);ctx.fill();}
+    ctx.globalAlpha=1;
+  }
+  function draw(){
+    drawBackground();
+    platforms.forEach(drawPlatform);
+    if(player)drawPlayer();
+    drawParticles();
+  }
+  function update(dt){
+    const speed=340;
+    let move=(keys.ArrowRight||keys.d?1:0)-(keys.ArrowLeft||keys.a?1:0);
+    if(targetX!==null && move===0){
+      const center=player.x+player.w/2, delta=targetX-center;
+      move=Math.abs(delta)<8?0:Math.sign(delta)*Math.min(1,Math.abs(delta)/55);
+    }
+    player.vx=move*speed;
+    if(move)player.face=move;
+    player.x+=player.vx*dt;
+    if(player.x<-player.w)player.x=W;
+    if(player.x>W)player.x=-player.w;
+    const oldBottom=player.y+player.h;
+    player.vy+=1050*dt;
+    player.y+=player.vy*dt;
+    if(player.vy>0){
+      for(const p of platforms){
+        const py=p.y-cameraY;
+        if(oldBottom-cameraY<=py+4 && player.y+player.h-cameraY>=py && player.x+player.w-5>p.x && player.x+5<p.x+p.w){
+          // Every landing triggers exactly one bounce. Platforms can be reused on a later landing.
+          player.y=p.y-player.h;
+          player.vy=p.type==='spring'?-850:-620;
+          player.bounce=.18;
+          for(let i=0;i<7;i++)particles.push({x:player.x+20,y:p.y,vx:rand(-90,90),vy:rand(-150,-30),life:rand(.25,.55),r:rand(2,4),color:p.type==='spring'?'#ff8fa3':'#fff'});
+          if(p.type==='spring')showToast('Пружинка! 🚀');
+          else if(Math.random()<.22)showToast('Отличный прыжок! ✨');
+          break;
+        }
+      }
+    }
+    // Camera follows only upward progress.
+    const target=player.y-H*.42;
+    if(target<cameraY)cameraY=target;
+    maxHeight=Math.max(maxHeight,Math.floor(Math.max(0,(H-130-player.y+cameraY)/10)));
+    score=Math.max(score,Math.floor(Math.max(0,-cameraY/10)));
+    // score is based on camera travel, so it always climbs as the world scrolls
+    score=Math.max(score,Math.floor(Math.max(0,-cameraY/10)));
+    scoreEl.textContent=score;
+    // Add platforms above the camera
+    let top=Infinity;for(const p of platforms)top=Math.min(top,p.y);
+    while(top>cameraY-220){top-=rand(72,96);const w=rand(62,92);const roll=Math.random();const type=roll<.13?'spring':(roll<.31?'moving':'normal');platforms.push(newPlatform(rand(5,W-w-5),top,w,type));}
+    platforms=platforms.filter(p=>p.y-cameraY<H+70);
+    platforms.forEach(p=>{if(p.type==='moving'){p.x+=Math.sin(performance.now()/650+p.phase)*42*dt;p.x=Math.max(0,Math.min(W-p.w,p.x));}});
+    particles.forEach(p=>{p.x+=p.vx*dt;p.y+=p.vy*dt;p.vy+=280*dt;p.life-=dt;});
+    particles=particles.filter(p=>p.life>0);
+    if(player.bounce>0)player.bounce-=dt;
+    if(toastTimer>0){toastTimer-=dt;if(toastTimer<=0)toast.style.opacity=0;}
+    if(player.y-cameraY>H+45)endGame();
+  }
+  function loop(t){
+    if(!running)return;
+    if(paused){lastTime=t;draw();requestAnimationFrame(loop);return;}
+    const dt=Math.min((t-lastTime)/1000||0,0.033);lastTime=t;
+    update(dt);draw();
+    if(running)requestAnimationFrame(loop);
+  }
+  const touchZone=document.getElementById('touchZone');
+  function touchAt(e){
+    const r=canvas.getBoundingClientRect();
+    targetX=Math.max(0,Math.min(W,(e.clientX-r.left)/r.width*W));
+  }
+  touchZone.addEventListener('pointerdown',e=>{if(e.pointerType==='mouse')return;e.preventDefault();touchZone.setPointerCapture?.(e.pointerId);touchAt(e);});
+  touchZone.addEventListener('pointermove',e=>{if(e.pointerType==='mouse')return;if(e.buttons||e.pressure>0){e.preventDefault();touchAt(e);}});
+  touchZone.addEventListener('pointerup',()=>{targetX=null;});
+  touchZone.addEventListener('pointercancel',()=>{targetX=null;});
+  window.addEventListener('keydown',e=>{if(['ArrowLeft','ArrowRight',' '].includes(e.key))e.preventDefault();keys[e.key]=true;if(e.key===' '&&overlay.style.display!=='none')begin();if((e.key==='Escape'||e.key==='p'||e.key==='P')&&running)togglePause();});
+  window.addEventListener('keyup',e=>{keys[e.key]=false;});
+  function togglePause(){
+    if(!running)return;
+    paused=!paused;pauseBtn.textContent=paused?'▶':'Ⅱ';
+    if(paused){heading.textContent='Пауза';mascot.textContent='⏸️';description.textContent='Передохни немного — высота никуда не убежит.';startBtn.textContent='Продолжить';overlay.style.display='flex';}
+    else {overlay.style.display='none';lastTime=performance.now();}
+  }
+  startBtn.addEventListener('click',()=>{if(running&&paused){paused=false;overlay.style.display='none';pauseBtn.textContent='Ⅱ';lastTime=performance.now();}else begin();});
+  pauseBtn.addEventListener('click',()=>{if(running)togglePause();});
+  // Avoid a stuck movement if the page loses focus.
+  window.addEventListener('blur',()=>{targetX=null;keys={};});
+  resize(); draw();
+})();
+</script>
+<audio id="bgMusic" loop preload="auto">
+  <source src="./mixkit-charlotte-586.mp3" type="audio/mpeg">
+</audio>
+
+<script>
+(() => {
+  const music = document.getElementById('bgMusic');
+  music.volume = 0.15;
+
+  // Запуск музыки после первого действия пользователя
+  const startMusic = () => {
+    music.play().catch(() => {});
+  };
+
+  document.addEventListener('pointerdown', startMusic, { once: true });
+  document.addEventListener('keydown', startMusic, { once: true });
+})();
+</script>
+</body>
+</html>

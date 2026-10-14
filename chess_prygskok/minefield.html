@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#101522">
+<title>Minefield</title>
+<style>
+:root{--bg:#101522;--panel:#1a2233;--panel2:#253149;--text:#f0f4ff;--muted:#96a4be;--accent:#a99aff;--cell:#29364e;--revealed:#1b2639;--line:#34425c}
+*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;background:radial-gradient(ellipse at top,#202b42,var(--bg) 65%);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Arial,sans-serif;overscroll-behavior:none}
+body{display:flex;justify-content:center;align-items:center;overflow:hidden}.app{width:min(100%,480px);height:100dvh;max-height:950px;padding:clamp(10px,3vw,18px);display:flex;flex-direction:column;gap:12px}
+.top{display:flex;align-items:center;justify-content:space-between;gap:10px}.brand{display:flex;align-items:center;gap:10px}.logo{width:43px;height:43px;border-radius:14px;background:linear-gradient(135deg,#c4b7ff,#6c7fe6);display:grid;place-items:center;font-size:25px;color:#15192a;box-shadow:0 5px 16px #0003}.brand h1{font-size:20px;margin:0;letter-spacing:.3px}.brand p{margin:2px 0 0;color:var(--muted);font-size:11px;letter-spacing:1.4px;text-transform:uppercase}
+.iconbtn{width:42px;height:42px;padding:0;font-size:20px;background:var(--panel2);border:1px solid #ffffff0e;border-radius:13px;color:var(--text)}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.stat{background:var(--panel);border:1px solid #ffffff0d;border-radius:13px;padding:9px;text-align:center}.stat .value{font-size:22px;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.1}.stat .label{font-size:9px;letter-spacing:1.1px;color:var(--muted);margin-top:5px}
+.toolbar{display:flex;align-items:center;gap:7px}.difficulty{display:flex;gap:5px;flex:1;background:var(--panel);padding:4px;border-radius:12px}.difficulty button{flex:1;padding:8px 2px;border-radius:9px;background:transparent;color:var(--muted);font-size:11px}.difficulty button.active{background:var(--accent);color:#17162a;font-weight:800}
+.mode{display:flex;gap:5px}.mode button{width:39px;height:39px;padding:0;font-size:18px;border-radius:11px;background:var(--panel2);color:var(--text)}
+.board-wrap{width:100%;flex:1;min-height:0;display:flex;align-items:center;justify-content:center}.board{width:min(100%,calc(100dvh - 275px));max-height:100%;aspect-ratio:1;display:grid;gap:4px;touch-action:manipulation}
+.cell{position:relative;min-width:0;min-height:0;padding:0;border:1px solid #ffffff0a;border-radius:7px;background:linear-gradient(145deg,#34435d,#253149);color:var(--text);font-size:clamp(13px,4vw,22px);font-weight:850;display:grid;place-items:center;box-shadow:inset 0 1px 0 #ffffff12,0 2px 3px #0002;user-select:none}
+.cell:active{transform:scale(.96)}.cell.open{background:var(--revealed);box-shadow:none;border-color:#ffffff05}.cell.flag{color:#ff788d}.cell.mine{background:#9f4058;color:#fff}.cell.exploded{background:#ff526e!important}.cell.n1{color:#8fbaff}.cell.n2{color:#75dfb2}.cell.n3{color:#ff8e9f}.cell.n4{color:#c3a7ff}.cell.n5{color:#ffcb7a}.cell.n6{color:#6de2e2}
+.bottom{display:flex;gap:8px}.bottom button{flex:1;padding:13px 8px;border:0;border-radius:12px;font-weight:750;font-size:12px}.primary{background:var(--accent);color:#17162a}.secondary{background:var(--panel2);color:var(--text)}button{cursor:pointer;touch-action:manipulation}
+.message{min-height:18px;text-align:center;color:var(--muted);font-size:11px}
+.overlay{position:fixed;inset:0;background:#080c16b8;display:none;align-items:center;justify-content:center;padding:24px;z-index:4}.overlay.show{display:flex}.modal{width:min(100%,320px);padding:22px;border-radius:20px;background:var(--panel);border:1px solid #ffffff18;text-align:center;box-shadow:0 20px 70px #0008}.modal .emoji{font-size:48px}.modal h2{margin:8px 0;font-size:23px}.modal p{color:var(--muted);font-size:13px;line-height:1.5}.modal button{width:100%;padding:12px;border-radius:12px;background:var(--accent);color:#17162a;font-weight:800}
+@media(max-height:650px){.app{gap:7px;padding:8px}.logo{width:35px;height:35px}.brand h1{font-size:17px}.stats .stat{padding:6px}.stat .value{font-size:18px}.stat .label{font-size:8px}.board{width:min(100%,calc(100dvh - 210px));gap:3px}.cell{border-radius:5px;font-size:clamp(12px,3.5vw,19px)}.bottom button{padding:9px}.iconbtn{width:36px;height:36px}}
+</style>
+</head>
+<body>
+<main class="app">
+ <header class="top">
+  <div class="brand"><div class="logo">✹</div><div><h1>MINEFIELD</h1><p>Think before you tap</p></div></div>
+  <button class="iconbtn" id="sound" aria-label="Sound">♫</button>
+ </header>
+ <section class="stats">
+  <div class="stat"><div class="value" id="mines">010</div><div class="label">MINES LEFT</div></div>
+  <div class="stat"><div class="value" id="time">000</div><div class="label">TIME</div></div>
+  <div class="stat"><div class="value" id="wins">0</div><div class="label">WINS</div></div>
+ </section>
+ <section class="toolbar">
+  <div class="difficulty">
+   <button data-level="easy" class="active">EASY</button><button data-level="medium">MED</button><button data-level="hard">HARD</button>
+  </div>
+  <div class="mode"><button id="flagMode" aria-label="Flag mode">⚑</button><button id="restart" aria-label="Restart">↻</button></div>
+ </section>
+ <div class="board-wrap"><div id="board" class="board"></div></div>
+ <div class="message" id="message">Tap a tile to begin · Hold to flag</div>
+ <div class="bottom"><button class="secondary" id="help">HOW TO PLAY</button><button class="primary" id="newGame">NEW GAME</button></div>
+</main>
+<div class="overlay" id="overlay"><div class="modal"><div class="emoji" id="modalEmoji">✦</div><h2 id="modalTitle">Ready?</h2><p id="modalText">Find every safe tile.</p><button id="modalButton">PLAY AGAIN</button></div></div>
+<script>
+(()=>{
+const $=id=>document.getElementById(id);
+const levels={easy:{r:8,c:8,m:10},medium:{r:10,c:10,m:16},hard:{r:12,c:12,m:30}};
+let level='easy',R=8,C=8,M=10,cells=[],started=false,ended=false,flagMode=false,seconds=0,timer=null,flags=0,safeOpen=0,wins=0,sound=true,pressTimer=null;
+function makeBoard(){
+ clearInterval(timer);timer=null;R=levels[level].r;C=levels[level].c;M=levels[level].m;cells=Array.from({length:R*C},()=>({mine:false,open:false,flag:false,n:0}));started=false;ended=false;seconds=0;flags=0;safeOpen=0;
+ $('time').textContent='000';$('mines').textContent=String(M).padStart(3,'0');$('message').textContent='Tap a tile to begin · Hold to flag';$('overlay').classList.remove('show');
+ let b=$('board');b.style.gridTemplateColumns=`repeat(${C},1fr)`;b.style.gridTemplateRows=`repeat(${R},1fr)`;b.innerHTML='';
+ for(let i=0;i<R*C;i++){let el=document.createElement('button');el.className='cell';el.dataset.i=i;el.setAttribute('aria-label','Hidden tile');el.addEventListener('click',()=>tap(i));el.addEventListener('contextmenu',e=>{e.preventDefault();toggleFlag(i)});let startX=0,startY=0;
+  el.addEventListener('touchstart',e=>{startX=e.touches[0].clientX;startY=e.touches[0].clientY;pressTimer=setTimeout(()=>{toggleFlag(i);pressTimer=null;},430)},{passive:true});
+  el.addEventListener('touchend',()=>{if(pressTimer){clearTimeout(pressTimer);pressTimer=null;}},{passive:true});
+  el.addEventListener('touchmove',()=>{if(pressTimer){clearTimeout(pressTimer);pressTimer=null;}},{passive:true});
+  b.appendChild(el)}
+ updateBoard();
+}
+function neighbors(i){let r=Math.floor(i/C),c=i%C,a=[];for(let dr=-1;dr<=1;dr++)for(let dc=-1;dc<=1;dc++){if(!dr&&!dc)continue;let rr=r+dr,cc=c+dc;if(rr>=0&&rr<R&&cc>=0&&cc<C)a.push(rr*C+cc)}return a}
+function placeMines(first){let forbidden=new Set([first,...neighbors(first)]),available=[];for(let i=0;i<cells.length;i++)if(!forbidden.has(i))available.push(i);
+ // On compact boards, keep the first tap safe and place the exact mine count.
+ for(let i=available.length-1;i>0;i--){let j=Math.floor(Math.random()*(i+1));[available[i],available[j]]=[available[j],available[i]]}
+ for(const i of available.slice(0,M))cells[i].mine=true;
+ for(let i=0;i<cells.length;i++)cells[i].n=neighbors(i).filter(j=>cells[j].mine).length;
+}
+function start(i){if(started)return;started=true;placeMines(i);timer=setInterval(()=>{if(!ended){seconds++;$('time').textContent=String(seconds).padStart(3,'0')}},1000)}
+function tap(i){if(ended)return;if(flagMode){toggleFlag(i);return}if(cells[i].flag||cells[i].open)return;if(!started)start(i);if(cells[i].mine){cells[i].open=true;cells[i].exploded=true;revealAll();finish(false);return}reveal(i);updateBoard();checkWin()}
+function reveal(i){if(cells[i].open||cells[i].flag||cells[i].mine)return;cells[i].open=true;safeOpen++;if(cells[i].n===0)for(const j of neighbors(i))if(!cells[j].open&&!cells[j].mine)reveal(j)}
+function toggleFlag(i){if(ended||cells[i].open)return;if(!started){started=true;placeMines(i);timer=setInterval(()=>{if(!ended){seconds++;$('time').textContent=String(seconds).padStart(3,'0')}},1000)}cells[i].flag=!cells[i].flag;flags+=cells[i].flag?1:-1;$('mines').textContent=String(M-flags).padStart(3,'0');updateBoard();$('message').textContent=flagMode?'Flag mode active':'Tap a tile to reveal'}
+function updateBoard(){[...$('board').children].forEach((el,i)=>{let x=cells[i];el.className='cell';el.textContent='';el.setAttribute('aria-label',x.open?'Revealed tile':'Hidden tile');if(x.open){el.classList.add('open');if(x.mine){el.classList.add('mine');el.textContent='✹'}else if(x.n){el.classList.add('n'+x.n);el.textContent=x.n}}else if(x.flag){el.classList.add('flag');el.textContent='⚑'}if(x.exploded)el.classList.add('exploded');el.disabled=ended||x.open})}
+function revealAll(){cells.forEach(x=>{if(x.mine)x.open=true});updateBoard()}
+function finish(won){ended=true;clearInterval(timer);timer=null;updateBoard();if(won){wins++;$('wins').textContent=wins;$('message').textContent='Field cleared!';showModal('🏆','FIELD CLEARED',`Completed in ${seconds} seconds. Beautifully done.`)}else{$('message').textContent='Boom! Try again.';showModal('💥','GAME OVER','Every safe tile was one step closer. Give it another go.')} }
+function checkWin(){if(safeOpen===R*C-M){finish(true)}}
+function showModal(emoji,title,text){$('modalEmoji').textContent=emoji;$('modalTitle').textContent=title;$('modalText').textContent=text;$('overlay').classList.add('show')}
+document.querySelectorAll('[data-level]').forEach(b=>b.addEventListener('click',()=>{level=b.dataset.level;document.querySelectorAll('[data-level]').forEach(x=>x.classList.toggle('active',x===b));makeBoard()}));
+$('restart').addEventListener('click',makeBoard);$('newGame').addEventListener('click',makeBoard);$('modalButton').addEventListener('click',makeBoard);$('flagMode').addEventListener('click',()=>{flagMode=!flagMode;$('flagMode').style.background=flagMode?'var(--accent)':'var(--panel2)';$('flagMode').style.color=flagMode?'#17162a':'var(--text)';$('message').textContent=flagMode?'Flag mode: tap tiles to mark mines':'Tap a tile to reveal';});
+$('help').addEventListener('click',()=>showModal('✹','HOW TO PLAY','Reveal safe tiles and avoid hidden mines. Numbers show how many mines touch that tile. Use ⚑ to mark a suspected mine. Long-press a tile or use flag mode. The first reveal is always safe.'));
+$('sound').addEventListener('click',()=>{sound=!sound;$('sound').textContent=sound?'♫':'♪';$('message').textContent=sound?'Sound cues enabled':'Sound cues muted'});
+makeBoard();
+})();
+</script>
+<audio id="bgMusic" loop preload="auto">
+  <source src="./mixkit-relaxation-05-749.mp3" type="audio/mpeg">
+</audio>
+
+<script>
+(() => {
+  const music = document.getElementById('bgMusic');
+  music.volume = 0.15;
+
+  // Запуск музыки после первого действия пользователя
+  const startMusic = () => {
+    music.play().catch(() => {});
+  };
+
+  document.addEventListener('pointerdown', startMusic, { once: true });
+  document.addEventListener('keydown', startMusic, { once: true });
+})();
+</script>
+</body></html>

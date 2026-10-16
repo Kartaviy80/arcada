@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Memory</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@600;800&display=swap');
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;height:100dvh;overflow:hidden;background:linear-gradient(160deg,#1b2838,#0f1c2e);font-family:'Nunito',system-ui,sans-serif;color:#e8f0fe;touch-action:manipulation}
+#app{display:flex;flex-direction:column;height:100%;height:100dvh;max-width:420px;margin:0 auto;padding:max(env(safe-area-inset-top),8px) 10px max(env(safe-area-inset-bottom),8px)}
+.header{display:flex;justify-content:space-between;align-items:center;flex-shrink:0;padding:4px 0}
+.logo{font-size:18px;font-weight:800;letter-spacing:1px;background:linear-gradient(90deg,#7dd3fc,#c4b5fd);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.stat{background:rgba(255,255,255,.08);border-radius:12px;padding:6px 12px;font-size:13px;font-weight:700}
+.status{text-align:center;font-size:13px;font-weight:700;padding:6px 0;color:#94a3b8;flex-shrink:0;min-height:22px}
+.status.win{color:#4ade80;font-size:15px}
+.board-wrap{flex:1;display:flex;align-items:center;justify-content:center;min-height:0}
+#board{display:grid;grid-template-columns:repeat(4,1fr);grid-template-rows:repeat(4,1fr);gap:8px;width:min(92vw,calc(100dvh - 165px));aspect-ratio:1}
+.card{background:#243447;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:clamp(22px,7vw,36px);cursor:pointer;transition:transform .15s,background .2s;user-select:none;box-shadow:0 4px 12px rgba(0,0,0,.3)}
+.card:active{transform:scale(.95)}
+.card.flipped,.card.matched{background:#334155}
+.card.matched{opacity:.7;pointer-events:none}
+.card.hidden-face{color:transparent}
+.controls{display:flex;gap:8px;justify-content:center;padding:8px 0 4px;flex-shrink:0}
+button{font-family:inherit;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.15);border-radius:12px;padding:10px 16px;font-size:13px;font-weight:800;cursor:pointer;color:#e8f0fe;min-height:42px}
+button:active{transform:scale(.96)}
+#btnMusic.active{background:#38bdf8;color:#0f172a;border-color:#38bdf8}
+.hint{text-align:center;font-size:11px;color:#64748b;flex-shrink:0}
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="header">
+    <div class="stat">Moves <span id="moves">0</span></div>
+    <div class="logo">MEMORY</div>
+    <div class="stat">Pairs <span id="pairs">0</span>/8</div>
+  </div>
+  <div class="status" id="status">Find matching pairs</div>
+  <div class="board-wrap"><div id="board"></div></div>
+  <div class="controls">
+    <button id="btnMusic" onclick="toggleMusic()">♪ Music</button>
+    <button onclick="newGame()">New</button>
+  </div>
+  <div class="hint">Tap two cards</div>
+</div>
+<script>
+const EMOJIS=['🌸','🌊','🍀','🔥','⭐','🌙','🎵','🦊'];
+let cards,flipped,lock,moves,pairs;
+const boardEl=document.getElementById('board');
+
+let audioCtx=null,musicNodes=[],musicOn=false,musicTimer=null;
+function ensureAudio(){if(!audioCtx)audioCtx=new(window.AudioContext||window.webkitAudioContext)();if(audioCtx.state==='suspended')audioCtx.resume();return audioCtx}
+function stopMusic(){musicNodes.forEach(n=>{try{n.stop()}catch(e){}try{n.disconnect()}catch(e){}});musicNodes=[];if(musicTimer){clearInterval(musicTimer);musicTimer=null}}
+function startMusic(){
+  const ctx=ensureAudio();stopMusic();
+  const m=ctx.createGain();m.gain.value=0.07;m.connect(ctx.destination);
+  function tone(f,t,d){const o=ctx.createOscillator(),g=ctx.createGain();o.type='triangle';o.frequency.value=f;g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(0.05,t+.3);g.gain.linearRampToValueAtTime(0,t+d);o.connect(g);g.connect(m);o.start(t);o.stop(t+d+.05);musicNodes.push(o)}
+  function loop(){const t=ctx.currentTime+.05;tone(392,t,2);tone(494,t+.4,1.8);tone(587,t+.9,1.5);tone(784,t+1.6,1.5)}
+  loop();musicTimer=setInterval(loop,3200);
+}
+function toggleMusic(){musicOn=!musicOn;document.getElementById('btnMusic').classList.toggle('active',musicOn);if(musicOn)startMusic();else stopMusic()}
+
+function shuffle(a){for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]]}return a}
+function newGame(){
+  const deck=shuffle([...EMOJIS,...EMOJIS]);
+  cards=deck.map((e,i)=>({id:i,emoji:e,flipped:false,matched:false}));
+  flipped=[];lock=false;moves=0;pairs=0;
+  document.getElementById('moves').textContent=0;
+  document.getElementById('pairs').textContent=0;
+  document.getElementById('status').textContent='Find matching pairs';
+  document.getElementById('status').className='status';
+  render();
+}
+function render(){
+  boardEl.innerHTML='';
+  cards.forEach((c,i)=>{
+    const el=document.createElement('div');
+    el.className='card'+(c.flipped||c.matched?' flipped':'')+(c.matched?' matched':'')+(!(c.flipped||c.matched)?' hidden-face':'');
+    el.textContent=(c.flipped||c.matched)?c.emoji:'❓';
+    el.onclick=()=>flip(i);
+    boardEl.appendChild(el);
+  });
+}
+function flip(i){
+  if(lock||cards[i].flipped||cards[i].matched)return;
+  cards[i].flipped=true;flipped.push(i);render();
+  if(flipped.length===2){
+    lock=true;moves++;document.getElementById('moves').textContent=moves;
+    const [a,b]=flipped;
+    if(cards[a].emoji===cards[b].emoji){
+      cards[a].matched=cards[b].matched=true;pairs++;
+      document.getElementById('pairs').textContent=pairs;
+      flipped=[];lock=false;render();
+      if(pairs===8){document.getElementById('status').textContent='You won! 🎉';document.getElementById('status').className='status win'}
+    } else {
+      setTimeout(()=>{cards[a].flipped=cards[b].flipped=false;flipped=[];lock=false;render()},550);
+    }
+  }
+}
+newGame();
+</script>
+</body>
+</html>

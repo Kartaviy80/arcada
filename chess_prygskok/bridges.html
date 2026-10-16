@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Bridges</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Libre+Baskerville:wght@400;700&family=Nunito:wght@600;700;800&display=swap');
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{
+  height:100%;height:100dvh;overflow:hidden;background:#f3efe6;
+  background-image:
+    radial-gradient(ellipse at 20% 0%,#efe8d8 0%,transparent 50%),
+    radial-gradient(ellipse at 80% 100%,#e8e0d0 0%,transparent 45%);
+  font-family:'Nunito',system-ui,sans-serif;color:#2c2416;touch-action:manipulation;
+}
+#app{display:flex;flex-direction:column;height:100%;height:100dvh;max-width:440px;margin:0 auto;
+  padding:max(env(safe-area-inset-top),8px) 12px max(env(safe-area-inset-bottom),8px)}
+.header{display:flex;justify-content:space-between;align-items:center;flex-shrink:0;padding:4px 0}
+.logo{font-family:'Libre Baskerville',serif;font-size:22px;font-weight:700;color:#1a1510}
+.badge{background:#fff;border:1.5px solid #d4cbb8;border-radius:20px;padding:6px 14px;font-size:12px;font-weight:800;color:#5c4e3a;box-shadow:0 2px 6px rgba(44,36,22,.06)}
+#menu{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px}
+#menu h2{font-family:'Libre Baskerville',serif;font-size:15px;color:#8a7a64;font-weight:400;margin-bottom:4px}
+.lvl{width:min(270px,82vw);padding:14px 18px;border-radius:16px;border:1.5px solid #d4cbb8;background:#fffcf7;color:#2c2416;font-family:inherit;font-size:15px;font-weight:700;cursor:pointer;text-align:left;box-shadow:0 3px 10px rgba(44,36,22,.06)}
+.lvl:active{transform:scale(.97);background:#f5efe4}
+.lvl span{display:block;font-size:11px;color:#8a7a64;font-weight:600;margin-top:2px}
+.lvl.a{border-color:#7cb87c}.lvl.b{border-color:#c4a574}.lvl.c{border-color:#c47c7c}
+#game{display:none;flex-direction:column;flex:1;min-height:0}
+.status{text-align:center;font-size:13px;font-weight:700;padding:4px 0 6px;color:#8a7a64;flex-shrink:0;min-height:22px}
+.status.win{color:#2d6a4f;font-size:15px}
+.board-wrap{flex:1;display:flex;align-items:center;justify-content:center;min-height:0}
+#canvas{background:#fffcf7;border-radius:14px;border:1.5px solid #d4cbb8;box-shadow:0 8px 28px rgba(44,36,22,.1);touch-action:none;max-width:100%;max-height:100%}
+.controls{display:flex;gap:8px;justify-content:center;padding:8px 0 4px;flex-shrink:0;flex-wrap:wrap}
+button{font-family:inherit;background:#fffcf7;border:1.5px solid #d4cbb8;border-radius:14px;padding:10px 16px;font-size:13px;font-weight:800;color:#2c2416;cursor:pointer;min-height:44px;box-shadow:0 2px 6px rgba(44,36,22,.05)}
+button:active{transform:scale(.96);background:#f0ebe0}
+button.primary{background:#2c2416;color:#f3efe6;border-color:#2c2416}
+#btnMusic.on{background:#e8f0e4;border-color:#7cb87c;color:#2d6a4f}
+.hint{text-align:center;font-size:11px;color:#a09078;flex-shrink:0;padding-bottom:2px;font-weight:600}
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="header">
+    <div class="logo">Bridges</div>
+    <div class="badge" id="badge">Hashi</div>
+  </div>
+  <div id="menu">
+    <h2>Connect the islands</h2>
+    <button class="lvl a" onclick="start(0)">Harbor <span>5×5 · gentle start</span></button>
+    <button class="lvl a" onclick="start(1)">Islets <span>6×6 · easy</span></button>
+    <button class="lvl b" onclick="start(2)">Archipelago <span>7×7 · think ahead</span></button>
+    <button class="lvl b" onclick="start(3)">Strait <span>8×8 · careful</span></button>
+    <button class="lvl c" onclick="start(4)">Ocean <span>8×8 · challenge</span></button>
+  </div>
+  <div id="game">
+    <div class="status" id="status">Tap two islands to build a bridge</div>
+    <div class="board-wrap"><canvas id="canvas"></canvas></div>
+    <div class="controls">
+      <button id="btnMusic" onclick="toggleMusic()">♪ Music</button>
+      <button onclick="undo()">Undo</button>
+      <button class="primary" onclick="showMenu()">Menu</button>
+    </div>
+    <div class="hint">Bridges: 1 or 2 · no crossing · match each number</div>
+  </div>
+</div>
+<script>
+const PUZZLES = [
+  { name:'Harbor', w:5, h:5, cells:[
+    [2,0,4,0,2],[0,0,0,0,0],[3,0,5,0,3],[0,0,0,0,0],[2,0,3,0,2]
+  ]},
+  { name:'Islets', w:6, h:6, cells:[
+    [3,0,5,0,3,0],[0,0,0,0,0,0],[3,0,5,0,4,0],[0,0,0,0,0,0],[2,0,4,0,4,0],[0,0,0,0,1,0]
+  ]},
+  { name:'Archipelago', w:7, h:7, cells:[
+    [3,0,5,0,4,0,2],[0,0,0,0,0,0,0],[4,0,5,0,6,0,3],[0,0,0,0,0,0,0],[4,0,4,0,5,0,3],[0,0,0,0,0,0,0],[2,0,3,0,3,0,2]
+  ]},
+  { name:'Strait', w:8, h:8, cells:[
+    [3,0,4,0,4,0,2,0],[0,0,0,0,0,0,0,0],[4,0,5,0,6,0,4,0],[0,0,0,0,0,0,0,0],[3,0,5,0,5,0,4,0],[0,0,0,0,0,0,0,0],[2,0,5,0,4,0,3,0],[0,0,2,0,3,0,2,0]
+  ]},
+  { name:'Ocean', w:8, h:8, cells:[
+    [4,0,5,0,5,0,3,0],[0,0,0,0,0,0,0,0],[5,0,6,0,7,0,4,0],[0,0,0,0,0,0,0,0],[4,0,5,0,6,0,4,0],[0,0,0,0,0,0,0,0],[2,0,4,0,5,0,4,0],[0,0,2,0,3,0,2,0]
+  ]},
+];
+
+let puzzle, bridges, history, selected, won;
+const canvas=document.getElementById('canvas'), ctx=canvas.getContext('2d'), statusEl=document.getElementById('status');
+
+let audioCtx=null,musicNodes=[],musicOn=false,musicTimer=null;
+function ensureAudio(){if(!audioCtx)audioCtx=new(window.AudioContext||window.webkitAudioContext)();if(audioCtx.state==='suspended')audioCtx.resume();return audioCtx}
+function stopMusic(){musicNodes.forEach(n=>{try{n.stop()}catch(e){}try{n.disconnect()}catch(e){}});musicNodes=[];if(musicTimer){clearInterval(musicTimer);musicTimer=null}}
+function startMusic(){
+  const ac=ensureAudio();stopMusic();
+  const m=ac.createGain();m.gain.value=0.045;m.connect(ac.destination);
+  function tone(f,t,d){const o=ac.createOscillator(),g=ac.createGain();o.type='sine';o.frequency.value=f;
+    g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(0.03,t+.6);g.gain.linearRampToValueAtTime(0,t+d);
+    o.connect(g);g.connect(m);o.start(t);o.stop(t+d+.05);musicNodes.push(o)}
+  function L(){const t=ac.currentTime+.05;tone(196,t,4);tone(246.94,t+.8,3.2);tone(293.66,t+1.8,2.8);tone(392,t+3,2.2)}
+  L();musicTimer=setInterval(L,5000);
+}
+function toggleMusic(){musicOn=!musicOn;document.getElementById('btnMusic').classList.toggle('on',musicOn);if(musicOn)startMusic();else stopMusic()}
+
+function key(a,b){
+  const[r1,c1]=a,[r2,c2]=b;
+  if(r1<r2||(r1===r2&&c1<c2))return r1+','+c1+','+r2+','+c2;
+  return r2+','+c2+','+r1+','+c1;
+}
+function parseKey(k){return k.split(',').map(Number)}
+function islands(){
+  const list=[];
+  for(let r=0;r<puzzle.h;r++)for(let c=0;c<puzzle.w;c++)
+    if(puzzle.cells[r][c]>0)list.push({r,c,need:puzzle.cells[r][c]});
+  return list;
+}
+function bridgeCount(is){
+  let n=0;
+  for(const[k,v]of Object.entries(bridges)){
+    if(v<1)continue;
+    const[r1,c1,r2,c2]=parseKey(k);
+    if((r1===is.r&&c1===is.c)||(r2===is.r&&c2===is.c))n+=v;
+  }
+  return n;
+}
+function canConnect(a,b){
+  if(a.r===b.r&&a.c===b.c)return false;
+  if(a.r!==b.r&&a.c!==b.c)return false;
+  if(a.r===b.r){
+    const r=a.r,c1=Math.min(a.c,b.c),c2=Math.max(a.c,b.c);
+    for(let c=c1+1;c<c2;c++)if(puzzle.cells[r][c]>0)return false;
+  } else {
+    const c=a.c,r1=Math.min(a.r,b.r),r2=Math.max(a.r,b.r);
+    for(let r=r1+1;r<r2;r++)if(puzzle.cells[r][c]>0)return false;
+  }
+  return !wouldCross(a,b);
+}
+function wouldCross(a,b){
+  for(const[k,v]of Object.entries(bridges)){
+    if(v<1)continue;
+    const[r1,c1,r2,c2]=parseKey(k);
+    if((r1===a.r&&c1===a.c)||(r2===a.r&&c2===a.c)||(r1===b.r&&c1===b.c)||(r2===b.r&&c2===b.c))continue;
+    const newH=a.r===b.r, oldH=r1===r2;
+    if(newH===oldH){
+      if(newH&&a.r===r1){
+        const nc1=Math.min(a.c,b.c),nc2=Math.max(a.c,b.c),oc1=Math.min(c1,c2),oc2=Math.max(c1,c2);
+        if(nc1<oc2&&oc1<nc2)return true;
+      }
+      if(!newH&&a.c===c1){
+        const nr1=Math.min(a.r,b.r),nr2=Math.max(a.r,b.r),or1=Math.min(r1,r2),or2=Math.max(r1,r2);
+        if(nr1<or2&&or1<nr2)return true;
+      }
+      continue;
+    }
+    if(newH){
+      const nc1=Math.min(a.c,b.c),nc2=Math.max(a.c,b.c),or1=Math.min(r1,r2),or2=Math.max(r1,r2);
+      if(c1>nc1&&c1<nc2&&a.r>or1&&a.r<or2)return true;
+    } else {
+      const nr1=Math.min(a.r,b.r),nr2=Math.max(a.r,b.r),oc1=Math.min(c1,c2),oc2=Math.max(c1,c2);
+      if(a.c>oc1&&a.c<oc2&&r1>nr1&&r1<nr2)return true;
+    }
+  }
+  return false;
+}
+
+function cycleBridge(a,b){
+  if(!canConnect(a,b))return false;
+  const k=key([a.r,a.c],[b.r,b.c]);
+  const cur=bridges[k]||0;
+  const next=cur===0?1:cur===1?2:0;
+  if(next>cur){
+    // adding — check capacity
+    const add=next-cur;
+    if(bridgeCount(a)+add>a.need||bridgeCount(b)+add>b.need)return false;
+  }
+  history.push({k,from:cur,to:next});
+  if(next===0)delete bridges[k];else bridges[k]=next;
+  return true;
+}
+
+function undo(){
+  if(!history.length||won)return;
+  const act=history.pop();
+  if(act.to===0||act.from>0)bridges[act.k]=act.from;
+  if(act.from===0)delete bridges[act.k];
+  else bridges[act.k]=act.from;
+  selected=null;won=false;
+  statusEl.textContent='Tap two islands to build a bridge';statusEl.className='status';
+  draw();
+}
+
+function isSolved(){
+  for(const is of islands())if(bridgeCount(is)!==is.need)return false;
+  const all=islands();if(!all.length)return true;
+  const seen=new Set();const q=[all[0]];seen.add(all[0].r+','+all[0].c);
+  while(q.length){
+    const cur=q.pop();
+    for(const[k,v]of Object.entries(bridges)){
+      if(v<1)continue;
+      const[r1,c1,r2,c2]=parseKey(k);
+      let other=null;
+      if(r1===cur.r&&c1===cur.c)other=r2+','+c2;
+      if(r2===cur.r&&c2===cur.c)other=r1+','+c1;
+      if(other&&!seen.has(other)){seen.add(other);const[or,oc]=other.split(',').map(Number);q.push({r:or,c:oc})}
+    }
+  }
+  return seen.size===all.length;
+}
+
+function start(idx){
+  puzzle=PUZZLES[idx];bridges={};history=[];selected=null;won=false;
+  document.getElementById('menu').style.display='none';
+  document.getElementById('game').style.display='flex';
+  document.getElementById('badge').textContent=puzzle.name;
+  statusEl.textContent='Tap two islands to build a bridge';statusEl.className='status';
+  resize();draw();
+}
+function showMenu(){document.getElementById('game').style.display='none';document.getElementById('menu').style.display='flex'}
+
+function cellSize(){
+  const wrap=document.querySelector('.board-wrap');
+  return Math.floor(Math.min((wrap.clientWidth-8)/puzzle.w,(wrap.clientHeight-8)/puzzle.h,52));
+}
+function resize(){
+  if(!puzzle)return;
+  const cs=cellSize();
+  canvas.width=cs*puzzle.w;canvas.height=cs*puzzle.h;
+  canvas.style.width=canvas.width+'px';canvas.style.height=canvas.height+'px';
+}
+
+function draw(){
+  if(!puzzle)return;
+  const cs=cellSize(),w=canvas.width,h=canvas.height;
+  ctx.clearRect(0,0,w,h);ctx.fillStyle='#fffcf7';ctx.fillRect(0,0,w,h);
+  ctx.lineCap='round';
+  for(const[k,v]of Object.entries(bridges)){
+    if(v<1)continue;
+    const[r1,c1,r2,c2]=parseKey(k);
+    const x1=c1*cs+cs/2,y1=r1*cs+cs/2,x2=c2*cs+cs/2,y2=r2*cs+cs/2;
+    ctx.strokeStyle='#2c2416';ctx.lineWidth=Math.max(2.5,cs*0.07);
+    if(v===1){ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke()}
+    else{
+      const dx=x2-x1,dy=y2-y1,len=Math.hypot(dx,dy)||1;
+      const ox=(-dy/len)*cs*0.08,oy=(dx/len)*cs*0.08;
+      ctx.beginPath();ctx.moveTo(x1+ox,y1+oy);ctx.lineTo(x2+ox,y2+oy);ctx.stroke();
+      ctx.beginPath();ctx.moveTo(x1-ox,y1-oy);ctx.lineTo(x2-ox,y2-oy);ctx.stroke();
+    }
+  }
+  for(const is of islands()){
+    const x=is.c*cs+cs/2,y=is.r*cs+cs/2,rad=cs*0.32;
+    const done=bridgeCount(is)===is.need, over=bridgeCount(is)>is.need;
+    ctx.beginPath();ctx.arc(x,y,rad,0,Math.PI*2);
+    if(selected&&selected.r===is.r&&selected.c===is.c)ctx.fillStyle='#2c2416';
+    else if(done)ctx.fillStyle='#2d6a4f';
+    else if(over)ctx.fillStyle='#9b2226';
+    else ctx.fillStyle='#fffcf7';
+    ctx.fill();ctx.strokeStyle='#2c2416';ctx.lineWidth=Math.max(2,cs*0.06);ctx.stroke();
+    ctx.fillStyle=(selected&&selected.r===is.r&&selected.c===is.c)||done||over?'#fffcf7':'#2c2416';
+    ctx.font=`bold ${Math.floor(cs*0.32)}px Nunito,sans-serif`;
+    ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(String(is.need),x,y+1);
+  }
+}
+
+function islandAt(px,py){
+  const cs=cellSize();
+  const c=Math.floor(px/cs),r=Math.floor(py/cs);
+  if(r<0||c<0||r>=puzzle.h||c>=puzzle.w||puzzle.cells[r][c]<=0)return null;
+  const cx=c*cs+cs/2,cy=r*cs+cs/2;
+  if(Math.hypot(px-cx,py-cy)>cs*0.42)return null;
+  return {r,c,need:puzzle.cells[r][c]};
+}
+
+canvas.addEventListener('pointerdown',e=>{
+  if(won)return;
+  const rect=canvas.getBoundingClientRect();
+  const is=islandAt((e.clientX-rect.left)*(canvas.width/rect.width),(e.clientY-rect.top)*(canvas.height/rect.height));
+  if(!is){selected=null;draw();return}
+  if(!selected){selected=is;draw();return}
+  if(selected.r===is.r&&selected.c===is.c){selected=null;draw();return}
+  const ok=cycleBridge(selected,is);
+  selected=null;
+  if(ok){
+    if(isSolved()){won=true;statusEl.textContent='All islands connected! ✨';statusEl.className='status win'}
+    else{statusEl.textContent='Tap two islands to build a bridge';statusEl.className='status'}
+  } else {
+    statusEl.textContent="Can't build that bridge";
+    setTimeout(()=>{if(!won){statusEl.textContent='Tap two islands to build a bridge';statusEl.className='status'}},900);
+  }
+  draw();
+});
+window.addEventListener('resize',()=>{if(puzzle){resize();draw()}});
+</script>
+</body>
+</html>

@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Mastermind</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+:root{
+  --bg:#0c0e14;--panel:#151822;--slot:#1c2030;
+  --text:#eef0f6;--muted:#7a8299;--accent:#a78bfa;
+  --c0:#ef4444;--c1:#f59e0b;--c2:#22c55e;--c3:#3b82f6;--c4:#a855f7;--c5:#ec4899;
+}
+html,body{height:100%;height:100dvh;overflow:hidden;background:var(--bg);font-family:'IBM Plex Sans',system-ui,sans-serif;color:var(--text);touch-action:manipulation}
+body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
+  background:radial-gradient(ellipse 80% 50% at 50% -20%,rgba(167,139,250,.12),transparent),
+             radial-gradient(ellipse 50% 40% at 0% 100%,rgba(236,72,153,.06),transparent)}
+#app{position:relative;z-index:1;display:flex;flex-direction:column;height:100%;height:100dvh;max-width:420px;margin:0 auto;
+  padding:max(env(safe-area-inset-top),6px) 10px max(env(safe-area-inset-bottom),6px)}
+
+.header{display:flex;justify-content:space-between;align-items:center;flex-shrink:0;padding:2px 0}
+.logo{font-family:'Syne',sans-serif;font-size:17px;font-weight:800;letter-spacing:1px;
+  background:linear-gradient(135deg,#a78bfa,#ec4899);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.stat{background:var(--panel);border:1px solid rgba(255,255,255,.05);border-radius:10px;padding:5px 12px;font-size:12px;font-weight:600}
+.stat span{color:var(--accent)}
+.status{text-align:center;font-size:12px;font-weight:600;padding:4px 0;color:var(--muted);flex-shrink:0;min-height:20px}
+.status.win{color:#4ade80;font-size:14px}.status.lose{color:#f87171;font-size:14px}
+
+.secret-row{display:flex;gap:8px;align-items:center;justify-content:center;padding:4px 0 8px;flex-shrink:0}
+.secret-row .label{font-size:10px;color:var(--muted);margin-right:4px;font-weight:600}
+.peg{width:clamp(28px,7.5vw,36px);height:clamp(28px,7.5vw,36px);border-radius:50%;border:2px solid rgba(255,255,255,.08);
+  background:var(--slot);flex-shrink:0;transition:background .15s,transform .1s}
+.peg.filled{border-color:transparent;box-shadow:0 2px 8px rgba(0,0,0,.35)}
+.peg.c0{background:var(--c0)}.peg.c1{background:var(--c1)}.peg.c2{background:var(--c2)}
+.peg.c3{background:var(--c3)}.peg.c4{background:var(--c4)}.peg.c5{background:var(--c5)}
+.peg.hidden{background:repeating-linear-gradient(45deg,#1c2030,#1c2030 4px,#252a3a 4px,#252a3a 8px)}
+.peg.sel{outline:2px solid var(--accent);outline-offset:2px;cursor:pointer}
+.peg.clickable{cursor:pointer}
+
+.history{flex:1;display:flex;flex-direction:column-reverse;gap:6px;overflow-y:auto;min-height:0;
+  width:100%;max-width:340px;margin:0 auto;padding:4px 0;justify-content:flex-start}
+.row{display:flex;align-items:center;gap:8px;justify-content:center}
+.row .num{font-size:10px;color:var(--muted);width:16px;text-align:right;font-weight:600}
+.pegs{display:flex;gap:6px}
+.feedback{display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:3px;width:28px;height:28px;margin-left:2px}
+.fb{width:11px;height:11px;border-radius:50%;background:#252a3a}
+.fb.black{background:#eef0f6;box-shadow:0 0 4px rgba(255,255,255,.3)}
+.fb.white{background:transparent;border:2px solid #eef0f6}
+
+.current-area{flex-shrink:0;padding:8px 0 4px;border-top:1px solid rgba(255,255,255,.05)}
+.current-label{text-align:center;font-size:10px;color:var(--muted);margin-bottom:6px;font-weight:600}
+.current-row{display:flex;justify-content:center;gap:8px;margin-bottom:10px}
+
+.palette{display:flex;gap:8px;justify-content:center;padding:4px 0 6px;flex-shrink:0}
+.palette .peg{width:clamp(34px,9vw,42px);height:clamp(34px,9vw,42px);cursor:pointer}
+.palette .peg:active{transform:scale(.9)}
+
+.controls{display:flex;gap:6px;justify-content:center;padding:2px 0;flex-shrink:0}
+button{font-family:inherit;background:var(--panel);border:1px solid rgba(255,255,255,.06);border-radius:12px;
+  padding:10px 14px;font-size:12px;font-weight:600;color:var(--text);cursor:pointer;min-height:42px}
+button:active{transform:scale(.96)}
+button.primary{background:linear-gradient(135deg,rgba(167,139,250,.3),rgba(236,72,153,.2));border-color:var(--accent);color:#c4b5fd}
+button:disabled{opacity:.35;pointer-events:none}
+#btnMusic.active{border-color:var(--accent);color:var(--accent)}
+.hint{text-align:center;font-size:10px;color:var(--muted);flex-shrink:0;opacity:.7;padding:2px 0}
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="header">
+    <div class="logo">MASTERMIND</div>
+    <div class="stat">Guess <span id="guessNum">1</span>/10</div>
+  </div>
+  <div class="status" id="status">Crack the 4-color code</div>
+
+  <div class="secret-row">
+    <div class="label">CODE</div>
+    <div class="pegs" id="secret"></div>
+  </div>
+
+  <div class="history" id="history"></div>
+
+  <div class="current-area" id="currentArea">
+    <div class="current-label">YOUR GUESS</div>
+    <div class="current-row" id="currentRow"></div>
+  </div>
+
+  <div class="palette" id="palette"></div>
+
+  <div class="controls">
+    <button id="btnMusic" onclick="toggleMusic()">♪ Music</button>
+    <button onclick="clearCurrent()">Clear</button>
+    <button class="primary" id="btnSubmit" onclick="submitGuess()">Check</button>
+    <button onclick="newGame()">New</button>
+  </div>
+  <div class="hint">● exact place · ○ right color, wrong place</div>
+</div>
+<script>
+const COLORS=6, CODE_LEN=4, MAX_GUESSES=10;
+let secret, guesses, current, gameOver, selectedSlot;
+
+const historyEl=document.getElementById('history');
+const secretEl=document.getElementById('secret');
+const paletteEl=document.getElementById('palette');
+const currentRowEl=document.getElementById('currentRow');
+const statusEl=document.getElementById('status');
+
+let audioCtx=null,musicNodes=[],musicOn=false,musicTimer=null;
+function ensureAudio(){if(!audioCtx)audioCtx=new(window.AudioContext||window.webkitAudioContext)();if(audioCtx.state==='suspended')audioCtx.resume();return audioCtx}
+function stopMusic(){musicNodes.forEach(n=>{try{n.stop()}catch(e){}try{n.disconnect()}catch(e){}});musicNodes=[];if(musicTimer){clearInterval(musicTimer);musicTimer=null}}
+function startMusic(){
+  const ctx=ensureAudio();stopMusic();
+  const m=ctx.createGain();m.gain.value=0.05;m.connect(ctx.destination);
+  function tone(f,t,d){const o=ctx.createOscillator(),g=ctx.createGain();o.type='triangle';o.frequency.value=f;
+    g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(0.035,t+.4);g.gain.linearRampToValueAtTime(0,t+d);
+    o.connect(g);g.connect(m);o.start(t);o.stop(t+d+.05);musicNodes.push(o)}
+  function L(){const t=ctx.currentTime+.05;tone(220,t,3);tone(277.18,t+.5,2.5);tone(329.63,t+1.2,2);tone(440,t+2,2)}
+  L();musicTimer=setInterval(L,4200);
+}
+function toggleMusic(){musicOn=!musicOn;document.getElementById('btnMusic').classList.toggle('active',musicOn);if(musicOn)startMusic();else stopMusic()}
+
+function newGame(){
+  secret=Array.from({length:CODE_LEN},()=>Math.floor(Math.random()*COLORS));
+  guesses=[];current=Array(CODE_LEN).fill(-1);gameOver=false;selectedSlot=0;
+  statusEl.textContent='Crack the 4-color code';statusEl.className='status';
+  document.getElementById('guessNum').textContent='1';
+  document.getElementById('currentArea').style.display='block';
+  renderPalette();render();
+}
+
+function renderPalette(){
+  paletteEl.innerHTML='';
+  for(let i=0;i<COLORS;i++){
+    const p=document.createElement('div');
+    p.className='peg filled c'+i;
+    p.onclick=()=>pickColor(i);
+    paletteEl.appendChild(p);
+  }
+}
+
+function evaluate(guess,code){
+  const g=[...guess],c=[...code];
+  let black=0,white=0;
+  for(let i=0;i<CODE_LEN;i++)if(g[i]===c[i]){black++;g[i]=c[i]=-1}
+  for(let i=0;i<CODE_LEN;i++){
+    if(g[i]<0)continue;
+    const j=c.indexOf(g[i]);
+    if(j>=0){white++;c[j]=-1}
+  }
+  return{black,white};
+}
+
+function render(){
+  secretEl.innerHTML='';
+  for(let i=0;i<CODE_LEN;i++){
+    const p=document.createElement('div');
+    p.className=gameOver?('peg filled c'+secret[i]):'peg hidden';
+    secretEl.appendChild(p);
+  }
+
+  historyEl.innerHTML='';
+  guesses.forEach((g,idx)=>{
+    historyEl.appendChild(makeHistoryRow(g.code,g.fb,idx+1));
+  });
+
+  currentRowEl.innerHTML='';
+  if(!gameOver){
+    for(let i=0;i<CODE_LEN;i++){
+      const p=document.createElement('div');
+      if(current[i]>=0)p.className='peg filled c'+current[i]+' clickable';
+      else p.className='peg clickable';
+      if(selectedSlot===i)p.classList.add('sel');
+      p.onclick=()=>{selectedSlot=i;render()};
+      currentRowEl.appendChild(p);
+    }
+  }
+
+  document.getElementById('guessNum').textContent=Math.min(guesses.length+1,MAX_GUESSES);
+  document.getElementById('btnSubmit').disabled=gameOver||current.includes(-1);
+}
+
+function makeHistoryRow(code,fb,num){
+  const row=document.createElement('div');row.className='row';
+  const n=document.createElement('div');n.className='num';n.textContent=num;row.appendChild(n);
+  const pegs=document.createElement('div');pegs.className='pegs';
+  for(let i=0;i<CODE_LEN;i++){
+    const p=document.createElement('div');
+    p.className='peg filled c'+code[i];
+    pegs.appendChild(p);
+  }
+  row.appendChild(pegs);
+  const feedback=document.createElement('div');feedback.className='feedback';
+  const dots=[];
+  for(let i=0;i<fb.black;i++)dots.push('black');
+  for(let i=0;i<fb.white;i++)dots.push('white');
+  while(dots.length<4)dots.push('');
+  dots.forEach(t=>{const d=document.createElement('div');d.className='fb'+(t?' '+t:'');feedback.appendChild(d)});
+  row.appendChild(feedback);
+  return row;
+}
+
+function pickColor(c){
+  if(gameOver)return;
+  current[selectedSlot]=c;
+  let next=selectedSlot;
+  for(let i=1;i<=CODE_LEN;i++){
+    const idx=(selectedSlot+i)%CODE_LEN;
+    if(current[idx]<0){next=idx;break}
+    if(i===CODE_LEN)next=(selectedSlot+1)%CODE_LEN;
+  }
+  selectedSlot=next;
+  render();
+}
+
+function clearCurrent(){
+  if(gameOver)return;
+  current=Array(CODE_LEN).fill(-1);selectedSlot=0;render();
+}
+
+function submitGuess(){
+  if(gameOver||current.includes(-1))return;
+  const fb=evaluate(current,secret);
+  guesses.push({code:[...current],fb});
+  if(fb.black===CODE_LEN){
+    gameOver=true;
+    statusEl.textContent='You cracked it! 🎉';
+    statusEl.className='status win';
+    document.getElementById('currentArea').style.display='none';
+    render();return;
+  }
+  if(guesses.length>=MAX_GUESSES){
+    gameOver=true;
+    statusEl.textContent='Out of guesses — code revealed';
+    statusEl.className='status lose';
+    document.getElementById('currentArea').style.display='none';
+    render();return;
+  }
+  current=Array(CODE_LEN).fill(-1);selectedSlot=0;
+  statusEl.textContent=fb.black+' exact · '+fb.white+' near';
+  statusEl.className='status';
+  render();
+}
+
+newGame();
+</script>
+</body>
+</html>

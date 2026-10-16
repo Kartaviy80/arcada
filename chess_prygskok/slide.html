@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Slide Puzzle</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@600;800&display=swap');
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;height:100dvh;overflow:hidden;background:#0d1117;font-family:'Poppins',system-ui,sans-serif;color:#e6edf3;touch-action:manipulation}
+#app{display:flex;flex-direction:column;height:100%;height:100dvh;max-width:420px;margin:0 auto;padding:max(env(safe-area-inset-top),8px) 10px max(env(safe-area-inset-bottom),8px)}
+.header{display:flex;justify-content:space-between;align-items:center;flex-shrink:0;padding:4px 0}
+.logo{font-size:16px;font-weight:800;letter-spacing:1px;color:#58a6ff}
+.stat{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:6px 12px;font-size:12px;font-weight:700}
+.status{text-align:center;font-size:13px;font-weight:600;padding:6px 0;color:#8b949e;flex-shrink:0;min-height:22px}
+.status.win{color:#3fb950;font-size:15px}
+.board-wrap{flex:1;display:flex;align-items:center;justify-content:center;min-height:0}
+#board{display:grid;grid-template-columns:repeat(4,1fr);grid-template-rows:repeat(4,1fr);gap:6px;width:min(92vw,calc(100dvh - 165px));aspect-ratio:1;background:#161b22;border-radius:12px;padding:8px;border:1px solid #30363d}
+.tile{background:linear-gradient(145deg,#1f6feb,#388bfd);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:clamp(18px,6.5vw,28px);font-weight:800;color:#fff;cursor:pointer;user-select:none;box-shadow:0 2px 6px rgba(0,0,0,.3)}
+.tile:active{transform:scale(.96)}
+.tile.empty{background:transparent;box-shadow:none;cursor:default}
+.controls{display:flex;gap:8px;justify-content:center;padding:8px 0 4px;flex-shrink:0}
+button{font-family:inherit;background:#21262d;border:1px solid #30363d;border-radius:10px;padding:10px 16px;font-size:13px;font-weight:700;cursor:pointer;color:#e6edf3;min-height:42px}
+button:active{transform:scale(.96)}
+#btnMusic.active{background:#238636;border-color:#238636}
+.hint{text-align:center;font-size:11px;color:#484f58;flex-shrink:0}
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="header">
+    <div class="stat">Moves <span id="moves">0</span></div>
+    <div class="logo">SLIDE 15</div>
+    <div class="stat" id="time">0s</div>
+  </div>
+  <div class="status" id="status">Tap a tile next to empty</div>
+  <div class="board-wrap"><div id="board"></div></div>
+  <div class="controls">
+    <button id="btnMusic" onclick="toggleMusic()">♪ Music</button>
+    <button onclick="newGame()">Shuffle</button>
+  </div>
+  <div class="hint">Arrange 1–15 in order</div>
+</div>
+<script>
+const N=4;
+let tiles,empty,moves,secs,timer;
+const boardEl=document.getElementById('board');
+
+let audioCtx=null,musicNodes=[],musicOn=false,musicTimer=null;
+function ensureAudio(){if(!audioCtx)audioCtx=new(window.AudioContext||window.webkitAudioContext)();if(audioCtx.state==='suspended')audioCtx.resume();return audioCtx}
+function stopMusic(){musicNodes.forEach(n=>{try{n.stop()}catch(e){}try{n.disconnect()}catch(e){}});musicNodes=[];if(musicTimer){clearInterval(musicTimer);musicTimer=null}}
+function startMusic(){
+  const ctx=ensureAudio();stopMusic();
+  const m=ctx.createGain();m.gain.value=0.065;m.connect(ctx.destination);
+  function tone(f,t,d){const o=ctx.createOscillator(),g=ctx.createGain();o.type='sine';o.frequency.value=f;g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(0.04,t+.4);g.gain.linearRampToValueAtTime(0,t+d);o.connect(g);g.connect(m);o.start(t);o.stop(t+d+.05);musicNodes.push(o)}
+  function loop(){const t=ctx.currentTime+.05;tone(349.23,t,2.5);tone(440,t+.6,2);tone(523.25,t+1.2,2);tone(659.25,t+2,1.5)}
+  loop();musicTimer=setInterval(loop,3800);
+}
+function toggleMusic(){musicOn=!musicOn;document.getElementById('btnMusic').classList.toggle('active',musicOn);if(musicOn)startMusic();else stopMusic()}
+
+function isSolved(){for(let i=0;i<15;i++)if(tiles[i]!==i+1)return false;return tiles[15]===0}
+function inversions(arr){let inv=0;const a=arr.filter(x=>x);for(let i=0;i<a.length;i++)for(let j=i+1;j<a.length;j++)if(a[i]>a[j])inv++;return inv}
+function solvable(arr){const inv=inversions(arr);const er=Math.floor(arr.indexOf(0)/N);return N%2===1?inv%2===0:(inv+(N-1-er))%2===0}
+function newGame(){
+  do{tiles=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,0];
+    for(let i=tiles.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[tiles[i],tiles[j]]=[tiles[j],tiles[i]]}
+  }while(!solvable(tiles)||isSolved());
+  empty=tiles.indexOf(0);moves=0;secs=0;
+  document.getElementById('moves').textContent=0;
+  document.getElementById('time').textContent='0s';
+  document.getElementById('status').textContent='Tap a tile next to empty';
+  document.getElementById('status').className='status';
+  if(timer)clearInterval(timer);
+  timer=setInterval(()=>{secs++;document.getElementById('time').textContent=secs+'s'},1000);
+  render();
+}
+function render(){
+  boardEl.innerHTML='';
+  tiles.forEach((v,i)=>{
+    const el=document.createElement('div');
+    el.className='tile'+(v===0?' empty':'');
+    el.textContent=v||'';
+    if(v)el.onclick=()=>tryMove(i);
+    boardEl.appendChild(el);
+  });
+}
+function tryMove(i){
+  const er=Math.floor(empty/N),ec=empty%N,r=Math.floor(i/N),c=i%N;
+  if((Math.abs(er-r)+Math.abs(ec-c))!==1)return;
+  [tiles[empty],tiles[i]]=[tiles[i],tiles[empty]];
+  empty=i;moves++;document.getElementById('moves').textContent=moves;render();
+  if(isSolved()){clearInterval(timer);document.getElementById('status').textContent='Solved! 🎉';document.getElementById('status').className='status win'}
+}
+newGame();
+</script>
+</body>
+</html>

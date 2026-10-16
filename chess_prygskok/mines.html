@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Mines</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@500;700&family=Roboto:wght@500;700&display=swap');
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;height:100dvh;overflow:hidden;background:#1a1a2e;font-family:'Roboto',system-ui,sans-serif;color:#eaeaea;touch-action:manipulation}
+#app{display:flex;flex-direction:column;height:100%;height:100dvh;max-width:420px;margin:0 auto;padding:max(env(safe-area-inset-top),8px) 10px max(env(safe-area-inset-bottom),8px)}
+.header{display:flex;justify-content:space-between;align-items:center;flex-shrink:0;padding:4px 0}
+.logo{font-family:'Roboto Mono',monospace;font-size:15px;font-weight:700;color:#e94560}
+.stat{background:#16213e;border-radius:8px;padding:6px 12px;font-family:'Roboto Mono',monospace;font-size:13px;font-weight:700}
+.status{text-align:center;font-size:13px;font-weight:600;padding:6px 0;color:#a0a0b0;flex-shrink:0;min-height:22px}
+.status.win{color:#4caf50;font-size:15px}.status.lose{color:#e94560;font-size:15px}
+.board-wrap{flex:1;display:flex;align-items:center;justify-content:center;min-height:0}
+#board{display:grid;grid-template-columns:repeat(8,1fr);grid-template-rows:repeat(8,1fr);gap:3px;width:min(92vw,calc(100dvh - 165px));aspect-ratio:1;background:#0f3460;border-radius:8px;padding:5px}
+.cell{background:#16213e;border-radius:4px;display:flex;align-items:center;justify-content:center;font-family:'Roboto Mono',monospace;font-weight:700;font-size:clamp(12px,4vw,18px);cursor:pointer;user-select:none}
+.cell:active{opacity:.8}
+.cell.open{background:#1a1a2e;cursor:default}
+.cell.mine{background:#e94560;color:#fff}
+.cell.flag{background:#16213e;color:#e94560}
+.n1{color:#4fc3f7}.n2{color:#81c784}.n3{color:#e57373}.n4{color:#ba68c8}
+.n5{color:#ffb74d}.n6{color:#4dd0e1}.n7{color:#f06292}.n8{color:#aed581}
+.controls{display:flex;gap:8px;justify-content:center;padding:8px 0 4px;flex-shrink:0;flex-wrap:wrap}
+button{font-family:inherit;background:#16213e;border:1px solid #0f3460;border-radius:10px;padding:10px 14px;font-size:13px;font-weight:700;cursor:pointer;color:#eaeaea;min-height:42px}
+button:active{transform:scale(.96)}
+button.active{background:#e94560;border-color:#e94560}
+#btnMusic.active{background:#0f3460;border-color:#4fc3f7;color:#4fc3f7}
+.hint{text-align:center;font-size:11px;color:#5a5a7a;flex-shrink:0}
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="header">
+    <div class="stat">💣 <span id="minesLeft">10</span></div>
+    <div class="logo">MINES</div>
+    <div class="stat" id="time">0</div>
+  </div>
+  <div class="status" id="status">Clear the field</div>
+  <div class="board-wrap"><div id="board"></div></div>
+  <div class="controls">
+    <button id="btnFlag" onclick="toggleFlag()">🚩 Flag</button>
+    <button id="btnMusic" onclick="toggleMusic()">♪ Music</button>
+    <button onclick="newGame()">New</button>
+  </div>
+  <div class="hint">Tap to open · Flag mode for mines</div>
+</div>
+<script>
+const N=8,MINES=10;
+let grid,open,flagged,started,over,flagMode,secs,timer,minesLeft;
+const boardEl=document.getElementById('board');
+
+let audioCtx=null,musicNodes=[],musicOn=false,musicTimer=null;
+function ensureAudio(){if(!audioCtx)audioCtx=new(window.AudioContext||window.webkitAudioContext)();if(audioCtx.state==='suspended')audioCtx.resume();return audioCtx}
+function stopMusic(){musicNodes.forEach(n=>{try{n.stop()}catch(e){}try{n.disconnect()}catch(e){}});musicNodes=[];if(musicTimer){clearInterval(musicTimer);musicTimer=null}}
+function startMusic(){
+  const ctx=ensureAudio();stopMusic();
+  const m=ctx.createGain();m.gain.value=0.06;m.connect(ctx.destination);
+  function tone(f,t,d){const o=ctx.createOscillator(),g=ctx.createGain();o.type='triangle';o.frequency.value=f;g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(0.04,t+.5);g.gain.linearRampToValueAtTime(0,t+d);o.connect(g);g.connect(m);o.start(t);o.stop(t+d+.05);musicNodes.push(o)}
+  function loop(){const t=ctx.currentTime+.05;tone(293.66,t,3);tone(349.23,t+.7,2.5);tone(440,t+1.5,2);tone(587.33,t+2.5,1.5)}
+  loop();musicTimer=setInterval(loop,4200);
+}
+function toggleMusic(){musicOn=!musicOn;document.getElementById('btnMusic').classList.toggle('active',musicOn);if(musicOn)startMusic();else stopMusic()}
+function toggleFlag(){flagMode=!flagMode;document.getElementById('btnFlag').classList.toggle('active',flagMode)}
+
+function newGame(){
+  grid=Array.from({length:N},()=>Array(N).fill(0));
+  open=Array.from({length:N},()=>Array(N).fill(false));
+  flagged=Array.from({length:N},()=>Array(N).fill(false));
+  started=false;over=false;flagMode=false;secs=0;minesLeft=MINES;
+  document.getElementById('btnFlag').classList.remove('active');
+  document.getElementById('minesLeft').textContent=minesLeft;
+  document.getElementById('time').textContent='0';
+  document.getElementById('status').textContent='Clear the field';
+  document.getElementById('status').className='status';
+  if(timer)clearInterval(timer);
+  render();
+}
+function placeMines(sr,sc){
+  let placed=0;
+  while(placed<MINES){
+    const r=Math.floor(Math.random()*N),c=Math.floor(Math.random()*N);
+    if(grid[r][c]===-1||(Math.abs(r-sr)<=1&&Math.abs(c-sc)<=1))continue;
+    grid[r][c]=-1;placed++;
+  }
+  for(let r=0;r<N;r++)for(let c=0;c<N;c++){
+    if(grid[r][c]===-1)continue;
+    let n=0;for(let dr=-1;dr<=1;dr++)for(let dc=-1;dc<=1;dc++){const nr=r+dr,nc=c+dc;if(nr>=0&&nr<N&&nc>=0&&nc<N&&grid[nr][nc]===-1)n++}
+    grid[r][c]=n;
+  }
+}
+function reveal(r,c){
+  if(r<0||r>=N||c<0||c>=N||open[r][c]||flagged[r][c])return;
+  open[r][c]=true;
+  if(grid[r][c]===0)for(let dr=-1;dr<=1;dr++)for(let dc=-1;dc<=1;dc++)if(dr||dc)reveal(r+dr,c+dc);
+}
+function checkWin(){
+  let closed=0;for(let r=0;r<N;r++)for(let c=0;c<N;c++)if(!open[r][c])closed++;
+  return closed===MINES;
+}
+function render(){
+  boardEl.innerHTML='';
+  for(let r=0;r<N;r++)for(let c=0;c<N;c++){
+    const cell=document.createElement('div');cell.className='cell';
+    if(flagged[r][c]&&!open[r][c]){cell.classList.add('flag');cell.textContent='🚩'}
+    else if(open[r][c]){
+      cell.classList.add('open');
+      if(grid[r][c]===-1){cell.classList.add('mine');cell.textContent='💣'}
+      else if(grid[r][c]>0){cell.textContent=grid[r][c];cell.classList.add('n'+grid[r][c])}
+    }
+    cell.onclick=()=>click(r,c);
+    boardEl.appendChild(cell);
+  }
+}
+function click(r,c){
+  if(over)return;
+  if(flagMode){
+    if(open[r][c])return;
+    flagged[r][c]=!flagged[r][c];
+    minesLeft+=flagged[r][c]?-1:1;
+    document.getElementById('minesLeft').textContent=minesLeft;
+    render();return;
+  }
+  if(flagged[r][c])return;
+  if(!started){started=true;placeMines(r,c);timer=setInterval(()=>{secs++;document.getElementById('time').textContent=secs},1000)}
+  if(grid[r][c]===-1){
+    over=true;clearInterval(timer);
+    for(let i=0;i<N;i++)for(let j=0;j<N;j++)if(grid[i][j]===-1)open[i][j]=true;
+    document.getElementById('status').textContent='Boom! 💥';document.getElementById('status').className='status lose';
+    render();return;
+  }
+  reveal(r,c);render();
+  if(checkWin()){over=true;clearInterval(timer);document.getElementById('status').textContent='Cleared! 🎉';document.getElementById('status').className='status win'}
+}
+newGame();
+</script>
+</body>
+</html>

@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Quoridor</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@700;900&family=Inter:wght@400;600;700&display=swap');
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  :root {
+    --bg: #0b0f1a;
+    --panel: #12182b;
+    --accent: #00e5ff;
+    --accent2: #ff2d6a;
+    --gold: #ffc107;
+    --cell: #1a2238;
+    --text: #e8ecf4;
+    --muted: #7a849c;
+    --success: #00e676;
+  }
+  html, body {
+    height: 100%; height: 100dvh; overflow: hidden;
+    background: var(--bg); font-family: 'Inter', system-ui, sans-serif;
+    color: var(--text); touch-action: manipulation;
+  }
+  body::before {
+    content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+    background:
+      radial-gradient(ellipse 80% 50% at 50% -20%, rgba(0,229,255,0.12), transparent),
+      radial-gradient(ellipse 60% 40% at 100% 100%, rgba(255,45,106,0.08), transparent);
+  }
+  #app {
+    position: relative; z-index: 1;
+    display: flex; flex-direction: column;
+    height: 100%; height: 100dvh;
+    max-width: 440px; margin: 0 auto;
+    padding: max(env(safe-area-inset-top), 6px) 8px max(env(safe-area-inset-bottom), 6px);
+  }
+  .header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 4px 0; flex-shrink: 0; gap: 6px;
+  }
+  .logo {
+    font-family: 'Orbitron', sans-serif; font-weight: 900; font-size: 13px;
+    letter-spacing: 2px;
+    background: linear-gradient(135deg, var(--accent), #7c4dff);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+  }
+  .player-card {
+    display: flex; align-items: center; gap: 6px;
+    background: var(--panel); border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 12px; padding: 5px 8px 5px 5px;
+  }
+  .player-card.active { border-color: var(--accent); box-shadow: 0 0 12px rgba(0,229,255,0.25); }
+  .player-card.bot.active { border-color: var(--accent2); box-shadow: 0 0 12px rgba(255,45,106,0.25); }
+  .avatar {
+    width: 26px; height: 26px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 700; flex-shrink: 0;
+  }
+  .avatar.you {
+    background: linear-gradient(145deg, #00e5ff, #0091ea); color: #0b0f1a;
+    box-shadow: 0 0 10px rgba(0,229,255,0.5);
+  }
+  .avatar.bot {
+    background: linear-gradient(145deg, #ff2d6a, #c51162); color: #fff;
+    box-shadow: 0 0 10px rgba(255,45,106,0.4);
+  }
+  .player-meta { display: flex; flex-direction: column; gap: 0; }
+  .player-name { font-size: 11px; font-weight: 700; }
+  .walls-badge {
+    display: inline-flex; align-items: center; gap: 3px;
+    font-size: 10px; color: var(--muted); font-weight: 600;
+  }
+  .walls-badge span { color: var(--gold); font-weight: 700; }
+  .wall-icon { width: 10px; height: 4px; background: var(--gold); border-radius: 1px; }
+
+  .status {
+    text-align: center; font-size: 12px; font-weight: 600;
+    padding: 3px 0 5px; color: var(--muted); flex-shrink: 0; min-height: 20px;
+  }
+  .status.turn { color: var(--accent); }
+  .status.bot-turn { color: var(--accent2); }
+  .status.win { color: var(--success); font-size: 14px; font-weight: 700; }
+
+  .board-wrap {
+    flex: 1; display: flex; align-items: center; justify-content: center;
+    min-height: 0; position: relative;
+  }
+  #board {
+    position: relative;
+    display: grid;
+    grid-template-columns: repeat(9, 1fr);
+    grid-template-rows: repeat(9, 1fr);
+    gap: 0;
+    width: min(100%, calc(100dvh - 155px));
+    height: min(100%, calc(100dvh - 155px));
+    aspect-ratio: 1;
+    background: #060a14;
+    border-radius: 8px;
+    touch-action: none;
+    box-shadow: 0 0 0 1px rgba(0,229,255,0.15), 0 8px 32px rgba(0,0,0,0.5);
+    overflow: hidden;
+  }
+  .cell {
+    background: var(--cell);
+    border: 1px solid #0d1324;
+    position: relative;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .cell.goal-you { background: linear-gradient(180deg, rgba(0,229,255,0.16), var(--cell)); }
+  .cell.goal-bot { background: linear-gradient(0deg, rgba(255,45,106,0.14), var(--cell)); }
+  .cell.valid {
+    background: rgba(0,230,118,0.30);
+    box-shadow: inset 0 0 0 2px rgba(0,230,118,0.55);
+    cursor: pointer;
+  }
+  .cell.valid:active { background: rgba(0,230,118,0.55); }
+
+  .pawn {
+    width: 68%; height: 68%; border-radius: 50%;
+    z-index: 5; pointer-events: none; position: relative;
+  }
+  .pawn.you {
+    background: linear-gradient(145deg, #00e5ff, #0091ea);
+    box-shadow: 0 0 12px rgba(0,229,255,0.6), 0 3px 6px rgba(0,0,0,0.4);
+  }
+  .pawn.bot {
+    background: linear-gradient(145deg, #ff2d6a, #c51162);
+    box-shadow: 0 0 12px rgba(255,45,106,0.5), 0 3px 6px rgba(0,0,0,0.4);
+  }
+  .pawn::after {
+    content: ''; position: absolute; top: 16%; left: 20%;
+    width: 36%; height: 26%; background: rgba(255,255,255,0.35);
+    border-radius: 50%; transform: rotate(-30deg);
+  }
+
+  /* Walls drawn as absolute overlays INSIDE #board */
+  .wall {
+    position: absolute; z-index: 10; pointer-events: none;
+    background: linear-gradient(90deg, #ffb300, #ffc107, #ffb300);
+    border-radius: 2px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.55), 0 0 8px rgba(255,193,7,0.35);
+  }
+  .wall-slot {
+    position: absolute; z-index: 12; border-radius: 2px;
+    background: rgba(0,230,118,0.45);
+    box-shadow: 0 0 0 1px rgba(0,230,118,0.7);
+    cursor: pointer; pointer-events: auto;
+  }
+  .wall-slot:active { background: rgba(0,230,118,0.75); }
+
+  .controls {
+    display: flex; gap: 5px; padding: 6px 0 2px;
+    flex-shrink: 0; justify-content: center; flex-wrap: wrap;
+  }
+  button {
+    font-family: 'Inter', sans-serif; background: var(--panel); color: var(--text);
+    border: 1px solid rgba(255,255,255,0.08); border-radius: 11px;
+    padding: 9px 12px; font-size: 12px; font-weight: 700;
+    cursor: pointer; min-height: 40px; letter-spacing: 0.2px;
+  }
+  button:active { transform: scale(0.96); }
+  button.active {
+    background: linear-gradient(135deg, rgba(0,229,255,0.25), rgba(124,77,255,0.2));
+    border-color: var(--accent); color: var(--accent);
+    box-shadow: 0 0 14px rgba(0,229,255,0.2);
+  }
+  button:disabled { opacity: 0.35; pointer-events: none; }
+  #btnMusic.active { border-color: var(--accent); color: var(--accent); }
+  #btnNew { background: transparent; border-color: rgba(255,45,106,0.4); color: var(--accent2); }
+  .hint {
+    text-align: center; font-size: 10px; color: var(--muted);
+    padding-bottom: 2px; flex-shrink: 0;
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="header">
+    <div class="player-card" id="cardYou">
+      <div class="avatar you">Y</div>
+      <div class="player-meta">
+        <div class="player-name">You</div>
+        <div class="walls-badge"><div class="wall-icon"></div> <span id="walls1">10</span></div>
+      </div>
+    </div>
+    <div class="logo">QUORIDOR</div>
+    <div class="player-card bot" id="cardBot">
+      <div class="player-meta" style="text-align:right">
+        <div class="player-name">Bot</div>
+        <div class="walls-badge" style="justify-content:flex-end"><div class="wall-icon"></div> <span id="walls2">10</span></div>
+      </div>
+      <div class="avatar bot">B</div>
+    </div>
+  </div>
+  <div class="status turn" id="status">Your turn — pick a square</div>
+  <div class="board-wrap">
+    <div id="board"></div>
+  </div>
+  <div class="controls">
+    <button id="btnMove" class="active" onclick="setMode('move')">Move</button>
+    <button id="btnWallH" onclick="setMode('wallH')">Wall ↔</button>
+    <button id="btnWallV" onclick="setMode('wallV')">Wall ↕</button>
+    <button id="btnMusic" onclick="toggleMusic()">♪ Music</button>
+    <button id="btnNew" onclick="newGame()">New</button>
+  </div>
+  <div class="hint">Reach the opposite side · Walls can't fully block a path</div>
+</div>
+<script>
+
+/* ---- Ambient BGM via Web Audio (works offline) ---- */
+let audioCtx = null, musicNodes = [], musicOn = false, musicTimer = null;
+
+function ensureAudio() {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  return audioCtx;
+}
+
+function stopMusicInternal() {
+  musicNodes.forEach(n => { try { n.stop(); } catch(e){} try { n.disconnect(); } catch(e){} });
+  musicNodes = [];
+  if (musicTimer) { clearInterval(musicTimer); musicTimer = null; }
+}
+
+function startAmbientMusic() {
+  const ctx = ensureAudio();
+  stopMusicInternal();
+  const master = ctx.createGain();
+  master.gain.value = 0.12;
+  master.connect(ctx.destination);
+
+  // soft pad chords (A minor-ish)
+  const notes = [220, 261.63, 329.63, 392, 440]; // A3 C4 E4 G4 A4
+  const now = ctx.currentTime;
+
+  function playPad(freq, start, dur, type) {
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    const f = ctx.createBiquadFilter();
+    osc.type = type || 'sine';
+    osc.frequency.value = freq;
+    f.type = 'lowpass';
+    f.frequency.value = 800;
+    g.gain.setValueAtTime(0, start);
+    g.gain.linearRampToValueAtTime(0.08, start + 0.8);
+    g.gain.linearRampToValueAtTime(0.05, start + dur * 0.6);
+    g.gain.linearRampToValueAtTime(0, start + dur);
+    osc.connect(f); f.connect(g); g.connect(master);
+    osc.start(start);
+    osc.stop(start + dur + 0.05);
+    musicNodes.push(osc);
+  }
+
+  function scheduleLoop() {
+    const t = ctx.currentTime + 0.05;
+    // drone
+    playPad(110, t, 8, 'sine');
+    playPad(164.81, t, 8, 'triangle');
+    // higher shimmer
+    playPad(329.63, t + 0.5, 6, 'sine');
+    playPad(440, t + 2, 5, 'sine');
+    playPad(523.25, t + 4, 4, 'triangle');
+  }
+
+  scheduleLoop();
+  musicTimer = setInterval(scheduleLoop, 7000);
+}
+
+function toggleMusic() {
+  musicOn = !musicOn;
+  const btn = document.getElementById('btnMusic');
+  if (btn) btn.classList.toggle('active', musicOn);
+  if (musicOn) startAmbientMusic();
+  else stopMusicInternal();
+}
+
+
+
+const SIZE = 9;
+const WALLS_EACH = 10;
+
+// wallsH[r][c] = horizontal wall between row r and r+1, covering columns c and c+1
+// wallsV[r][c] = vertical wall between col c and c+1, covering rows r and r+1
+let wallsH, wallsV;
+let p1, p2;
+let wallsLeft;
+let turn; // 0 = you, 1 = bot
+let mode;
+let gameOver;
+
+const boardEl = document.getElementById('board');
+const statusEl = document.getElementById('status');
+
+function initArrays() {
+  wallsH = Array.from({ length: 8 }, () => Array(8).fill(false));
+  wallsV = Array.from({ length: 8 }, () => Array(8).fill(false));
+}
+
+function newGame() {
+  initArrays();
+  p1 = { r: 8, c: 4 };
+  p2 = { r: 0, c: 4 };
+  wallsLeft = [WALLS_EACH, WALLS_EACH];
+  turn = 0;
+  mode = 'move';
+  gameOver = false;
+  setMode('move');
+  render();
+  updateStatus();
+}
+
+function setMode(m) {
+  if (gameOver || turn !== 0) return;
+  mode = m;
+  document.getElementById('btnMove').classList.toggle('active', m === 'move');
+  document.getElementById('btnWallH').classList.toggle('active', m === 'wallH');
+  document.getElementById('btnWallV').classList.toggle('active', m === 'wallV');
+  render();
+  updateStatus();
+}
+
+function updateStatus() {
+  document.getElementById('walls1').textContent = wallsLeft[0];
+  document.getElementById('walls2').textContent = wallsLeft[1];
+  document.getElementById('cardYou').classList.toggle('active', turn === 0 && !gameOver);
+  document.getElementById('cardBot').classList.toggle('active', turn === 1 && !gameOver);
+  if (gameOver) {
+    statusEl.className = 'status win';
+    statusEl.textContent = turn === 0 ? 'Bot wins!' : 'You win!';
+  } else if (turn === 0) {
+    statusEl.className = 'status turn';
+    statusEl.textContent = mode === 'move' ? 'Your turn — pick a square' : 'Place a wall';
+  } else {
+    statusEl.className = 'status bot-turn';
+    statusEl.textContent = 'Bot is thinking...';
+  }
+}
+
+/* ---------- Wall / movement logic ---------- */
+
+// Does a wall block the edge between (r1,c1) and (r2,c2)? Adjacent orthogonally.
+function hasWallBetween(r1, c1, r2, c2) {
+  if (r1 === r2) {
+    // horizontal move → blocked by vertical wall
+    const cMin = Math.min(c1, c2);
+    // V-wall at [row][cMin] covers rows row and row+1
+    if (wallsV[r1] && wallsV[r1][cMin]) return true;
+    if (r1 > 0 && wallsV[r1 - 1] && wallsV[r1 - 1][cMin]) return true;
+  } else if (c1 === c2) {
+    // vertical move → blocked by horizontal wall
+    const rMin = Math.min(r1, r2);
+    if (wallsH[rMin] && wallsH[rMin][c1]) return true;
+    if (c1 > 0 && wallsH[rMin] && wallsH[rMin][c1 - 1]) return true;
+  }
+  return false;
+}
+
+function getValidMoves(pawn, other) {
+  const moves = [];
+  const dirs = [[-1,0],[1,0],[0,-1],[0,1]];
+  for (const [dr, dc] of dirs) {
+    const nr = pawn.r + dr, nc = pawn.c + dc;
+    if (nr < 0 || nr >= SIZE || nc < 0 || nc >= SIZE) continue;
+    if (hasWallBetween(pawn.r, pawn.c, nr, nc)) continue;
+    if (nr === other.r && nc === other.c) {
+      // try straight jump
+      const jr = nr + dr, jc = nc + dc;
+      if (jr >= 0 && jr < SIZE && jc >= 0 && jc < SIZE &&
+          !hasWallBetween(nr, nc, jr, jc)) {
+        moves.push({ r: jr, c: jc });
+      } else {
+        // side jumps
+        const sides = dr !== 0 ? [[0,-1],[0,1]] : [[-1,0],[1,0]];
+        for (const [sr, sc] of sides) {
+          const sr2 = nr + sr, sc2 = nc + sc;
+          if (sr2 >= 0 && sr2 < SIZE && sc2 >= 0 && sc2 < SIZE &&
+              !hasWallBetween(nr, nc, sr2, sc2) &&
+              !(sr2 === other.r && sc2 === other.c)) {
+            moves.push({ r: sr2, c: sc2 });
+          }
+        }
+      }
+    } else {
+      moves.push({ r: nr, c: nc });
+    }
+  }
+  // unique
+  const seen = new Set();
+  return moves.filter(m => {
+    const k = m.r + ',' + m.c;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
+function isWallFree(r, c, orient) {
+  if (r < 0 || r > 7 || c < 0 || c > 7) return false;
+  if (orient === 'H') {
+    if (wallsH[r][c]) return false;
+    // cannot cross a vertical wall at the same intersection
+    if (wallsV[r][c]) return false;
+    // cannot overlap adjacent horizontal walls
+    if (c > 0 && wallsH[r][c - 1]) return false;
+    if (c < 7 && wallsH[r][c + 1]) return false;
+    return true;
+  } else {
+    if (wallsV[r][c]) return false;
+    if (wallsH[r][c]) return false;
+    if (r > 0 && wallsV[r - 1][c]) return false;
+    if (r < 7 && wallsV[r + 1][c]) return false;
+    return true;
+  }
+}
+
+function placeWall(r, c, orient, player) {
+  if (wallsLeft[player] <= 0) return false;
+  if (!isWallFree(r, c, orient)) return false;
+  if (orient === 'H') wallsH[r][c] = true;
+  else wallsV[r][c] = true;
+  // both players must still have a path
+  if (!hasPath(p1, 0) || !hasPath(p2, SIZE - 1)) {
+    if (orient === 'H') wallsH[r][c] = false;
+    else wallsV[r][c] = false;
+    return false;
+  }
+  wallsLeft[player]--;
+  return true;
+}
+
+function hasPath(pawn, goalRow) {
+  const vis = Array.from({ length: SIZE }, () => Array(SIZE).fill(false));
+  const q = [{ r: pawn.r, c: pawn.c }];
+  vis[pawn.r][pawn.c] = true;
+  const dirs = [[-1,0],[1,0],[0,-1],[0,1]];
+  while (q.length) {
+    const cur = q.shift();
+    if (cur.r === goalRow) return true;
+    for (const [dr, dc] of dirs) {
+      const nr = cur.r + dr, nc = cur.c + dc;
+      if (nr < 0 || nr >= SIZE || nc < 0 || nc >= SIZE) continue;
+      if (vis[nr][nc]) continue;
+      if (hasWallBetween(cur.r, cur.c, nr, nc)) continue;
+      vis[nr][nc] = true;
+      q.push({ r: nr, c: nc });
+    }
+  }
+  return false;
+}
+
+function shortestPath(pawn, goalRow) {
+  const vis = Array.from({ length: SIZE }, () => Array(SIZE).fill(false));
+  const q = [{ r: pawn.r, c: pawn.c, d: 0 }];
+  vis[pawn.r][pawn.c] = true;
+  const dirs = [[-1,0],[1,0],[0,-1],[0,1]];
+  while (q.length) {
+    const cur = q.shift();
+    if (cur.r === goalRow) return cur.d;
+    for (const [dr, dc] of dirs) {
+      const nr = cur.r + dr, nc = cur.c + dc;
+      if (nr < 0 || nr >= SIZE || nc < 0 || nc >= SIZE) continue;
+      if (vis[nr][nc]) continue;
+      if (hasWallBetween(cur.r, cur.c, nr, nc)) continue;
+      vis[nr][nc] = true;
+      q.push({ r: nr, c: nc, d: cur.d + 1 });
+    }
+  }
+  return 99;
+}
+
+function checkWin() {
+  if (p1.r === 0) { gameOver = true; turn = 1; return true; }
+  if (p2.r === SIZE - 1) { gameOver = true; turn = 0; return true; }
+  return false;
+}
+
+/* ---------- Render ---------- */
+
+function render() {
+  // clear everything inside board
+  boardEl.innerHTML = '';
+
+  // cells
+  for (let r = 0; r < SIZE; r++) {
+    for (let c = 0; c < SIZE; c++) {
+      const cell = document.createElement('div');
+      cell.className = 'cell';
+      if (r === 0) cell.classList.add('goal-you');
+      if (r === SIZE - 1) cell.classList.add('goal-bot');
+      if (p1.r === r && p1.c === c) {
+        const p = document.createElement('div');
+        p.className = 'pawn you';
+        cell.appendChild(p);
+      }
+      if (p2.r === r && p2.c === c) {
+        const p = document.createElement('div');
+        p.className = 'pawn bot';
+        cell.appendChild(p);
+      }
+      if (!gameOver && turn === 0 && mode === 'move') {
+        const moves = getValidMoves(p1, p2);
+        if (moves.some(m => m.r === r && m.c === c)) {
+          cell.classList.add('valid');
+          cell.onclick = () => doMove(r, c);
+        }
+      }
+      boardEl.appendChild(cell);
+    }
+  }
+
+  // measure after layout
+  const bw = boardEl.clientWidth;
+  const bh = boardEl.clientHeight;
+  const cw = bw / SIZE;  // cell width including border
+  const ch = bh / SIZE;
+  const wallThick = Math.max(6, Math.min(cw, ch) * 0.18);
+
+  // existing walls
+  for (let r = 0; r < 8; r++) {
+    for (let c = 0; c < 8; c++) {
+      if (wallsH[r][c]) {
+        const w = document.createElement('div');
+        w.className = 'wall';
+        // between row r and r+1, spans col c and c+1
+        w.style.left = (c * cw) + 'px';
+        w.style.top = ((r + 1) * ch - wallThick / 2) + 'px';
+        w.style.width = (2 * cw) + 'px';
+        w.style.height = wallThick + 'px';
+        boardEl.appendChild(w);
+      }
+      if (wallsV[r][c]) {
+        const w = document.createElement('div');
+        w.className = 'wall';
+        w.style.left = ((c + 1) * cw - wallThick / 2) + 'px';
+        w.style.top = (r * ch) + 'px';
+        w.style.width = wallThick + 'px';
+        w.style.height = (2 * ch) + 'px';
+        boardEl.appendChild(w);
+      }
+    }
+  }
+
+  // placement slots
+  if (!gameOver && turn === 0 && (mode === 'wallH' || mode === 'wallV') && wallsLeft[0] > 0) {
+    const orient = mode === 'wallH' ? 'H' : 'V';
+    for (let r = 0; r < 8; r++) {
+      for (let c = 0; c < 8; c++) {
+        if (!isWallFree(r, c, orient)) continue;
+        const slot = document.createElement('div');
+        slot.className = 'wall-slot';
+        if (orient === 'H') {
+          slot.style.left = (c * cw) + 'px';
+          slot.style.top = ((r + 1) * ch - wallThick / 2) + 'px';
+          slot.style.width = (2 * cw) + 'px';
+          slot.style.height = wallThick + 'px';
+        } else {
+          slot.style.left = ((c + 1) * cw - wallThick / 2) + 'px';
+          slot.style.top = (r * ch) + 'px';
+          slot.style.width = wallThick + 'px';
+          slot.style.height = (2 * ch) + 'px';
+        }
+        slot.onclick = (e) => { e.stopPropagation(); doPlaceWall(r, c, orient); };
+        boardEl.appendChild(slot);
+      }
+    }
+  }
+
+  document.getElementById('btnWallH').disabled = wallsLeft[0] <= 0 || turn !== 0 || gameOver;
+  document.getElementById('btnWallV').disabled = wallsLeft[0] <= 0 || turn !== 0 || gameOver;
+  document.getElementById('btnMove').disabled = turn !== 0 || gameOver;
+}
+
+function doMove(r, c) {
+  if (gameOver || turn !== 0) return;
+  p1.r = r; p1.c = c;
+  if (checkWin()) { render(); updateStatus(); return; }
+  turn = 1;
+  updateStatus();
+  render();
+  setTimeout(botMove, 350);
+}
+
+function doPlaceWall(r, c, orient) {
+  if (gameOver || turn !== 0) return;
+  if (!placeWall(r, c, orient, 0)) {
+    statusEl.textContent = "Can't block all paths";
+    setTimeout(updateStatus, 900);
+    return;
+  }
+  turn = 1;
+  mode = 'move';
+  document.getElementById('btnMove').classList.add('active');
+  document.getElementById('btnWallH').classList.remove('active');
+  document.getElementById('btnWallV').classList.remove('active');
+  updateStatus();
+  render();
+  setTimeout(botMove, 350);
+}
+
+/* ---------- Bot ---------- */
+function botMove() {
+  if (gameOver) return;
+  const moves = getValidMoves(p2, p1);
+  let bestScore = -Infinity;
+  let bestAction = null;
+
+  const baseOpp = shortestPath(p1, 0);
+  const baseMe = shortestPath(p2, SIZE - 1);
+
+  // --- evaluate pawn moves ---
+  for (const m of moves) {
+    const oldR = p2.r, oldC = p2.c;
+    p2.r = m.r; p2.c = m.c;
+    const oppP = shortestPath(p1, 0);
+    const meP = shortestPath(p2, SIZE - 1);
+    let score = (oppP - meP) * 10;
+    // strong bonus for advancing toward goal
+    score += (baseMe - meP) * 8;
+    // winning move
+    if (m.r === SIZE - 1) score += 10000;
+    // prefer center columns slightly
+    score += (4 - Math.abs(m.c - 4)) * 0.5;
+    p2.r = oldR; p2.c = oldC;
+    if (score > bestScore) {
+      bestScore = score;
+      bestAction = { type: 'move', r: m.r, c: m.c };
+    }
+  }
+
+  // --- evaluate walls (aggressive blocking) ---
+  if (wallsLeft[1] > 0) {
+    const candidates = [];
+    for (let r = 0; r < 8; r++)
+      for (let c = 0; c < 8; c++)
+        for (const orient of ['H', 'V'])
+          if (isWallFree(r, c, orient)) candidates.push({ r, c, orient });
+
+    // prioritize walls near player and in front of player (toward goal row 0)
+    candidates.sort((a, b) => {
+      const da = Math.abs(a.r - p1.r) + Math.abs(a.c - p1.c) + (a.r < p1.r ? -2 : 0);
+      const db = Math.abs(b.r - p1.r) + Math.abs(b.c - p1.c) + (b.r < p1.r ? -2 : 0);
+      return da - db;
+    });
+    const toCheck = candidates.slice(0, 80);
+
+    for (const cand of toCheck) {
+      if (cand.orient === 'H') wallsH[cand.r][cand.c] = true;
+      else wallsV[cand.r][cand.c] = true;
+      if (!hasPath(p1, 0) || !hasPath(p2, SIZE - 1)) {
+        if (cand.orient === 'H') wallsH[cand.r][cand.c] = false;
+        else wallsV[cand.r][cand.c] = false;
+        continue;
+      }
+      const oppP = shortestPath(p1, 0);
+      const meP = shortestPath(p2, SIZE - 1);
+      const pathGain = oppP - baseOpp; // how much we lengthened player
+      const selfHarm = meP - baseMe;   // how much we hurt ourselves
+
+      let score = (oppP - meP) * 10;
+      score += pathGain * 25;   // strong reward for blocking player
+      score -= selfHarm * 15;   // penalty if we block ourselves
+
+      // urgent: if player is close to winning, walls are critical
+      if (baseOpp <= 2) score += pathGain * 80;
+      else if (baseOpp <= 4) score += pathGain * 50;
+      else if (baseOpp <= 6) score += pathGain * 30;
+      else score += pathGain * 12;
+
+      // only place wall if it actually slows the player (or we're in danger)
+      if (pathGain <= 0 && baseOpp > 4) score -= 50;
+
+      // prefer walls in front of player (toward their goal at row 0)
+      if (cand.orient === 'H' && cand.r < p1.r && cand.r >= p1.r - 3) score += 8;
+      if (cand.orient === 'V' && Math.abs(cand.c - p1.c) <= 1 && cand.r <= p1.r) score += 5;
+
+      // if player closer than bot, force more walls
+      if (baseOpp < baseMe) score += pathGain * 20;
+
+      if (cand.orient === 'H') wallsH[cand.r][cand.c] = false;
+      else wallsV[cand.r][cand.c] = false;
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestAction = { type: 'wall', ...cand };
+      }
+    }
+  }
+
+  // execute
+  if (bestAction) {
+    if (bestAction.type === 'move') {
+      p2.r = bestAction.r; p2.c = bestAction.c;
+    } else {
+      placeWall(bestAction.r, bestAction.c, bestAction.orient, 1);
+    }
+  } else if (moves.length) {
+    // prefer moving toward goal
+    moves.sort((a, b) => b.r - a.r);
+    const m = moves[0];
+    p2.r = m.r; p2.c = m.c;
+  }
+
+  if (checkWin()) { render(); updateStatus(); return; }
+  turn = 0;
+  mode = 'move';
+  document.getElementById('btnMove').classList.add('active');
+  document.getElementById('btnWallH').classList.remove('active');
+  document.getElementById('btnWallV').classList.remove('active');
+  updateStatus();
+  render();
+}
+
+window.addEventListener('resize', () => render());
+newGame();
+</script>
+</body>
+</html>

@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Reversi</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@700;900&family=Inter:wght@400;600;700&display=swap');
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  :root {
+    --bg: #0b0f1a; --panel: #12182b; --accent: #00e5ff; --accent2: #ff2d6a;
+    --gold: #ffc107; --cell: #1a2238; --text: #e8ecf4; --muted: #7a849c; --success: #00e676;
+  }
+  html, body {
+    height: 100%; height: 100dvh; overflow: hidden; background: var(--bg);
+    font-family: 'Inter', system-ui, sans-serif; color: var(--text); touch-action: manipulation;
+  }
+  body::before {
+    content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+    background:
+      radial-gradient(ellipse 80% 50% at 50% -20%, rgba(0,229,255,0.12), transparent),
+      radial-gradient(ellipse 60% 40% at 100% 100%, rgba(255,45,106,0.08), transparent);
+  }
+  #app {
+    position: relative; z-index: 1; display: flex; flex-direction: column;
+    height: 100%; height: 100dvh; max-width: 440px; margin: 0 auto;
+    padding: max(env(safe-area-inset-top), 6px) 8px max(env(safe-area-inset-bottom), 6px);
+  }
+  .header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 4px 0; flex-shrink: 0; gap: 6px;
+  }
+  .logo {
+    font-family: 'Orbitron', sans-serif; font-weight: 900; font-size: 13px; letter-spacing: 2px;
+    background: linear-gradient(135deg, var(--accent), #7c4dff);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+  }
+  .player-card {
+    display: flex; align-items: center; gap: 6px;
+    background: var(--panel); border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 12px; padding: 5px 8px 5px 5px;
+  }
+  .player-card.active { border-color: var(--accent); box-shadow: 0 0 12px rgba(0,229,255,0.25); }
+  .player-card.bot.active { border-color: var(--accent2); box-shadow: 0 0 12px rgba(255,45,106,0.25); }
+  .avatar {
+    width: 26px; height: 26px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 700; flex-shrink: 0;
+  }
+  .avatar.you {
+    background: linear-gradient(145deg, #00e5ff, #0091ea); color: #0b0f1a;
+    box-shadow: 0 0 10px rgba(0,229,255,0.5);
+  }
+  .avatar.bot {
+    background: linear-gradient(145deg, #ff2d6a, #c51162); color: #fff;
+    box-shadow: 0 0 10px rgba(255,45,106,0.4);
+  }
+  .player-meta { display: flex; flex-direction: column; }
+  .player-name { font-size: 11px; font-weight: 700; }
+  .score { font-size: 12px; font-weight: 700; color: var(--gold); }
+  .status {
+    text-align: center; font-size: 12px; font-weight: 600;
+    padding: 3px 0 5px; color: var(--muted); flex-shrink: 0; min-height: 20px;
+  }
+  .status.turn { color: var(--accent); }
+  .status.bot-turn { color: var(--accent2); }
+  .status.win { color: var(--success); font-size: 14px; font-weight: 700; }
+  .status.draw { color: var(--gold); font-size: 14px; font-weight: 700; }
+
+  .board-wrap {
+    flex: 1; display: flex; align-items: center; justify-content: center; min-height: 0;
+  }
+  #board {
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    grid-template-rows: repeat(8, 1fr);
+    gap: 2px;
+    width: min(100%, calc(100dvh - 155px));
+    aspect-ratio: 1;
+    background: #060a14;
+    border-radius: 10px;
+    padding: 4px;
+    box-shadow: 0 0 0 1px rgba(0,229,255,0.15), 0 8px 32px rgba(0,0,0,0.5);
+  }
+  .cell {
+    background: #0f3d2e;
+    border-radius: 3px;
+    position: relative;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .cell.valid {
+    background: #145c42;
+    box-shadow: inset 0 0 0 2px rgba(0,230,118,0.5);
+    cursor: pointer;
+  }
+  .cell.valid:active { background: #1a7a56; }
+  .disc {
+    width: 78%; height: 78%; border-radius: 50%;
+  }
+  .disc.you {
+    background: linear-gradient(145deg, #00e5ff, #0091ea);
+    box-shadow: 0 0 10px rgba(0,229,255,0.5), inset 0 -2px 4px rgba(0,0,0,0.2);
+  }
+  .disc.bot {
+    background: linear-gradient(145deg, #ff2d6a, #c51162);
+    box-shadow: 0 0 10px rgba(255,45,106,0.4), inset 0 -2px 4px rgba(0,0,0,0.25);
+  }
+  .hint-dot {
+    width: 18%; height: 18%; border-radius: 50%;
+    background: rgba(0,230,118,0.6);
+  }
+
+  .controls {
+    display: flex; gap: 6px; padding: 6px 0 2px;
+    flex-shrink: 0; justify-content: center; flex-wrap: wrap;
+  }
+  button {
+    font-family: 'Inter', sans-serif; background: var(--panel); color: var(--text);
+    border: 1px solid rgba(255,255,255,0.08); border-radius: 11px;
+    padding: 9px 14px; font-size: 12px; font-weight: 700; cursor: pointer; min-height: 40px;
+  }
+  button:active { transform: scale(0.96); }
+  button:disabled { opacity: 0.35; pointer-events: none; }
+  #btnNew { background: transparent; border-color: rgba(255,45,106,0.4); color: var(--accent2); }
+  #btnMusic.active { border-color: var(--accent); color: var(--accent); }
+  .hint { text-align: center; font-size: 10px; color: var(--muted); padding-bottom: 2px; flex-shrink: 0; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="header">
+    <div class="player-card" id="cardYou">
+      <div class="avatar you">Y</div>
+      <div class="player-meta">
+        <div class="player-name">You</div>
+        <div class="score" id="score1">2</div>
+      </div>
+    </div>
+    <div class="logo">REVERSI</div>
+    <div class="player-card bot" id="cardBot">
+      <div class="player-meta" style="text-align:right">
+        <div class="player-name">Bot</div>
+        <div class="score" id="score2">2</div>
+      </div>
+      <div class="avatar bot">B</div>
+    </div>
+  </div>
+  <div class="status turn" id="status">Your turn</div>
+  <div class="board-wrap"><div id="board"></div></div>
+  <div class="controls">
+    <button id="btnMusic" onclick="toggleMusic()">♪ Music</button>
+    <button id="btnNew" onclick="newGame()">New</button>
+  </div>
+  <div class="hint">Flip opponent discs · Most discs wins</div>
+</div>
+<script>
+
+/* ---- Ambient BGM via Web Audio (works offline) ---- */
+let audioCtx = null, musicNodes = [], musicOn = false, musicTimer = null;
+
+function ensureAudio() {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  return audioCtx;
+}
+
+function stopMusicInternal() {
+  musicNodes.forEach(n => { try { n.stop(); } catch(e){} try { n.disconnect(); } catch(e){} });
+  musicNodes = [];
+  if (musicTimer) { clearInterval(musicTimer); musicTimer = null; }
+}
+
+function startAmbientMusic() {
+  const ctx = ensureAudio();
+  stopMusicInternal();
+  const master = ctx.createGain();
+  master.gain.value = 0.12;
+  master.connect(ctx.destination);
+
+  // soft pad chords (A minor-ish)
+  const notes = [220, 261.63, 329.63, 392, 440]; // A3 C4 E4 G4 A4
+  const now = ctx.currentTime;
+
+  function playPad(freq, start, dur, type) {
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    const f = ctx.createBiquadFilter();
+    osc.type = type || 'sine';
+    osc.frequency.value = freq;
+    f.type = 'lowpass';
+    f.frequency.value = 800;
+    g.gain.setValueAtTime(0, start);
+    g.gain.linearRampToValueAtTime(0.08, start + 0.8);
+    g.gain.linearRampToValueAtTime(0.05, start + dur * 0.6);
+    g.gain.linearRampToValueAtTime(0, start + dur);
+    osc.connect(f); f.connect(g); g.connect(master);
+    osc.start(start);
+    osc.stop(start + dur + 0.05);
+    musicNodes.push(osc);
+  }
+
+  function scheduleLoop() {
+    const t = ctx.currentTime + 0.05;
+    // drone
+    playPad(110, t, 8, 'sine');
+    playPad(164.81, t, 8, 'triangle');
+    // higher shimmer
+    playPad(329.63, t + 0.5, 6, 'sine');
+    playPad(440, t + 2, 5, 'sine');
+    playPad(523.25, t + 4, 4, 'triangle');
+  }
+
+  scheduleLoop();
+  musicTimer = setInterval(scheduleLoop, 7000);
+}
+
+function toggleMusic() {
+  musicOn = !musicOn;
+  const btn = document.getElementById('btnMusic');
+  if (btn) btn.classList.toggle('active', musicOn);
+  if (musicOn) startAmbientMusic();
+  else stopMusicInternal();
+}
+
+
+const SIZE = 8;
+const DIRS = [[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]];
+let grid, turn, gameOver;
+const boardEl = document.getElementById('board');
+const statusEl = document.getElementById('status');
+
+function newGame() {
+  grid = Array.from({ length: SIZE }, () => Array(SIZE).fill(0));
+  // standard start
+  grid[3][3] = 2; grid[3][4] = 1;
+  grid[4][3] = 1; grid[4][4] = 2;
+  turn = 1;
+  gameOver = false;
+  render();
+  updateStatus();
+}
+
+function count(player) {
+  let n = 0;
+  for (let r = 0; r < SIZE; r++)
+    for (let c = 0; c < SIZE; c++)
+      if (grid[r][c] === player) n++;
+  return n;
+}
+
+function updateStatus() {
+  document.getElementById('score1').textContent = count(1);
+  document.getElementById('score2').textContent = count(2);
+  document.getElementById('cardYou').classList.toggle('active', turn === 1 && !gameOver);
+  document.getElementById('cardBot').classList.toggle('active', turn === 2 && !gameOver);
+  if (gameOver) {
+    const s1 = count(1), s2 = count(2);
+    if (s1 > s2) { statusEl.className = 'status win'; statusEl.textContent = 'You win!'; }
+    else if (s2 > s1) { statusEl.className = 'status win'; statusEl.textContent = 'Bot wins!'; }
+    else { statusEl.className = 'status draw'; statusEl.textContent = 'Draw!'; }
+  } else if (turn === 1) {
+    statusEl.className = 'status turn';
+    statusEl.textContent = 'Your turn';
+  } else {
+    statusEl.className = 'status bot-turn';
+    statusEl.textContent = 'Bot is thinking...';
+  }
+}
+
+function wouldFlip(r, c, player) {
+  if (grid[r][c] !== 0) return [];
+  const opp = player === 1 ? 2 : 1;
+  const flips = [];
+  for (const [dr, dc] of DIRS) {
+    const line = [];
+    let nr = r + dr, nc = c + dc;
+    while (nr >= 0 && nr < SIZE && nc >= 0 && nc < SIZE && grid[nr][nc] === opp) {
+      line.push([nr, nc]);
+      nr += dr; nc += dc;
+    }
+    if (line.length && nr >= 0 && nr < SIZE && nc >= 0 && nc < SIZE && grid[nr][nc] === player) {
+      flips.push(...line);
+    }
+  }
+  return flips;
+}
+
+function validMoves(player) {
+  const moves = [];
+  for (let r = 0; r < SIZE; r++)
+    for (let c = 0; c < SIZE; c++)
+      if (wouldFlip(r, c, player).length) moves.push({ r, c });
+  return moves;
+}
+
+function place(r, c, player) {
+  const flips = wouldFlip(r, c, player);
+  if (!flips.length) return false;
+  grid[r][c] = player;
+  for (const [fr, fc] of flips) grid[fr][fc] = player;
+  return true;
+}
+
+function render() {
+  boardEl.innerHTML = '';
+  const moves = (!gameOver && turn === 1) ? validMoves(1) : [];
+  for (let r = 0; r < SIZE; r++) {
+    for (let c = 0; c < SIZE; c++) {
+      const cell = document.createElement('div');
+      cell.className = 'cell';
+      const isValid = moves.some(m => m.r === r && m.c === c);
+      if (isValid) {
+        cell.classList.add('valid');
+        cell.onclick = () => playerMove(r, c);
+        const dot = document.createElement('div');
+        dot.className = 'hint-dot';
+        cell.appendChild(dot);
+      }
+      if (grid[r][c] === 1) {
+        const d = document.createElement('div');
+        d.className = 'disc you';
+        cell.appendChild(d);
+      } else if (grid[r][c] === 2) {
+        const d = document.createElement('div');
+        d.className = 'disc bot';
+        cell.appendChild(d);
+      }
+      boardEl.appendChild(cell);
+    }
+  }
+}
+
+function playerMove(r, c) {
+  if (gameOver || turn !== 1) return;
+  if (!place(r, c, 1)) return;
+  afterMove(1);
+}
+
+function afterMove(player) {
+  const opp = player === 1 ? 2 : 1;
+  const oppMoves = validMoves(opp);
+  const myMoves = validMoves(player);
+  if (!oppMoves.length && !myMoves.length) {
+    gameOver = true;
+    render(); updateStatus();
+    return;
+  }
+  if (!oppMoves.length) {
+    // opponent passes
+    turn = player;
+    updateStatus();
+    render();
+    if (player === 2) setTimeout(botMove, 300);
+    return;
+  }
+  turn = opp;
+  updateStatus();
+  render();
+  if (opp === 2) setTimeout(botMove, 400);
+}
+
+// Simple evaluation + 1-ply with corner preference
+function evalBoard(player) {
+  const opp = player === 1 ? 2 : 1;
+  let score = 0;
+  const weights = [
+    [100, -20, 10, 5, 5, 10, -20, 100],
+    [-20, -50, -2, -2, -2, -2, -50, -20],
+    [10, -2, 5, 1, 1, 5, -2, 10],
+    [5, -2, 1, 0, 0, 1, -2, 5],
+    [5, -2, 1, 0, 0, 1, -2, 5],
+    [10, -2, 5, 1, 1, 5, -2, 10],
+    [-20, -50, -2, -2, -2, -2, -50, -20],
+    [100, -20, 10, 5, 5, 10, -20, 100],
+  ];
+  for (let r = 0; r < SIZE; r++)
+    for (let c = 0; c < SIZE; c++) {
+      if (grid[r][c] === player) score += weights[r][c];
+      else if (grid[r][c] === opp) score -= weights[r][c];
+    }
+  score += validMoves(player).length * 5;
+  score -= validMoves(opp).length * 5;
+  return score;
+}
+
+function botMove() {
+  if (gameOver) return;
+  const moves = validMoves(2);
+  if (!moves.length) {
+    afterMove(2);
+    return;
+  }
+  let best = null, bestScore = -Infinity;
+  for (const m of moves) {
+    // clone
+    const backup = grid.map(row => row.slice());
+    place(m.r, m.c, 2);
+    let score = evalBoard(2);
+    // 1-ply opponent response
+    const oppMoves = validMoves(1);
+    if (oppMoves.length) {
+      let worst = Infinity;
+      for (const om of oppMoves) {
+        const b2 = grid.map(row => row.slice());
+        place(om.r, om.c, 1);
+        worst = Math.min(worst, evalBoard(2));
+        grid = b2;
+      }
+      score = worst;
+    }
+    grid = backup;
+    if (score > bestScore) {
+      bestScore = score;
+      best = m;
+    }
+  }
+  place(best.r, best.c, 2);
+  afterMove(2);
+}
+
+newGame();
+</script>
+</body>
+</html>

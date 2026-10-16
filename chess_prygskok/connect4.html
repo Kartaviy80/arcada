@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Connect Four</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@700;900&family=Inter:wght@400;600;700&display=swap');
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  :root {
+    --bg: #0b0f1a; --panel: #12182b; --accent: #00e5ff; --accent2: #ff2d6a;
+    --gold: #ffc107; --cell: #1a2238; --text: #e8ecf4; --muted: #7a849c; --success: #00e676;
+  }
+  html, body {
+    height: 100%; height: 100dvh; overflow: hidden; background: var(--bg);
+    font-family: 'Inter', system-ui, sans-serif; color: var(--text); touch-action: manipulation;
+  }
+  body::before {
+    content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+    background:
+      radial-gradient(ellipse 80% 50% at 50% -20%, rgba(0,229,255,0.12), transparent),
+      radial-gradient(ellipse 60% 40% at 100% 100%, rgba(255,45,106,0.08), transparent);
+  }
+  #app {
+    position: relative; z-index: 1; display: flex; flex-direction: column;
+    height: 100%; height: 100dvh; max-width: 440px; margin: 0 auto;
+    padding: max(env(safe-area-inset-top), 6px) 8px max(env(safe-area-inset-bottom), 6px);
+  }
+  .header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 4px 0; flex-shrink: 0; gap: 6px;
+  }
+  .logo {
+    font-family: 'Orbitron', sans-serif; font-weight: 900; font-size: 12px; letter-spacing: 1.5px;
+    background: linear-gradient(135deg, var(--accent), #7c4dff);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+  }
+  .player-card {
+    display: flex; align-items: center; gap: 6px;
+    background: var(--panel); border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 12px; padding: 5px 8px 5px 5px;
+  }
+  .player-card.active { border-color: var(--accent); box-shadow: 0 0 12px rgba(0,229,255,0.25); }
+  .player-card.bot.active { border-color: var(--accent2); box-shadow: 0 0 12px rgba(255,45,106,0.25); }
+  .avatar {
+    width: 26px; height: 26px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 700; flex-shrink: 0;
+  }
+  .avatar.you {
+    background: linear-gradient(145deg, #00e5ff, #0091ea); color: #0b0f1a;
+    box-shadow: 0 0 10px rgba(0,229,255,0.5);
+  }
+  .avatar.bot {
+    background: linear-gradient(145deg, #ff2d6a, #c51162); color: #fff;
+    box-shadow: 0 0 10px rgba(255,45,106,0.4);
+  }
+  .player-name { font-size: 11px; font-weight: 700; }
+  .status {
+    text-align: center; font-size: 12px; font-weight: 600;
+    padding: 3px 0 5px; color: var(--muted); flex-shrink: 0; min-height: 20px;
+  }
+  .status.turn { color: var(--accent); }
+  .status.bot-turn { color: var(--accent2); }
+  .status.win { color: var(--success); font-size: 14px; font-weight: 700; }
+  .status.draw { color: var(--gold); font-size: 14px; font-weight: 700; }
+
+  .board-wrap {
+    flex: 1; display: flex; align-items: center; justify-content: center; min-height: 0;
+  }
+  #board {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    grid-template-rows: repeat(6, 1fr);
+    gap: 4px;
+    width: min(100%, calc((100dvh - 150px) * 7 / 6));
+    aspect-ratio: 7 / 6;
+    background: #060a14;
+    border-radius: 12px;
+    padding: 6px;
+    box-shadow: 0 0 0 1px rgba(0,229,255,0.15), 0 8px 32px rgba(0,0,0,0.5);
+  }
+  .cell {
+    background: #0d1324;
+    border-radius: 50%;
+    position: relative;
+    aspect-ratio: 1;
+    cursor: pointer;
+  }
+  .cell:active { opacity: 0.85; }
+  .disc {
+    position: absolute; inset: 8%;
+    border-radius: 50%;
+    transition: transform 0.25s ease-out;
+  }
+  .disc.you {
+    background: linear-gradient(145deg, #00e5ff, #0091ea);
+    box-shadow: 0 0 12px rgba(0,229,255,0.55), inset 0 -3px 6px rgba(0,0,0,0.25);
+  }
+  .disc.bot {
+    background: linear-gradient(145deg, #ff2d6a, #c51162);
+    box-shadow: 0 0 12px rgba(255,45,106,0.45), inset 0 -3px 6px rgba(0,0,0,0.25);
+  }
+  .disc.win {
+    box-shadow: 0 0 16px rgba(0,230,118,0.9), 0 0 4px #fff;
+    animation: pulse 0.6s ease infinite alternate;
+  }
+  @keyframes pulse { from { transform: scale(1); } to { transform: scale(1.08); } }
+
+  .controls {
+    display: flex; gap: 6px; padding: 6px 0 2px;
+    flex-shrink: 0; justify-content: center; flex-wrap: wrap;
+  }
+  button {
+    font-family: 'Inter', sans-serif; background: var(--panel); color: var(--text);
+    border: 1px solid rgba(255,255,255,0.08); border-radius: 11px;
+    padding: 9px 14px; font-size: 12px; font-weight: 700; cursor: pointer; min-height: 40px;
+  }
+  button:active { transform: scale(0.96); }
+  button:disabled { opacity: 0.35; pointer-events: none; }
+  #btnNew { background: transparent; border-color: rgba(255,45,106,0.4); color: var(--accent2); }
+  #btnMusic.active { border-color: var(--accent); color: var(--accent); }
+  .hint { text-align: center; font-size: 10px; color: var(--muted); padding-bottom: 2px; flex-shrink: 0; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="header">
+    <div class="player-card" id="cardYou">
+      <div class="avatar you">Y</div>
+      <div class="player-name">You</div>
+    </div>
+    <div class="logo">CONNECT 4</div>
+    <div class="player-card bot" id="cardBot">
+      <div class="player-name">Bot</div>
+      <div class="avatar bot">B</div>
+    </div>
+  </div>
+  <div class="status turn" id="status">Your turn — tap a column</div>
+  <div class="board-wrap"><div id="board"></div></div>
+  <div class="controls">
+    <button id="btnMusic" onclick="toggleMusic()">♪ Music</button>
+    <button id="btnNew" onclick="newGame()">New</button>
+  </div>
+  <div class="hint">Get 4 in a row · You are cyan</div>
+</div>
+<script>
+
+/* ---- Ambient BGM via Web Audio (works offline) ---- */
+let audioCtx = null, musicNodes = [], musicOn = false, musicTimer = null;
+
+function ensureAudio() {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  return audioCtx;
+}
+
+function stopMusicInternal() {
+  musicNodes.forEach(n => { try { n.stop(); } catch(e){} try { n.disconnect(); } catch(e){} });
+  musicNodes = [];
+  if (musicTimer) { clearInterval(musicTimer); musicTimer = null; }
+}
+
+function startAmbientMusic() {
+  const ctx = ensureAudio();
+  stopMusicInternal();
+  const master = ctx.createGain();
+  master.gain.value = 0.12;
+  master.connect(ctx.destination);
+
+  // soft pad chords (A minor-ish)
+  const notes = [220, 261.63, 329.63, 392, 440]; // A3 C4 E4 G4 A4
+  const now = ctx.currentTime;
+
+  function playPad(freq, start, dur, type) {
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    const f = ctx.createBiquadFilter();
+    osc.type = type || 'sine';
+    osc.frequency.value = freq;
+    f.type = 'lowpass';
+    f.frequency.value = 800;
+    g.gain.setValueAtTime(0, start);
+    g.gain.linearRampToValueAtTime(0.08, start + 0.8);
+    g.gain.linearRampToValueAtTime(0.05, start + dur * 0.6);
+    g.gain.linearRampToValueAtTime(0, start + dur);
+    osc.connect(f); f.connect(g); g.connect(master);
+    osc.start(start);
+    osc.stop(start + dur + 0.05);
+    musicNodes.push(osc);
+  }
+
+  function scheduleLoop() {
+    const t = ctx.currentTime + 0.05;
+    // drone
+    playPad(110, t, 8, 'sine');
+    playPad(164.81, t, 8, 'triangle');
+    // higher shimmer
+    playPad(329.63, t + 0.5, 6, 'sine');
+    playPad(440, t + 2, 5, 'sine');
+    playPad(523.25, t + 4, 4, 'triangle');
+  }
+
+  scheduleLoop();
+  musicTimer = setInterval(scheduleLoop, 7000);
+}
+
+function toggleMusic() {
+  musicOn = !musicOn;
+  const btn = document.getElementById('btnMusic');
+  if (btn) btn.classList.toggle('active', musicOn);
+  if (musicOn) startAmbientMusic();
+  else stopMusicInternal();
+}
+
+
+const ROWS = 6, COLS = 7;
+let grid, turn, gameOver, winCells;
+const boardEl = document.getElementById('board');
+const statusEl = document.getElementById('status');
+
+function newGame() {
+  grid = Array.from({ length: ROWS }, () => Array(COLS).fill(0));
+  turn = 1; // 1 = you, 2 = bot
+  gameOver = false;
+  winCells = [];
+  render();
+  updateStatus();
+}
+
+function updateStatus() {
+  document.getElementById('cardYou').classList.toggle('active', turn === 1 && !gameOver);
+  document.getElementById('cardBot').classList.toggle('active', turn === 2 && !gameOver);
+  if (gameOver) {
+    if (winCells.length) {
+      statusEl.className = 'status win';
+      statusEl.textContent = turn === 2 ? 'You win!' : 'Bot wins!';
+    } else {
+      statusEl.className = 'status draw';
+      statusEl.textContent = 'Draw!';
+    }
+  } else if (turn === 1) {
+    statusEl.className = 'status turn';
+    statusEl.textContent = 'Your turn — tap a column';
+  } else {
+    statusEl.className = 'status bot-turn';
+    statusEl.textContent = 'Bot is thinking...';
+  }
+}
+
+function drop(col, player) {
+  for (let r = ROWS - 1; r >= 0; r--) {
+    if (grid[r][col] === 0) {
+      grid[r][col] = player;
+      return r;
+    }
+  }
+  return -1;
+}
+
+function checkWin(player) {
+  const dirs = [[0,1],[1,0],[1,1],[1,-1]];
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      if (grid[r][c] !== player) continue;
+      for (const [dr, dc] of dirs) {
+        const cells = [[r, c]];
+        for (let i = 1; i < 4; i++) {
+          const nr = r + dr * i, nc = c + dc * i;
+          if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS || grid[nr][nc] !== player) break;
+          cells.push([nr, nc]);
+        }
+        if (cells.length === 4) return cells;
+      }
+    }
+  }
+  return null;
+}
+
+function isFull() {
+  return grid[0].every(c => c !== 0);
+}
+
+function validCols() {
+  const cols = [];
+  for (let c = 0; c < COLS; c++) if (grid[0][c] === 0) cols.push(c);
+  return cols;
+}
+
+function render() {
+  boardEl.innerHTML = '';
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const cell = document.createElement('div');
+      cell.className = 'cell';
+      cell.dataset.col = c;
+      if (!gameOver) cell.onclick = () => playerMove(c);
+      if (grid[r][c] === 1) {
+        const d = document.createElement('div');
+        d.className = 'disc you';
+        if (winCells.some(([wr, wc]) => wr === r && wc === c)) d.classList.add('win');
+        cell.appendChild(d);
+      } else if (grid[r][c] === 2) {
+        const d = document.createElement('div');
+        d.className = 'disc bot';
+        if (winCells.some(([wr, wc]) => wr === r && wc === c)) d.classList.add('win');
+        cell.appendChild(d);
+      }
+      boardEl.appendChild(cell);
+    }
+  }
+}
+
+function playerMove(col) {
+  if (gameOver || turn !== 1) return;
+  if (grid[0][col] !== 0) return;
+  drop(col, 1);
+  const w = checkWin(1);
+  if (w) {
+    winCells = w;
+    gameOver = true;
+    turn = 2; // so status shows You win
+    render(); updateStatus();
+    return;
+  }
+  if (isFull()) { gameOver = true; render(); updateStatus(); return; }
+  turn = 2;
+  updateStatus();
+  render();
+  setTimeout(botMove, 400);
+}
+
+function evaluateWindow(window, player) {
+  const opp = player === 1 ? 2 : 1;
+  const count = window.filter(x => x === player).length;
+  const empty = window.filter(x => x === 0).length;
+  const oppCount = window.filter(x => x === opp).length;
+  if (count === 4) return 100;
+  if (count === 3 && empty === 1) return 10;
+  if (count === 2 && empty === 2) return 3;
+  if (oppCount === 3 && empty === 1) return -12;
+  return 0;
+}
+
+function scorePosition(player) {
+  let score = 0;
+  // center column preference
+  for (let r = 0; r < ROWS; r++) if (grid[r][3] === player) score += 3;
+
+  // horizontal
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS - 3; c++) {
+      score += evaluateWindow([grid[r][c], grid[r][c+1], grid[r][c+2], grid[r][c+3]], player);
+    }
+  }
+  // vertical
+  for (let c = 0; c < COLS; c++) {
+    for (let r = 0; r < ROWS - 3; r++) {
+      score += evaluateWindow([grid[r][c], grid[r+1][c], grid[r+2][c], grid[r+3][c]], player);
+    }
+  }
+  // diag down-right
+  for (let r = 0; r < ROWS - 3; r++) {
+    for (let c = 0; c < COLS - 3; c++) {
+      score += evaluateWindow([grid[r][c], grid[r+1][c+1], grid[r+2][c+2], grid[r+3][c+3]], player);
+    }
+  }
+  // diag down-left
+  for (let r = 0; r < ROWS - 3; r++) {
+    for (let c = 3; c < COLS; c++) {
+      score += evaluateWindow([grid[r][c], grid[r+1][c-1], grid[r+2][c-2], grid[r+3][c-3]], player);
+    }
+  }
+  return score;
+}
+
+function minimax(depth, alpha, beta, maximizing) {
+  const winner1 = checkWin(1);
+  const winner2 = checkWin(2);
+  if (winner2) return { score: 1000 + depth };
+  if (winner1) return { score: -1000 - depth };
+  if (isFull() || depth === 0) return { score: scorePosition(2) };
+
+  const cols = validCols();
+  // prefer center
+  cols.sort((a, b) => Math.abs(a - 3) - Math.abs(b - 3));
+
+  if (maximizing) {
+    let best = { score: -Infinity, col: cols[0] };
+    for (const col of cols) {
+      const row = drop(col, 2);
+      const res = minimax(depth - 1, alpha, beta, false);
+      grid[row][col] = 0;
+      if (res.score > best.score) best = { score: res.score, col };
+      alpha = Math.max(alpha, res.score);
+      if (beta <= alpha) break;
+    }
+    return best;
+  } else {
+    let best = { score: Infinity, col: cols[0] };
+    for (const col of cols) {
+      const row = drop(col, 1);
+      const res = minimax(depth - 1, alpha, beta, true);
+      grid[row][col] = 0;
+      if (res.score < best.score) best = { score: res.score, col };
+      beta = Math.min(beta, res.score);
+      if (beta <= alpha) break;
+    }
+    return best;
+  }
+}
+
+function botMove() {
+  if (gameOver) return;
+  const depth = 5;
+  const { col } = minimax(depth, -Infinity, Infinity, true);
+  const chosen = col !== undefined ? col : validCols()[0];
+  drop(chosen, 2);
+  const w = checkWin(2);
+  if (w) {
+    winCells = w;
+    gameOver = true;
+    turn = 1; // Bot wins status
+    render(); updateStatus();
+    return;
+  }
+  if (isFull()) { gameOver = true; render(); updateStatus(); return; }
+  turn = 1;
+  updateStatus();
+  render();
+}
+
+newGame();
+</script>
+</body>
+</html>

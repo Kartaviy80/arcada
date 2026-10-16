@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Gomoku</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@500;700&family=Playfair+Display:wght@700&display=swap');
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;height:100dvh;overflow:hidden;background:#f5f0e8;font-family:'DM Sans',system-ui,sans-serif;color:#2c2416;touch-action:manipulation}
+#app{display:flex;flex-direction:column;height:100%;height:100dvh;max-width:420px;margin:0 auto;padding:max(env(safe-area-inset-top),8px) 10px max(env(safe-area-inset-bottom),8px)}
+.header{display:flex;justify-content:space-between;align-items:center;flex-shrink:0;padding:4px 0}
+.logo{font-family:'Playfair Display',serif;font-size:18px;font-weight:700;color:#8b4513}
+.badge{background:#fff;border-radius:20px;padding:6px 12px;font-size:12px;font-weight:700;box-shadow:0 2px 8px rgba(0,0,0,.06)}
+.badge.active{outline:2px solid #c4a574}
+.status{text-align:center;font-size:13px;font-weight:600;padding:6px 0;color:#6b5d4d;flex-shrink:0;min-height:22px}
+.status.win{color:#2e7d32;font-size:15px}
+.board-wrap{flex:1;display:flex;align-items:center;justify-content:center;min-height:0}
+#board{display:grid;grid-template-columns:repeat(9,1fr);grid-template-rows:repeat(9,1fr);gap:0;width:min(96vw,calc(100dvh - 160px));aspect-ratio:1;background:#d4a574;border-radius:8px;padding:6px;box-shadow:0 8px 24px rgba(139,69,19,.2)}
+.cell{background:#e8c9a0;border:1px solid #c9a06a;display:flex;align-items:center;justify-content:center;cursor:pointer}
+.cell:active{background:#ddb88a}
+.stone{width:78%;height:78%;border-radius:50%}
+.stone.b{background:radial-gradient(circle at 35% 30%,#555,#1a1a1a);box-shadow:0 2px 4px rgba(0,0,0,.4)}
+.stone.w{background:radial-gradient(circle at 35% 30%,#fff,#e0e0e0);box-shadow:0 2px 4px rgba(0,0,0,.2)}
+.controls{display:flex;gap:8px;justify-content:center;padding:8px 0 4px;flex-shrink:0}
+button{font-family:inherit;background:#fff;border:none;border-radius:12px;padding:10px 16px;font-size:13px;font-weight:700;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.08);min-height:42px;color:#2c2416}
+button:active{transform:scale(.96)}
+#btnMusic.active{background:#c4a574;color:#fff}
+.hint{text-align:center;font-size:11px;color:#9a8b7a;flex-shrink:0}
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="header">
+    <div class="badge" id="cardYou">You ●</div>
+    <div class="logo">Gomoku</div>
+    <div class="badge" id="cardBot">Bot ○</div>
+  </div>
+  <div class="status" id="status">Your turn — 5 in a row</div>
+  <div class="board-wrap"><div id="board"></div></div>
+  <div class="controls">
+    <button id="btnMusic" onclick="toggleMusic()">♪ Music</button>
+    <button onclick="newGame()">New</button>
+  </div>
+  <div class="hint">Get 5 stones in a line</div>
+</div>
+<script>
+const N=9;
+let g,turn,over;
+const boardEl=document.getElementById('board'),st=document.getElementById('status');
+
+let audioCtx=null,musicNodes=[],musicOn=false,musicTimer=null;
+function ensureAudio(){if(!audioCtx)audioCtx=new(window.AudioContext||window.webkitAudioContext)();if(audioCtx.state==='suspended')audioCtx.resume();return audioCtx}
+function stopMusic(){musicNodes.forEach(n=>{try{n.stop()}catch(e){}try{n.disconnect()}catch(e){}});musicNodes=[];if(musicTimer){clearInterval(musicTimer);musicTimer=null}}
+function startMusic(){
+  const ctx=ensureAudio();stopMusic();
+  const master=ctx.createGain();master.gain.value=0.08;master.connect(ctx.destination);
+  function tone(f,t,d,type){const o=ctx.createOscillator(),g=ctx.createGain();o.type=type||'sine';o.frequency.value=f;g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(0.06,t+.4);g.gain.linearRampToValueAtTime(0,t+d);o.connect(g);g.connect(master);o.start(t);o.stop(t+d+.05);musicNodes.push(o)}
+  function loop(){const t=ctx.currentTime+.05;tone(523.25,t,3);tone(659.25,t+.3,2.5);tone(783.99,t+.8,2);tone(1046.5,t+1.5,2,'triangle')}
+  loop();musicTimer=setInterval(loop,3500);
+}
+function toggleMusic(){musicOn=!musicOn;document.getElementById('btnMusic').classList.toggle('active',musicOn);if(musicOn)startMusic();else stopMusic()}
+
+function newGame(){g=Array.from({length:N},()=>Array(N).fill(0));turn=1;over=false;render();upd()}
+function upd(){
+  document.getElementById('cardYou').classList.toggle('active',turn===1&&!over);
+  document.getElementById('cardBot').classList.toggle('active',turn===2&&!over);
+  if(over){st.textContent=turn===2?'You win!':'Bot wins!';st.className='status win';}
+  else{st.className='status';st.textContent=turn===1?'Your turn — 5 in a row':'Bot thinking...';}
+}
+function check(p){
+  const d=[[0,1],[1,0],[1,1],[1,-1]];
+  for(let r=0;r<N;r++)for(let c=0;c<N;c++){
+    if(g[r][c]!==p)continue;
+    for(const[dr,dc]of d){let n=1;for(let i=1;i<5;i++){const nr=r+dr*i,nc=c+dc*i;if(nr<0||nr>=N||nc<0||nc>=N||g[nr][nc]!==p)break;n++}if(n>=5)return true}
+  }return false;
+}
+function render(){
+  boardEl.innerHTML='';
+  for(let r=0;r<N;r++)for(let c=0;c<N;c++){
+    const cell=document.createElement('div');cell.className='cell';
+    if(g[r][c]===1){const s=document.createElement('div');s.className='stone b';cell.appendChild(s)}
+    if(g[r][c]===2){const s=document.createElement('div');s.className='stone w';cell.appendChild(s)}
+    if(!over&&turn===1&&g[r][c]===0)cell.onclick=()=>move(r,c,1);
+    boardEl.appendChild(cell);
+  }
+}
+function move(r,c,p){
+  if(over||g[r][c])return;g[r][c]=p;
+  if(check(p)){over=true;turn=p===1?2:1;render();upd();return}
+  if(g.flat().every(x=>x)){over=true;st.textContent='Draw!';st.className='status win';render();return}
+  turn=p===1?2:1;upd();render();
+  if(turn===2)setTimeout(bot,300);
+}
+function scoreCell(r,c,p){
+  if(g[r][c])return -1;
+  g[r][c]=p;if(check(p)){g[r][c]=0;return 10000}g[r][c]=0;
+  const opp=p===1?2:1;g[r][c]=opp;if(check(opp)){g[r][c]=0;return 5000}g[r][c]=0;
+  let s=0;const d=[[0,1],[1,0],[1,1],[1,-1]];
+  for(const[dr,dc]of d){
+    let mine=0,empty=0,blocked=0;
+    for(const sign of[1,-1]){for(let i=1;i<5;i++){const nr=r+dr*i*sign,nc=c+dc*i*sign;if(nr<0||nr>=N||nc<0||nc>=N){blocked++;break}if(g[nr][nc]===p)mine++;else if(g[nr][nc]===0){empty++;break}else{blocked++;break}}}
+    if(mine>=3)s+=100;else if(mine===2)s+=20;else if(mine===1)s+=5;
+  }
+  const dist=Math.abs(r-4)+Math.abs(c-4);s+=10-dist;
+  return s;
+}
+function bot(){
+  let best=-1,br=4,bc=4;
+  for(let r=0;r<N;r++)for(let c=0;c<N;c++){const s=scoreCell(r,c,2);if(s>best){best=s;br=r;bc=c}}
+  move(br,bc,2);
+}
+newGame();
+</script>
+</body>
+</html>

@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Sudoku</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@600;700&family=DM+Sans:wght@400;500;600;700&display=swap');
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+:root{
+  --bg:#0e1017;--panel:#161b27;--cell:#1c2233;--line:#2a3347;
+  --accent:#7c9cff;--accent2:#c4b5fd;--text:#e8ecf4;--muted:#6b7289;
+  --given:#e8ecf4;--user:#7c9cff;--error:#f87171;--note:#8b95a8;
+  --sel:rgba(124,156,255,.22);--peer:rgba(124,156,255,.08);--same:rgba(196,181,253,.15);
+}
+html,body{height:100%;height:100dvh;overflow:hidden;background:var(--bg);font-family:'DM Sans',system-ui,sans-serif;color:var(--text);touch-action:manipulation}
+body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
+  background:radial-gradient(ellipse 90% 55% at 50% -15%,rgba(124,156,255,.14),transparent),
+             radial-gradient(ellipse 60% 40% at 100% 100%,rgba(196,181,253,.08),transparent)}
+#app{position:relative;z-index:1;display:flex;flex-direction:column;height:100%;height:100dvh;max-width:440px;margin:0 auto;
+  padding:max(env(safe-area-inset-top),6px) 10px max(env(safe-area-inset-bottom),6px)}
+
+/* Header */
+.header{display:flex;justify-content:space-between;align-items:center;flex-shrink:0;padding:2px 0 4px}
+.logo{font-family:'Cormorant Garamond',serif;font-size:22px;font-weight:700;letter-spacing:3px;
+  background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.stats{display:flex;gap:8px}
+.stat{background:var(--panel);border:1px solid rgba(255,255,255,.05);border-radius:10px;padding:5px 10px;text-align:center;min-width:52px}
+.stat .lbl{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+.stat .val{font-size:14px;font-weight:700}
+
+/* Diff select */
+#diffScreen{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px}
+#diffScreen h2{font-family:'Cormorant Garamond',serif;font-size:20px;font-weight:600;color:var(--muted);margin-bottom:6px}
+.diff-btn{width:min(260px,80vw);padding:14px 20px;border:1px solid rgba(255,255,255,.08);border-radius:14px;
+  background:var(--panel);color:var(--text);font-family:inherit;font-size:15px;font-weight:600;cursor:pointer;text-align:left}
+.diff-btn:active{transform:scale(.97)}
+.diff-btn span{display:block;font-size:11px;color:var(--muted);font-weight:500;margin-top:2px}
+.diff-btn.easy{border-color:rgba(74,222,128,.3)}.diff-btn.medium{border-color:rgba(124,156,255,.3)}
+.diff-btn.hard{border-color:rgba(248,113,113,.3)}.diff-btn.expert{border-color:rgba(196,181,253,.3)}
+
+/* Game */
+#game{display:none;flex-direction:column;flex:1;min-height:0}
+.status{text-align:center;font-size:12px;font-weight:600;padding:2px 0 4px;color:var(--muted);flex-shrink:0;min-height:18px}
+.status.win{color:#4ade80;font-size:14px}
+
+.board-wrap{flex:1;display:flex;align-items:center;justify-content:center;min-height:0}
+#board{display:grid;grid-template-columns:repeat(9,1fr);grid-template-rows:repeat(9,1fr);
+  width:min(92vw,calc(100dvh - 255px));max-width:380px;aspect-ratio:1;background:var(--line);border-radius:8px;
+  gap:1px;padding:2px;box-shadow:0 0 0 1px rgba(124,156,255,.12),0 12px 40px rgba(0,0,0,.45)}
+.cell{background:var(--cell);display:flex;align-items:center;justify-content:center;position:relative;
+  font-size:clamp(16px,4.8vw,22px);font-weight:600;cursor:pointer;user-select:none}
+.cell:nth-child(9n+3),.cell:nth-child(9n+6){border-right:2px solid var(--line)}
+.cell.bbottom{border-bottom:2px solid var(--line)}
+.cell.given{color:var(--given);font-weight:700}
+.cell.user{color:var(--user)}
+.cell.error{color:var(--error)}
+.cell.sel{background:var(--sel)}
+.cell.peer{background:var(--peer)}
+.cell.same{background:var(--same)}
+.notes{display:grid;grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(3,1fr);width:100%;height:100%;padding:2px}
+.notes span{font-size:clamp(7px,2vw,9px);color:var(--note);display:flex;align-items:center;justify-content:center;font-weight:500}
+
+/* Pad */
+.pad{display:grid;grid-template-columns:repeat(5,1fr);gap:5px;padding:6px 0 2px;flex-shrink:0}
+.pad button{background:var(--panel);border:1px solid rgba(255,255,255,.06);border-radius:12px;padding:10px 0;
+  font-family:inherit;font-size:16px;font-weight:700;color:var(--text);cursor:pointer;min-height:44px}
+.pad button:active{transform:scale(.95);background:var(--sel)}
+.pad button.tool{font-size:11px;font-weight:600;color:var(--muted)}
+.pad button.tool.on{color:var(--accent);border-color:var(--accent);background:rgba(124,156,255,.12)}
+.pad .count{font-size:9px;color:var(--muted);display:block}
+
+.controls{display:flex;gap:6px;justify-content:center;padding:4px 0 2px;flex-shrink:0}
+button.ctrl{font-family:inherit;background:var(--panel);border:1px solid rgba(255,255,255,.06);border-radius:11px;
+  padding:9px 12px;font-size:12px;font-weight:600;color:var(--text);cursor:pointer;min-height:38px}
+button.ctrl:active{transform:scale(.96)}
+#btnMusic.active{border-color:var(--accent);color:var(--accent)}
+.hint{text-align:center;font-size:10px;color:var(--muted);flex-shrink:0;opacity:.7}
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="header">
+    <div class="logo">SUDOKU</div>
+    <div class="stats">
+      <div class="stat"><div class="lbl">Time</div><div class="val" id="time">0:00</div></div>
+      <div class="stat"><div class="lbl">Mistakes</div><div class="val" id="mistakes">0/3</div></div>
+    </div>
+  </div>
+
+  <div id="diffScreen">
+    <h2>Choose difficulty</h2>
+    <button class="diff-btn easy" onclick="startGame('easy')">Easy<span>36 clues · warm up</span></button>
+    <button class="diff-btn medium" onclick="startGame('medium')">Medium<span>30 clues · focused</span></button>
+    <button class="diff-btn hard" onclick="startGame('hard')">Hard<span>24 clues · think deep</span></button>
+    <button class="diff-btn expert" onclick="startGame('expert')">Expert<span>20 clues · pure logic</span></button>
+  </div>
+
+  <div id="game">
+    <div class="status" id="status">Tap a cell, then a number</div>
+    <div class="board-wrap"><div id="board"></div></div>
+    <div class="pad" id="pad"></div>
+    <div class="controls">
+      <button class="ctrl" id="btnMusic" onclick="toggleMusic()">♪ Music</button>
+      <button class="ctrl" onclick="useHint()">Hint</button>
+      <button class="ctrl" onclick="showDiff()">New</button>
+    </div>
+    <div class="hint">Notes mode for candidates · 3 mistakes max</div>
+  </div>
+</div>
+<script>
+const DIFF={easy:36,medium:30,hard:24,expert:20};
+let solution,puzzle,user,notes,given,selected=null,noteMode=false,mistakes=0,won=false,secs=0,timer=null;
+const boardEl=document.getElementById('board');
+
+/* Music */
+let audioCtx=null,musicNodes=[],musicOn=false,musicTimer=null;
+function ensureAudio(){if(!audioCtx)audioCtx=new(window.AudioContext||window.webkitAudioContext)();if(audioCtx.state==='suspended')audioCtx.resume();return audioCtx}
+function stopMusic(){musicNodes.forEach(n=>{try{n.stop()}catch(e){}try{n.disconnect()}catch(e){}});musicNodes=[];if(musicTimer){clearInterval(musicTimer);musicTimer=null}}
+function startMusic(){
+  const ctx=ensureAudio();stopMusic();
+  const m=ctx.createGain();m.gain.value=0.05;m.connect(ctx.destination);
+  function tone(f,t,d){const o=ctx.createOscillator(),g=ctx.createGain();o.type='sine';o.frequency.value=f;
+    g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(0.035,t+.5);g.gain.linearRampToValueAtTime(0,t+d);
+    o.connect(g);g.connect(m);o.start(t);o.stop(t+d+.05);musicNodes.push(o)}
+  function L(){const t=ctx.currentTime+.05;tone(261.63,t,3.5);tone(329.63,t+.6,3);tone(392,t+1.4,2.5);tone(523.25,t+2.4,2)}
+  L();musicTimer=setInterval(L,4500);
+}
+function toggleMusic(){musicOn=!musicOn;document.getElementById('btnMusic').classList.toggle('active',musicOn);if(musicOn)startMusic();else stopMusic()}
+
+/* Sudoku engine */
+function shuffle(a){for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]]}return a}
+function ok(g,r,c,n){
+  for(let i=0;i<9;i++)if(g[r][i]===n||g[i][c]===n)return false;
+  const br=r-r%3,bc=c-c%3;
+  for(let i=0;i<3;i++)for(let j=0;j<3;j++)if(g[br+i][bc+j]===n)return false;
+  return true;
+}
+function solve(g){
+  for(let r=0;r<9;r++)for(let c=0;c<9;c++)if(g[r][c]===0){
+    const nums=shuffle([1,2,3,4,5,6,7,8,9]);
+    for(const n of nums){if(ok(g,r,c,n)){g[r][c]=n;if(solve(g))return true;g[r][c]=0}}
+    return false;
+  }
+  return true;
+}
+function countSolutions(g,limit=2){
+  let count=0;
+  function dfs(){
+    if(count>=limit)return;
+    for(let r=0;r<9;r++)for(let c=0;c<9;c++)if(g[r][c]===0){
+      for(let n=1;n<=9;n++)if(ok(g,r,c,n)){g[r][c]=n;dfs();g[r][c]=0;if(count>=limit)return}
+      return;
+    }
+    count++;
+  }
+  dfs();return count;
+}
+function generate(clues){
+  const g=Array.from({length:9},()=>Array(9).fill(0));
+  // fill diagonal boxes then solve
+  for(let b=0;b<3;b++){
+    const nums=shuffle([1,2,3,4,5,6,7,8,9]);
+    let k=0;for(let i=0;i<3;i++)for(let j=0;j<3;j++)g[b*3+i][b*3+j]=nums[k++];
+  }
+  solve(g);
+  const sol=g.map(r=>r.slice());
+  // dig holes
+  const cells=shuffle([...Array(81)].map((_,i)=>[Math.floor(i/9),i%9]));
+  let removed=0,target=81-clues;
+  for(const[r,c]of cells){
+    if(removed>=target)break;
+    const bak=g[r][c];g[r][c]=0;
+    const copy=g.map(row=>row.slice());
+    if(countSolutions(copy,2)===1)removed++;
+    else g[r][c]=bak;
+  }
+  return{solution:sol,puzzle:g};
+}
+
+function startGame(diff){
+  document.getElementById('diffScreen').style.display='none';
+  document.getElementById('game').style.display='flex';
+  const{solution:sol,puzzle:puz}=generate(DIFF[diff]);
+  solution=sol;puzzle=puz;
+  user=puz.map(r=>r.slice());
+  notes=Array.from({length:9},()=>Array.from({length:9},()=>new Set()));
+  given=puz.map(r=>r.map(v=>v!==0));
+  selected=null;noteMode=false;mistakes=0;won=false;secs=0;
+  document.getElementById('mistakes').textContent='0/3';
+  document.getElementById('time').textContent='0:00';
+  document.getElementById('status').textContent='Tap a cell, then a number';
+  document.getElementById('status').className='status';
+  if(timer)clearInterval(timer);
+  timer=setInterval(()=>{
+    if(won)return;secs++;
+    const m=Math.floor(secs/60),s=secs%60;
+    document.getElementById('time').textContent=m+':'+String(s).padStart(2,'0');
+  },1000);
+  buildPad();render();
+}
+function showDiff(){
+  if(timer)clearInterval(timer);
+  document.getElementById('game').style.display='none';
+  document.getElementById('diffScreen').style.display='flex';
+}
+function buildPad(){
+  const pad=document.getElementById('pad');pad.innerHTML='';
+  for(let n=1;n<=9;n++){
+    const b=document.createElement('button');
+    const left=countLeft(n);
+    b.innerHTML=n+(left<9?'<span class="count">'+left+' left</span>':'');
+    b.onclick=()=>inputNum(n);
+    pad.appendChild(b);
+  }
+  const noteBtn=document.createElement('button');noteBtn.className='tool'+(noteMode?' on':'');
+  noteBtn.textContent='Notes';noteBtn.onclick=()=>{noteMode=!noteMode;buildPad()};
+  pad.appendChild(noteBtn);
+  const erase=document.createElement('button');erase.className='tool';erase.textContent='Erase';
+  erase.onclick=()=>inputNum(0);pad.appendChild(erase);
+}
+function countLeft(n){
+  let cnt=0;for(let r=0;r<9;r++)for(let c=0;c<9;c++)if(user[r][c]===n)cnt++;
+  return 9-cnt;
+}
+function render(){
+  boardEl.innerHTML='';
+  for(let r=0;r<9;r++)for(let c=0;c<9;c++){
+    const cell=document.createElement('div');
+    cell.className='cell';
+    if(r===2||r===5)cell.classList.add('bbottom');
+    if(selected&&selected.r===r&&selected.c===c)cell.classList.add('sel');
+    else if(selected){
+      if(selected.r===r||selected.c===c||(Math.floor(selected.r/3)===Math.floor(r/3)&&Math.floor(selected.c/3)===Math.floor(c/3)))
+        cell.classList.add('peer');
+      if(user[r][c]&&user[r][c]===user[selected.r][selected.c])cell.classList.add('same');
+    }
+    if(given[r][c]){cell.classList.add('given');cell.textContent=user[r][c]}
+    else if(user[r][c]){
+      cell.classList.add('user');
+      if(user[r][c]!==solution[r][c])cell.classList.add('error');
+      cell.textContent=user[r][c];
+    } else if(notes[r][c].size){
+      const n=document.createElement('div');n.className='notes';
+      for(let i=1;i<=9;i++){const s=document.createElement('span');s.textContent=notes[r][c].has(i)?i:'';n.appendChild(s)}
+      cell.appendChild(n);
+    }
+    cell.onclick=()=>{selected={r,c};render()};
+    boardEl.appendChild(cell);
+  }
+  buildPad();
+}
+function inputNum(n){
+  if(won||!selected)return;
+  const{r,c}=selected;if(given[r][c])return;
+  if(noteMode&&n){
+    if(notes[r][c].has(n))notes[r][c].delete(n);else notes[r][c].add(n);
+    user[r][c]=0;render();return;
+  }
+  if(n===0){user[r][c]=0;notes[r][c].clear();render();return}
+  notes[r][c].clear();
+  user[r][c]=n;
+  if(n!==solution[r][c]){
+    mistakes++;
+    document.getElementById('mistakes').textContent=mistakes+'/3';
+    if(mistakes>=3){
+      won=true;clearInterval(timer);
+      document.getElementById('status').textContent='Too many mistakes — try again';
+      document.getElementById('status').className='status';
+    }
+  } else {
+    // auto-clear notes in peers
+    for(let i=0;i<9;i++){notes[r][i].delete(n);notes[i][c].delete(n)}
+    const br=r-r%3,bc=c-c%3;
+    for(let i=0;i<3;i++)for(let j=0;j<3;j++)notes[br+i][bc+j].delete(n);
+  }
+  render();
+  if(!won&&isComplete()){
+    won=true;clearInterval(timer);
+    document.getElementById('status').textContent='Solved! Well done ✨';
+    document.getElementById('status').className='status win';
+  }
+}
+function isComplete(){
+  for(let r=0;r<9;r++)for(let c=0;c<9;c++)if(user[r][c]!==solution[r][c])return false;
+  return true;
+}
+function useHint(){
+  if(won||!selected){document.getElementById('status').textContent='Select a cell first';return}
+  const{r,c}=selected;if(given[r][c]||user[r][c]===solution[r][c])return;
+  noteMode=false;user[r][c]=solution[r][c];notes[r][c].clear();render();
+  if(isComplete()){won=true;clearInterval(timer);document.getElementById('status').textContent='Solved! Well done ✨';document.getElementById('status').className='status win'}
+}
+</script>
+</body>
+</html>

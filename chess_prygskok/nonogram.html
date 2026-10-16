@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Nonogram</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Source+Sans+3:wght@400;600;700&display=swap');
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+:root{
+  --bg:#0f1219;--panel:#181c27;--grid:#222836;--line:#2e3548;
+  --fill:#e8ecf4;--mark:#5b657a;--text:#e8ecf4;--muted:#7a849c;
+  --accent:#6ee7b7;--accent2:#67e8f9;--err:#f87171;--hint:#fbbf24;
+}
+html,body{height:100%;height:100dvh;overflow:hidden;background:var(--bg);font-family:'Source Sans 3',system-ui,sans-serif;color:var(--text);touch-action:manipulation}
+body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
+  background:radial-gradient(ellipse 85% 50% at 50% -18%,rgba(110,231,183,.1),transparent),
+             radial-gradient(ellipse 50% 35% at 100% 100%,rgba(103,232,249,.06),transparent)}
+#app{position:relative;z-index:1;display:flex;flex-direction:column;height:100%;height:100dvh;max-width:440px;margin:0 auto;
+  padding:max(env(safe-area-inset-top),6px) 8px max(env(safe-area-inset-bottom),6px)}
+
+.header{display:flex;justify-content:space-between;align-items:center;flex-shrink:0;padding:2px 0 4px}
+.logo{font-family:'Fraunces',serif;font-size:20px;font-weight:700;letter-spacing:.5px;
+  background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.stat{background:var(--panel);border:1px solid rgba(255,255,255,.05);border-radius:10px;padding:5px 10px;font-size:12px;font-weight:600}
+.stat span{color:var(--accent)}
+
+#menu{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px}
+#menu h2{font-family:'Fraunces',serif;font-size:16px;color:var(--muted);font-weight:600;margin-bottom:4px}
+.level-btn{width:min(280px,85vw);padding:14px 18px;border-radius:14px;border:1px solid rgba(255,255,255,.07);
+  background:var(--panel);color:var(--text);font-family:inherit;font-size:15px;font-weight:600;cursor:pointer;text-align:left}
+.level-btn:active{transform:scale(.97)}
+.level-btn span{display:block;font-size:11px;color:var(--muted);font-weight:500;margin-top:2px}
+.level-btn.s{border-color:rgba(110,231,183,.25)}.level-btn.m{border-color:rgba(103,232,249,.25)}
+.level-btn.l{border-color:rgba(251,191,36,.25)}.level-btn.xl{border-color:rgba(248,113,113,.25)}
+
+#game{display:none;flex-direction:column;flex:1;min-height:0}
+.status{text-align:center;font-size:12px;font-weight:600;padding:2px 0 4px;color:var(--muted);flex-shrink:0;min-height:18px}
+.status.win{color:var(--accent);font-size:14px}
+
+.board-wrap{flex:1;display:flex;align-items:center;justify-content:center;min-height:0;overflow:hidden}
+.grid-outer{display:grid;gap:0;background:var(--line);border-radius:8px;padding:1px;
+  box-shadow:0 0 0 1px rgba(110,231,183,.1),0 10px 32px rgba(0,0,0,.4)}
+.corner{background:var(--bg)}
+.hints-top,.hints-left{background:var(--panel);display:flex;align-items:center;justify-content:center}
+.hints-top{flex-direction:column;justify-content:flex-end;padding:4px 2px;gap:1px}
+.hints-left{flex-direction:row;justify-content:flex-end;padding:2px 4px;gap:3px}
+.hint-num{font-size:clamp(8px,2.4vw,11px);font-weight:700;color:var(--muted);line-height:1.1;font-variant-numeric:tabular-nums}
+.hint-num.done{color:var(--accent);opacity:.7}
+
+.cell{background:var(--grid);cursor:pointer;position:relative;touch-action:none;
+  display:flex;align-items:center;justify-content:center;user-select:none}
+.cell.filled{background:var(--fill);box-shadow:inset 0 0 0 1px rgba(0,0,0,.15)}
+.cell.marked{background:var(--grid)}
+.cell.marked::after{content:'×';color:var(--mark);font-size:clamp(12px,3.5vw,18px);font-weight:700;line-height:1}
+.cell.error{outline:2px solid var(--err);outline-offset:-2px}
+
+.tools{display:flex;gap:6px;justify-content:center;padding:6px 0 2px;flex-shrink:0}
+.tool{background:var(--panel);border:1px solid rgba(255,255,255,.06);border-radius:12px;padding:10px 16px;
+  font-family:inherit;font-size:13px;font-weight:600;color:var(--text);cursor:pointer;min-height:42px}
+.tool:active{transform:scale(.96)}
+.tool.on{border-color:var(--accent);color:var(--accent);background:rgba(110,231,183,.1)}
+.tool.fill-mode.on{border-color:var(--fill);color:var(--fill);background:rgba(232,236,244,.1)}
+
+.controls{display:flex;gap:6px;justify-content:center;padding:2px 0;flex-shrink:0}
+button.ctrl{font-family:inherit;background:var(--panel);border:1px solid rgba(255,255,255,.06);border-radius:11px;
+  padding:9px 12px;font-size:12px;font-weight:600;color:var(--text);cursor:pointer;min-height:38px}
+button.ctrl:active{transform:scale(.96)}
+#btnMusic.active{border-color:var(--accent);color:var(--accent)}
+.hint-bar{text-align:center;font-size:10px;color:var(--muted);flex-shrink:0;opacity:.75;padding-bottom:2px}
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="header">
+    <div class="logo">Nonogram</div>
+    <div class="stat">⏱ <span id="time">0:00</span></div>
+  </div>
+
+  <div id="menu">
+    <h2>Pick a puzzle</h2>
+    <button class="level-btn s" onclick="startLevel(0)">Heart <span>5×5 · beginner</span></button>
+    <button class="level-btn s" onclick="startLevel(1)">Star <span>5×5 · easy</span></button>
+    <button class="level-btn m" onclick="startLevel(2)">House <span>7×7 · medium</span></button>
+    <button class="level-btn m" onclick="startLevel(3)">Cat <span>8×8 · medium</span></button>
+    <button class="level-btn l" onclick="startLevel(4)">Duck <span>10×10 · hard</span></button>
+    <button class="level-btn xl" onclick="startLevel(5)">Crown <span>10×10 · expert</span></button>
+  </div>
+
+  <div id="game">
+    <div class="status" id="status">Fill cells · mark empty with ×</div>
+    <div class="board-wrap"><div class="grid-outer" id="grid"></div></div>
+    <div class="tools">
+      <button class="tool fill-mode on" id="btnFill" onclick="setMode('fill')">■ Fill</button>
+      <button class="tool" id="btnMark" onclick="setMode('mark')">× Mark</button>
+    </div>
+    <div class="controls">
+      <button class="ctrl" id="btnMusic" onclick="toggleMusic()">♪ Music</button>
+      <button class="ctrl" onclick="checkErrors()">Check</button>
+      <button class="ctrl" onclick="showMenu()">Menu</button>
+    </div>
+    <div class="hint-bar">Clues show consecutive filled blocks in each row/column</div>
+  </div>
+</div>
+<script>
+/* Curated puzzles: 1 = filled, 0 = empty */
+const PUZZLES = [
+  { // Heart 5x5
+    name:'Heart', size:5,
+    grid:[
+      [0,1,0,1,0],
+      [1,1,1,1,1],
+      [1,1,1,1,1],
+      [0,1,1,1,0],
+      [0,0,1,0,0],
+    ]
+  },
+  { // Star 5x5
+    name:'Star', size:5,
+    grid:[
+      [0,0,1,0,0],
+      [0,1,1,1,0],
+      [1,1,1,1,1],
+      [0,1,1,1,0],
+      [0,1,0,1,0],
+    ]
+  },
+  { // House 7x7
+    name:'House', size:7,
+    grid:[
+      [0,0,0,1,0,0,0],
+      [0,0,1,1,1,0,0],
+      [0,1,1,1,1,1,0],
+      [1,1,1,1,1,1,1],
+      [1,0,1,1,1,0,1],
+      [1,0,1,1,1,0,1],
+      [1,1,1,1,1,1,1],
+    ]
+  },
+  { // Cat 8x8
+    name:'Cat', size:8,
+    grid:[
+      [0,1,0,0,0,0,1,0],
+      [0,1,1,0,0,1,1,0],
+      [0,0,1,1,1,1,0,0],
+      [0,1,1,1,1,1,1,0],
+      [1,1,0,1,1,0,1,1],
+      [0,1,1,1,1,1,1,0],
+      [0,0,1,0,0,1,0,0],
+      [0,1,1,0,0,1,1,0],
+    ]
+  },
+  { // Duck 10x10
+    name:'Duck', size:10,
+    grid:[
+      [0,0,0,0,1,1,0,0,0,0],
+      [0,0,0,1,1,1,1,0,0,0],
+      [0,0,0,1,1,1,1,0,0,0],
+      [0,0,0,0,1,1,0,0,0,0],
+      [0,0,0,0,1,1,1,1,0,0],
+      [0,0,1,1,1,1,1,1,1,0],
+      [0,1,1,1,1,1,1,1,1,1],
+      [0,0,1,1,1,1,1,1,0,0],
+      [0,0,0,1,0,0,1,0,0,0],
+      [0,0,1,1,0,0,1,1,0,0],
+    ]
+  },
+  { // Crown 10x10
+    name:'Crown', size:10,
+    grid:[
+      [0,1,0,0,1,1,0,0,1,0],
+      [0,1,0,1,1,1,1,0,1,0],
+      [0,1,1,1,1,1,1,1,1,0],
+      [0,0,1,1,1,1,1,1,0,0],
+      [0,0,1,1,1,1,1,1,0,0],
+      [0,0,1,1,1,1,1,1,0,0],
+      [0,0,1,0,0,0,0,1,0,0],
+      [0,0,1,1,1,1,1,1,0,0],
+      [0,0,0,1,1,1,1,0,0,0],
+      [0,0,0,0,1,1,0,0,0,0],
+    ]
+  },
+];
+
+let solution, state, size, mode='fill', won=false, secs=0, timer=null, painting=false, paintValue=null;
+const gridEl=document.getElementById('grid');
+
+/* Music */
+let audioCtx=null,musicNodes=[],musicOn=false,musicTimer=null;
+function ensureAudio(){if(!audioCtx)audioCtx=new(window.AudioContext||window.webkitAudioContext)();if(audioCtx.state==='suspended')audioCtx.resume();return audioCtx}
+function stopMusic(){musicNodes.forEach(n=>{try{n.stop()}catch(e){}try{n.disconnect()}catch(e){}});musicNodes=[];if(musicTimer){clearInterval(musicTimer);musicTimer=null}}
+function startMusic(){
+  const ctx=ensureAudio();stopMusic();
+  const m=ctx.createGain();m.gain.value=0.048;m.connect(ctx.destination);
+  function tone(f,t,d){const o=ctx.createOscillator(),g=ctx.createGain();o.type='sine';o.frequency.value=f;
+    g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(0.032,t+.5);g.gain.linearRampToValueAtTime(0,t+d);
+    o.connect(g);g.connect(m);o.start(t);o.stop(t+d+.05);musicNodes.push(o)}
+  function L(){const t=ctx.currentTime+.05;tone(246.94,t,3.2);tone(311.13,t+.6,2.8);tone(369.99,t+1.4,2.4);tone(493.88,t+2.3,2)}
+  L();musicTimer=setInterval(L,4500);
+}
+function toggleMusic(){musicOn=!musicOn;document.getElementById('btnMusic').classList.toggle('active',musicOn);if(musicOn)startMusic();else stopMusic()}
+
+function cluesFromLine(line){
+  const c=[];let n=0;
+  for(const v of line){if(v)n++;else if(n){c.push(n);n=0}}
+  if(n)c.push(n);
+  return c.length?c:[0];
+}
+function rowClues(sol,r){return cluesFromLine(sol[r])}
+function colClues(sol,c){return cluesFromLine(sol.map(row=>row[c]))}
+
+function lineSatisfied(stateLine, clue){
+  const actual=cluesFromLine(stateLine.map(v=>v===1?1:0));
+  if(clue.length===1&&clue[0]===0)return actual.length===1&&actual[0]===0;
+  if(actual.length!==clue.length)return false;
+  return actual.every((v,i)=>v===clue[i]);
+}
+
+function startLevel(idx){
+  const p=PUZZLES[idx];
+  size=p.size;
+  solution=p.grid.map(r=>r.slice());
+  state=Array.from({length:size},()=>Array(size).fill(0)); // 0 empty, 1 fill, 2 mark
+  mode='fill';won=false;secs=0;
+  document.getElementById('btnFill').classList.add('on');
+  document.getElementById('btnMark').classList.remove('on');
+  document.getElementById('menu').style.display='none';
+  document.getElementById('game').style.display='flex';
+  document.getElementById('status').textContent='Fill cells · mark empty with ×';
+  document.getElementById('status').className='status';
+  document.getElementById('time').textContent='0:00';
+  if(timer)clearInterval(timer);
+  timer=setInterval(()=>{
+    if(won)return;secs++;
+    document.getElementById('time').textContent=Math.floor(secs/60)+':'+String(secs%60).padStart(2,'0');
+  },1000);
+  render();
+}
+function showMenu(){
+  if(timer)clearInterval(timer);
+  document.getElementById('game').style.display='none';
+  document.getElementById('menu').style.display='flex';
+}
+function setMode(m){
+  mode=m;
+  document.getElementById('btnFill').classList.toggle('on',m==='fill');
+  document.getElementById('btnMark').classList.toggle('on',m==='mark');
+}
+
+function render(){
+  const cellSize=Math.floor(Math.min(
+    (Math.min(window.innerWidth,440)-24)/(size+2.2),
+    (window.innerHeight*0.52)/size
+  ));
+  const hintW=Math.max(28,Math.floor(cellSize*1.15));
+  const hintH=Math.max(28,Math.floor(cellSize*1.15));
+
+  gridEl.style.gridTemplateColumns=`${hintW}px repeat(${size},${cellSize}px)`;
+  gridEl.style.gridTemplateRows=`${hintH}px repeat(${size},${cellSize}px)`;
+  gridEl.innerHTML='';
+
+  // corner
+  const corner=document.createElement('div');corner.className='corner';gridEl.appendChild(corner);
+
+  // top hints
+  for(let c=0;c<size;c++){
+    const h=document.createElement('div');h.className='hints-top';
+    const clues=colClues(solution,c);
+    const colState=state.map(r=>r[c]);
+    const done=lineSatisfied(colState,clues);
+    clues.forEach(n=>{const s=document.createElement('span');s.className='hint-num'+(done?' done':'');s.textContent=n;h.appendChild(s)});
+    gridEl.appendChild(h);
+  }
+
+  for(let r=0;r<size;r++){
+    // left hints
+    const h=document.createElement('div');h.className='hints-left';
+    const clues=rowClues(solution,r);
+    const done=lineSatisfied(state[r],clues);
+    clues.forEach(n=>{const s=document.createElement('span');s.className='hint-num'+(done?' done':'');s.textContent=n;h.appendChild(s)});
+    gridEl.appendChild(h);
+
+    for(let c=0;c<size;c++){
+      const cell=document.createElement('div');
+      cell.className='cell';
+      if(state[r][c]===1)cell.classList.add('filled');
+      if(state[r][c]===2)cell.classList.add('marked');
+      // subtle 5-line guides for larger grids
+      if(size>=10&&c>0&&c%5===0)cell.style.borderLeft='2px solid var(--line)';
+      if(size>=10&&r>0&&r%5===0)cell.style.borderTop='2px solid var(--line)';
+
+      cell.addEventListener('pointerdown',e=>{
+        e.preventDefault();
+        painting=true;
+        cell.setPointerCapture(e.pointerId);
+        const target=mode==='fill'?1:2;
+        paintValue=state[r][c]===target?0:target;
+        state[r][c]=paintValue;
+        render();
+        checkWin();
+      });
+      cell.addEventListener('pointerenter',e=>{
+        if(!painting)return;
+        state[r][c]=paintValue;
+        render();
+        checkWin();
+      });
+      cell.addEventListener('pointerup',()=>{painting=false});
+      cell.addEventListener('pointercancel',()=>{painting=false});
+      gridEl.appendChild(cell);
+    }
+  }
+}
+
+function checkWin(){
+  for(let r=0;r<size;r++)for(let c=0;c<size;c++){
+    const filled=state[r][c]===1;
+    if(filled!==!!solution[r][c])return;
+  }
+  won=true;clearInterval(timer);
+  document.getElementById('status').textContent='Solved! Beautiful work ✨';
+  document.getElementById('status').className='status win';
+}
+
+function checkErrors(){
+  if(won)return;
+  let errors=0;
+  const cells=gridEl.querySelectorAll('.cell');
+  let i=0;
+  for(let r=0;r<size;r++)for(let c=0;c<size;c++){
+    const cell=cells[i++];
+    cell.classList.remove('error');
+    if(state[r][c]===1&&!solution[r][c]){cell.classList.add('error');errors++}
+  }
+  document.getElementById('status').textContent=errors?errors+' incorrect fill(s)':'No wrong fills — keep going';
+  setTimeout(()=>{
+    cells.forEach(c=>c.classList.remove('error'));
+    if(!won)document.getElementById('status').textContent='Fill cells · mark empty with ×';
+  },1200);
+}
+
+window.addEventListener('resize',()=>{if(solution)render()});
+document.addEventListener('pointerup',()=>{painting=false});
+</script>
+</body>
+</html>
